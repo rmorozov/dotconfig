@@ -1,0 +1,2 @@
+" mega completion
+Plug 'neoclide/coc.nvim', {'branch': 'release'}
