@@ -1,2 +1,5 @@
 " mega completion
 Plug 'neoclide/coc.nvim', {'branch': 'release'}
+
+" trailing whitespace
+Plug 'bronson/vim-trailing-whitespace'

@@ -14,8 +14,10 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     if [ -f "${APT_GET}" ]; then
         # automation installation script from https://apt.llvm.org
         bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
+        ${APT_GET} update
+        ${APT_GET} install vim
     fi
-    ${APT_GET} install vim
+    # for vim coc.vim
     curl -sL install-node.now.sh/lts | bash
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     which -s brew
