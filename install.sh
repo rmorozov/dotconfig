@@ -15,7 +15,7 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         # automation installation script from https://apt.llvm.org
         bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
         ${APT_GET} update
-        ${APT_GET} install vim
+        ${APT_GET} install vim zsh
     fi
     # for vim coc.vim
     curl -sL install-node.now.sh/lts | bash
@@ -38,4 +38,16 @@ if [ ! -f "${CURRENT_USER_VIMRC}" ]; then
     find "$WORKDIR/vim" -type f -exec bash -c 'ln -sf $0 ~/$(basename $0)' {} \;
     vim +VimBootstrapUpdate +PlugInstall +qall
     ln -sf vim/.vim/coc-settings.json "${HOME}/.vim/coc-settings.json"
+    # install coc extensions
+    vim -c 'CocInstall -sync coc-json coc-html|q'
 fi
+
+#backup previous zshrc
+ZSH_HOME="${HOME}/.oh-my-zsh"
+if [ ! -f "${ZSH_HOME}" ]; then
+    git clone https://github.com/ohmyzsh/ohmyzsh.git "${ZSH_HOME}"
+    cp "${HOME}/.zshrc" "${HOME}/.zshrc.bak"
+    ln -sf shell/zshrc "${HOME}/.zshrc"
+    chsh -s $(which zsh)
+fi
+
