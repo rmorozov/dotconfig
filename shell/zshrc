@@ -111,6 +111,9 @@ alias updatedb="/usr/libexec/locate.updatedb"
 # iterm2 integration
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
 
+# local customization ntegration
+test -e "${HOME}/.zshrc.local" && source "${HOME}/.zshrc.local"
+
 # Env vars
 export GOPATH="${HOME}/go:${HOME}/Source/go"
 export PATH="$PATH:$(go env GOPATH)/bin"
