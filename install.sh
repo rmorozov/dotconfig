@@ -7,28 +7,16 @@ WORKDIR="$PWD"
 VIMRC=".vimrc"
 CURRENT_USER_VIMRC="${HOME}/${VIMRC}"
 
-# install LLVM
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    APT_GET=/usr/bin/apt-get
-    # install latest stable llvm
-    if [ -f "${APT_GET}" ]; then
-        # automation installation script from https://apt.llvm.org
-        bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
-        ${APT_GET} update
-        ${APT_GET} install vim zsh
-    fi
-    # for vim coc.vim
-    curl -sL install-node.now.sh/lts | bash
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    which -s brew
-    if [[ $? != 0 ]] ; then
-        # Install Homebrew
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
-    else
-        brew update
-    fi
-    brew install llvm vim nodejs
+# vim and other tools must be quite new, so use versions from brew
+# install brew, LLVM, nodejs and vim
+which -s brew
+if [[ $? != 0 ]] ; then
+    # Install Homebrew
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
+else
+    brew update
 fi
+brew install llvm vim nodejs
 
 #generate bootstrap vim configuration
 if [ ! -f "${CURRENT_USER_VIMRC}" ]; then
@@ -39,7 +27,7 @@ if [ ! -f "${CURRENT_USER_VIMRC}" ]; then
     vim +VimBootstrapUpdate +PlugInstall +qall
     ln -sf vim/.vim/coc-settings.json "${HOME}/.vim/coc-settings.json"
     # install coc extensions
-    vim -c 'CocInstall -sync coc-json coc-html|q'
+    vim -c 'CocInstall -sync|q'
 fi
 
 #backup previous zshrc
