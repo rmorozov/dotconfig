@@ -116,5 +116,5 @@ test -e "${HOME}/.zshrc.local" && source "${HOME}/.zshrc.local"
 
 # Env vars
 #export GOPATH="${HOME}/go:${HOME}/Source/go"
-export PATH="$PATH:$(go env GOPATH)/bin"
+#export PATH="$PATH:$(go env GOPATH)/bin"
 #export PATH="$PATH:/opt/homebrew/bin"
