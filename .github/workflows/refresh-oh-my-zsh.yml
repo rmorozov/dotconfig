@@ -27,30 +27,9 @@ jobs:
       - name: Open or update refresh pull request
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -Eeuo pipefail
-          if git diff --quiet -- versions/oh-my-zsh; then
-            echo "Oh My Zsh is already current."
-            exit 0
-          fi
-
-          refresh_branch="automation/refresh-oh-my-zsh"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch --create "$refresh_branch"
-          git add versions/oh-my-zsh
-          git commit -m "Refresh Oh My Zsh revision"
-          git push --force-with-lease origin "HEAD:$refresh_branch"
-
-          if gh pr view "$refresh_branch" >/dev/null 2>&1; then
-            gh pr edit "$refresh_branch" \
-              --title "Refresh Oh My Zsh revision" \
-              --body "Automated nightly refresh of the pinned Oh My Zsh commit."
-          else
-            gh pr create \
-              --base "${GITHUB_REF_NAME}" \
-              --head "$refresh_branch" \
-              --title "Refresh Oh My Zsh revision" \
-              --body "Automated nightly refresh of the pinned Oh My Zsh commit."
-          fi
+          bash scripts/open-refresh-pr.sh \
+            "automation/refresh-oh-my-zsh" \
+            "Refresh Oh My Zsh revision" \
+            "Automated nightly refresh of the pinned Oh My Zsh commit." \
+            "versions/oh-my-zsh"
