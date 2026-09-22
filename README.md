@@ -139,13 +139,13 @@ The committed file contains exact versions, so machines do not resolve moving al
 
 Oh My Zsh is installed at the exact commit recorded in `versions/oh-my-zsh`. This prevents newly bootstrapped machines from silently receiving different shell behavior. Run `dotconfig shell` to converge a machine on the committed revision.
 
-The **Refresh Oh My Zsh** workflow proposes a new upstream commit monthly. The change remains inert on machines until its pull request is reviewed, merged, and applied explicitly.
+The **Refresh Oh My Zsh** workflow proposes a new upstream commit nightly. The change remains inert on machines until its pull request is reviewed, merged, and applied explicitly.
 
 ## Vim plugin revisions
 
 Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Chezmoi deploys the generated `~/.vim/plugin-lock.vim`, which applies exact commit constraints before vim-plug finishes initialization. Existing `do` hooks therefore run against the pinned revision.
 
-Run `dotconfig vim` to converge a machine. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin monthly and opens a reviewable PR containing both the manifest and generated lock.
+Run `dotconfig vim` to converge a machine. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin nightly and opens a reviewable PR containing both the manifest and generated lock.
 
 ## Maintaining dependency lists
 
