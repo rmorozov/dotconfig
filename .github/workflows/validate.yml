@@ -41,19 +41,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl shellcheck zsh
+          curl --fail --silent --show-error --location https://mise.run | sh
           mkdir -p "$HOME/.local/bin"
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install macOS validators
         if: runner.os == 'macOS'
-        run: brew install chezmoi shellcheck
+        run: brew install chezmoi mise shellcheck
 
       - name: Validate source scripts
         run: |
-          shellcheck install.sh packages/install.sh
+          shellcheck install.sh packages/install.sh scripts/update-runtime-versions.sh
           bash -n install.sh
           bash -n packages/install.sh
+          bash -n scripts/update-runtime-versions.sh
 
       - name: Validate package check
         shell: bash
@@ -89,6 +91,10 @@ jobs:
           test -f "$test_home/.vimrc"
           test -f "$test_home/.vim/coc-settings.json"
           test -x "$test_home/.local/bin/dotconfig"
+          test -f "$test_home/.config/mise/config.toml"
+          grep -q 'node = "24.21.0"' "$test_home/.config/mise/config.toml"
+          grep -q 'go = "1.27.1"' "$test_home/.config/mise/config.toml"
+          grep -q 'python = "3.14.7"' "$test_home/.config/mise/config.toml"
           grep -q 'DOTCONFIG_ROLE="${{ matrix.machine_role }}"' "$test_home/.zshrc"
           zsh -n "$test_home/.zshrc"
           shellcheck "$test_home/.local/bin/dotconfig"
