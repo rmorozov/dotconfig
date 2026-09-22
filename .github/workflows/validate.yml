@@ -14,17 +14,23 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install validators
-        run: sudo apt-get update && sudo apt-get install -y shellcheck zsh
+        run: sudo apt-get update && sudo apt-get install -y chezmoi shellcheck zsh
 
       - name: Validate scripts
         run: |
           shellcheck install.sh
           bash -n install.sh
-          zsh -n shell/zshrc
+          zsh -n home/dot_zshrc
+          bash -n packages/install.sh
 
       - name: Validate Vim Bootstrap snapshot
         run: |
-          test -s vim/.vimrc
-          grep -q 'vim-bootstrap snapshot' vim/.vimrc
-          grep -q "call plug#begin" vim/.vimrc
-          grep -q "call plug#end" vim/.vimrc
+          test -s home/dot_vimrc
+          grep -q 'vim-bootstrap snapshot' home/dot_vimrc
+          grep -q "call plug#begin" home/dot_vimrc
+          grep -q "call plug#end" home/dot_vimrc
+
+      - name: Render chezmoi source state
+        run: |
+          chezmoi --source "$GITHUB_WORKSPACE" cat ~/.zshrc >/dev/null
+          chezmoi --source "$GITHUB_WORKSPACE" cat ~/.vimrc >/dev/null
