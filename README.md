@@ -165,7 +165,7 @@ Use `-` when a native package is intentionally absent on one platform. Each help
 
 ## CoC extension versions
 
-The 23 CoC extensions are installed as exact npm versions generated from `versions/coc-extensions`. They converge through the existing `dotconfig vim` command. The **Refresh CoC extensions** workflow proposes version bumps monthly without changing `coc.nvim` or the Vim Bootstrap snapshot.
+Configured CoC extensions are installed as exact npm versions generated from `versions/coc-extensions`. They converge through the existing `dotconfig vim` command. The **Refresh CoC extensions** workflow proposes version bumps monthly without changing `coc.nvim` or the Vim Bootstrap snapshot.
 
 ## Updating Vim Bootstrap
 
