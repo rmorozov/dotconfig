@@ -124,3 +124,13 @@ GitHub Actions runs:
 - a real chezmoi apply into an isolated temporary home;
 - ShellCheck of the rendered `dotconfig` command;
 - native jobs on Ubuntu 26.04 and Apple Silicon macOS 26.
+
+## Repository maintenance automation
+
+The repository has three independent maintenance loops:
+
+- every pull request validates Ubuntu 26.04 and Apple Silicon macOS 26;
+- the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
+- Dependabot groups GitHub Actions updates into a monthly reviewable pull request.
+
+Vim Bootstrap remains on its separate monthly refresh workflow. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
