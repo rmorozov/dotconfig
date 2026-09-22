@@ -50,30 +50,9 @@ jobs:
       - name: Open or update refresh pull request
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -Eeuo pipefail
-          if git diff --quiet -- home/dot_vimrc; then
-            echo "Vim Bootstrap snapshot is already current."
-            exit 0
-          fi
-
-          refresh_branch="automation/refresh-vim-bootstrap"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch --create "$refresh_branch"
-          git add home/dot_vimrc
-          git commit -m "Refresh Vim Bootstrap snapshot"
-          git push --force-with-lease origin "HEAD:$refresh_branch"
-
-          if gh pr view "$refresh_branch" >/dev/null 2>&1; then
-            gh pr edit "$refresh_branch" \
-              --title "Refresh Vim Bootstrap snapshot" \
-              --body "Automated nightly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
-          else
-            gh pr create \
-              --base "${GITHUB_REF_NAME}" \
-              --head "$refresh_branch" \
-              --title "Refresh Vim Bootstrap snapshot" \
-              --body "Automated nightly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
-          fi
+          bash scripts/open-refresh-pr.sh \
+            "automation/refresh-vim-bootstrap" \
+            "Refresh Vim Bootstrap snapshot" \
+            "Automated nightly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged." \
+            "home/dot_vimrc"
