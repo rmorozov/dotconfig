@@ -2,7 +2,7 @@ name: Refresh Vim plugins
 
 on:
   schedule:
-    - cron: "53 6 1 * *"
+    - cron: "53 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: refresh-vim-plugins
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
@@ -40,7 +40,7 @@ jobs:
           git commit -m "Refresh Vim plugin revisions"
           git push --force-with-lease origin "HEAD:$refresh_branch"
           if gh pr view "$refresh_branch" >/dev/null 2>&1; then
-            gh pr edit "$refresh_branch" --title "Refresh Vim plugin revisions" --body "Automated monthly refresh of exact Vim plugin commits."
+            gh pr edit "$refresh_branch" --title "Refresh Vim plugin revisions" --body "Automated nightly refresh of exact Vim plugin commits."
           else
-            gh pr create --base "${GITHUB_REF_NAME}" --head "$refresh_branch" --title "Refresh Vim plugin revisions" --body "Automated monthly refresh of exact Vim plugin commits."
+            gh pr create --base "${GITHUB_REF_NAME}" --head "$refresh_branch" --title "Refresh Vim plugin revisions" --body "Automated nightly refresh of exact Vim plugin commits."
           fi
