@@ -1,5 +1,5 @@
+# Generated from packages/packages.tsv; do not edit by hand.
 # Shared command-line baseline for macOS.
-# GUI applications and machine-specific tools belong in separate manifests.
 brew "chezmoi"
 brew "curl"
 brew "fzf"
