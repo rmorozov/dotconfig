@@ -1,0 +1,29 @@
+name: Validate configuration
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install validators
+        run: sudo apt-get update && sudo apt-get install -y shellcheck zsh
+
+      - name: Validate scripts
+        run: |
+          shellcheck install.sh
+          bash -n install.sh
+          zsh -n shell/zshrc
+
+      - name: Validate Vim configuration
+        run: |
+          vim -Nu NONE -n -es \
+            +"source vim/.vimrc" \
+            +qall
