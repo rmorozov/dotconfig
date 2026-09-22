@@ -9,6 +9,7 @@ OH_MY_ZSH_INSTALLER="$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 OH_MY_ZSH_REVISION_FILE="$REPO_ROOT/versions/oh-my-zsh"
 MACHINE_ROLE={{ .machineRole | quote }}
 HOST_TYPE={{ .hostType | quote }}
+UPDATE_CAN_CONVERGE=false
 
 usage() {
     cat <<'EOF'
@@ -19,6 +20,7 @@ Commands:
   doctor    Check configuration prerequisites and report problems.
   apply     Apply the currently checked-out configuration.
   update    Fast-forward the repository, show the diff, and apply after confirmation.
+  sync      Update, then converge runtimes, Oh My Zsh, Vim plugins, and CoC.
   packages  Apply the native package baseline.
   runtimes  Install the pinned language runtimes.
   shell     Install the pinned Oh My Zsh revision.
@@ -219,6 +221,7 @@ update_command() {
     drift="$(dotfile_drift)"
     if [[ -z "$drift" ]]; then
         echo "Managed dotfiles are already current."
+        UPDATE_CAN_CONVERGE=true
         package_check || true
         return
     fi
@@ -237,7 +240,34 @@ update_command() {
     fi
 
     chezmoi --source "$REPO_ROOT" apply --verbose
+    UPDATE_CAN_CONVERGE=true
     package_check || true
+}
+
+sync_command() {
+    update_command
+    if ! "$UPDATE_CAN_CONVERGE"; then
+        echo "Sync stopped because the configuration update was not applied."
+        return
+    fi
+
+    echo
+    echo "Converging pinned runtimes..."
+    runtime_install
+
+    echo
+    echo "Converging Oh My Zsh..."
+    bash "$OH_MY_ZSH_INSTALLER"
+
+    echo
+    echo "Converging Vim plugins and CoC extensions..."
+    vim_install
+
+    echo
+    echo "Machine configuration is synchronized."
+    package_check || {
+        echo "Native package drift remains; run: dotconfig packages" >&2
+    }
 }
 
 case "${1:-}" in
@@ -245,6 +275,7 @@ case "${1:-}" in
     doctor) doctor_command ;;
     apply) apply_command ;;
     update) update_command ;;
+    sync) sync_command ;;
     packages) bash "$PACKAGE_INSTALLER" ;;
     runtimes) runtime_install ;;
     shell) bash "$OH_MY_ZSH_INSTALLER" ;;
