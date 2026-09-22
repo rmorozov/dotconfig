@@ -2,7 +2,7 @@ name: Refresh Oh My Zsh
 
 on:
   schedule:
-    - cron: "41 6 1 * *"
+    - cron: "41 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: refresh-oh-my-zsh
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
@@ -46,11 +46,11 @@ jobs:
           if gh pr view "$refresh_branch" >/dev/null 2>&1; then
             gh pr edit "$refresh_branch" \
               --title "Refresh Oh My Zsh revision" \
-              --body "Automated monthly refresh of the pinned Oh My Zsh commit."
+              --body "Automated nightly refresh of the pinned Oh My Zsh commit."
           else
             gh pr create \
               --base "${GITHUB_REF_NAME}" \
               --head "$refresh_branch" \
               --title "Refresh Oh My Zsh revision" \
-              --body "Automated monthly refresh of the pinned Oh My Zsh commit."
+              --body "Automated nightly refresh of the pinned Oh My Zsh commit."
           fi
