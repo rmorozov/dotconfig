@@ -52,8 +52,12 @@ jobs:
 
       - name: Validate source scripts
         run: |
-          shellcheck install.sh packages/install.sh scripts/install-oh-my-zsh.sh scripts/update-coc-extensions.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh scripts/update-vim-plugins.sh
+          shellcheck install.sh packages/install.sh scripts/add-coc-extension.sh scripts/add-vim-plugin.sh scripts/generate-coc-extensions.sh scripts/generate-vim-plugin-lock.sh scripts/install-oh-my-zsh.sh scripts/update-coc-extensions.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh scripts/update-vim-plugins.sh
           bash -n install.sh
+          bash -n scripts/add-coc-extension.sh
+          bash -n scripts/add-vim-plugin.sh
+          bash -n scripts/generate-coc-extensions.sh
+          bash -n scripts/generate-vim-plugin-lock.sh
           bash -n packages/install.sh
           bash -n scripts/install-oh-my-zsh.sh
           bash -n scripts/update-coc-extensions.sh
@@ -63,6 +67,12 @@ jobs:
           zsh -n home/dot_config/zsh/common.zsh
           zsh -n home/dot_config/zsh/darwin.zsh
           zsh -n home/dot_config/zsh/linux.zsh
+
+      - name: Validate generated dependency files
+        run: |
+          bash scripts/generate-coc-extensions.sh
+          bash scripts/generate-vim-plugin-lock.sh
+          git diff --exit-code -- home/dot_vim/coc-extensions.vim home/dot_vim/plugin-lock.vim
 
       - name: Validate package check
         shell: bash
