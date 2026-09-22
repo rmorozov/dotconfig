@@ -37,13 +37,14 @@ jobs:
           sed -i '1c\" vim-bootstrap snapshot; refreshed by .github/workflows/refresh-vim-bootstrap.yml' "$output"
           mv "$output" vim/.vimrc
 
-      - name: Validate generated Vim configuration
+      - name: Validate generated snapshot
         shell: bash
         run: |
           set -Eeuo pipefail
-          vim -Nu NONE -n -es \
-            +"silent! source vim/.vimrc" \
-            +qall
+          test -s vim/.vimrc
+          grep -q 'vim-bootstrap snapshot' vim/.vimrc
+          grep -q "call plug#begin" vim/.vimrc
+          grep -q "call plug#end" vim/.vimrc
 
       - name: Open or update refresh pull request
         env:
