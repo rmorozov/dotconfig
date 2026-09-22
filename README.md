@@ -204,7 +204,8 @@ The nightly advisory audit builds a temporary npm lock from the exact CoC extens
 
 - every pull request validates Ubuntu 26.04 and Apple Silicon macOS 26;
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
-- Dependabot checks GitHub Actions daily and groups updates into a reviewable pull request;
+- GitHub Actions are executed from immutable full commit SHAs; validator rejects mutable tag references;
+- Dependabot checks those pinned Actions daily and groups proposed SHA updates into a reviewable pull request;
 - the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each night;
 - the Oh My Zsh refresh workflow proposes a new exact upstream revision each night;
 - the Vim plugin and CoC extension workflows propose exact reviewed editor dependency updates.
