@@ -56,6 +56,9 @@ jobs:
           bash -n install.sh
           bash -n packages/install.sh
           bash -n scripts/update-runtime-versions.sh
+          zsh -n home/dot_config/zsh/common.zsh
+          zsh -n home/dot_config/zsh/darwin.zsh
+          zsh -n home/dot_config/zsh/linux.zsh
 
       - name: Validate package check
         shell: bash
@@ -92,6 +95,9 @@ jobs:
           test -f "$test_home/.vim/coc-settings.json"
           test -x "$test_home/.local/bin/dotconfig"
           test -f "$test_home/.config/mise/config.toml"
+          test -f "$test_home/.config/zsh/common.zsh"
+          test -f "$test_home/.config/zsh/darwin.zsh"
+          test -f "$test_home/.config/zsh/linux.zsh"
           grep -q 'node = "24.21.0"' "$test_home/.config/mise/config.toml"
           grep -q 'go = "1.27.1"' "$test_home/.config/mise/config.toml"
           grep -q 'python = "3.14.7"' "$test_home/.config/mise/config.toml"
