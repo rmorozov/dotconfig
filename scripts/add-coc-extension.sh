@@ -10,7 +10,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$REPO_ROOT/versions/coc-extensions"
 package_name="$1"
 
-grep -Eq "^${package_name//./\.} " "$MANIFEST" && {
+awk -v name="$package_name" '$1 == name { found=1 } END { exit !found }' "$MANIFEST" && {
     echo "Already configured: $package_name" >&2
     exit 1
 }
