@@ -1,0 +1,13 @@
+# capability homebrew ubuntu
+ca-certificates - ca-certificates
+chezmoi chezmoi -
+curl curl curl
+fzf fzf fzf
+git git git
+mise mise -
+ripgrep ripgrep ripgrep
+silver-searcher the_silver_searcher silversearcher-ag
+tmux tmux tmux
+universal-ctags universal-ctags universal-ctags
+vim vim vim
+zsh zsh zsh
