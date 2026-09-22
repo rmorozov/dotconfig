@@ -2,7 +2,7 @@ name: Refresh Vim Bootstrap
 
 on:
   schedule:
-    - cron: "17 6 1 * *"
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: refresh-vim-bootstrap
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
@@ -69,11 +69,11 @@ jobs:
           if gh pr view "$refresh_branch" >/dev/null 2>&1; then
             gh pr edit "$refresh_branch" \
               --title "Refresh Vim Bootstrap snapshot" \
-              --body "Automated monthly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
+              --body "Automated nightly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
           else
             gh pr create \
               --base "${GITHUB_REF_NAME}" \
               --head "$refresh_branch" \
               --title "Refresh Vim Bootstrap snapshot" \
-              --body "Automated monthly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
+              --body "Automated nightly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
           fi
