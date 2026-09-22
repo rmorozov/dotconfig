@@ -105,6 +105,10 @@ jobs:
           zsh -n "$test_home/.zshrc"
           shellcheck "$test_home/.local/bin/dotconfig"
           bash -n "$test_home/.local/bin/dotconfig"
+          HOME="$test_home" EDITOR=true "$test_home/.local/bin/dotconfig" private
+          private_file="$test_home/.zshrc.${{ matrix.machine_role }}.local"
+          test -f "$private_file"
+          test -z "$(find "$private_file" -perm -077 -print)"
 
       - name: Validate first-run profile defaults
         if: runner.os == 'Linux'
