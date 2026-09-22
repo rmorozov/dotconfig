@@ -1,6 +1,11 @@
 name: Audit dependency advisories
 
 on:
+  pull_request:
+    paths:
+      - versions/coc-extensions
+      - scripts/audit-coc-extensions.sh
+      - .github/workflows/security-audit.yml
   schedule:
     - cron: "23 4 * * *"
   workflow_dispatch:
