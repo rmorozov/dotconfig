@@ -32,21 +32,35 @@ Existing backups created by the previous installer, such as `.zshrc.pre-dotconfi
 
 ## Normal update workflow
 
-Review repository changes before applying them:
+The installer deploys a `dotconfig` maintenance command into `~/.local/bin`.
+
+Inspect a machine without changing it:
 
 ```sh
-git pull --ff-only
-chezmoi --source "$PWD" diff
-chezmoi --source "$PWD" apply
+dotconfig status
+dotconfig doctor
 ```
 
-When the package manifests changed, apply them explicitly:
+Safely fast-forward the repository, review the rendered diff, and confirm before applying it:
 
 ```sh
-bash packages/install.sh
+dotconfig update
 ```
 
-The package step is intentionally separate during routine updates because it may require `sudo` on Ubuntu and can make larger system changes.
+The individual operations remain available:
+
+```sh
+dotconfig apply
+dotconfig packages
+dotconfig path
+```
+
+Package updates are intentionally separate during routine updates because they may require `sudo` on Ubuntu and can make larger system changes. The lower-level chezmoi commands remain usable when needed:
+
+```sh
+chezmoi --source "$(dotconfig path)" diff
+chezmoi --source "$(dotconfig path)" apply
+```
 
 ## Package baseline
 
@@ -60,13 +74,13 @@ The manifests target equivalent capabilities rather than identical package versi
 
 GUI applications, corporate tooling, Docker, and machine-role-specific packages are deliberately excluded for now.
 
-To inspect the Ubuntu package operation without installing anything:
+To check package drift without installing anything:
 
 ```sh
-bash packages/install.sh --dry-run
+bash packages/install.sh --check
 ```
 
-On macOS, dry-run mode uses `brew bundle check`.
+On macOS this uses `brew bundle check`; on Ubuntu it queries the installed dpkg state.
 
 ## Configuration layers
 
@@ -89,4 +103,6 @@ GitHub Actions runs:
 - ShellCheck and Bash/Zsh syntax checks;
 - package-manifest script validation;
 - structural checks for the Vim Bootstrap snapshot;
-- chezmoi rendering checks for the managed Zsh and Vim files.
+- a real chezmoi apply into an isolated temporary home;
+- ShellCheck of the rendered `dotconfig` command;
+- native jobs on Ubuntu 26.04 and Apple Silicon macOS 26.
