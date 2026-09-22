@@ -41,7 +41,7 @@ runtime_status() {
 
 runtime_install() {
     command -v mise >/dev/null 2>&1 || {
-        echo "missing: mise; run dotconfig packages first" >&2
+        echo "missing: mise; rerun the repository installer" >&2
         return 1
     }
     mise install
