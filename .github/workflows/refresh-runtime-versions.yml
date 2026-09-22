@@ -1,0 +1,63 @@
+name: Refresh runtime versions
+
+on:
+  schedule:
+    - cron: "29 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-runtime-versions
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install mise
+        run: |
+          curl --fail --silent --show-error --location https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Refresh pinned versions
+        run: bash scripts/update-runtime-versions.sh
+
+      - name: Open or update refresh pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          config_file="home/dot_config/mise/config.toml"
+          if git diff --quiet -- "$config_file"; then
+            echo "Runtime versions are already current."
+            exit 0
+          fi
+
+          refresh_branch="automation/refresh-runtime-versions"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$refresh_branch"
+          git add "$config_file"
+          git commit -m "Refresh runtime versions"
+          git push --force-with-lease origin "HEAD:$refresh_branch"
+
+          if gh pr view "$refresh_branch" >/dev/null 2>&1; then
+            gh pr edit "$refresh_branch" \
+              --title "Refresh runtime versions" \
+              --body "Automated monthly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
+          else
+            gh pr create \
+              --base "${GITHUB_REF_NAME}" \
+              --head "$refresh_branch" \
+              --title "Refresh runtime versions" \
+              --body "Automated monthly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
+          fi
