@@ -72,10 +72,10 @@ export ZSH_TMUX_UNICODE=true
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(git golang colorize colored-man-pages docker extract common-aliases zsh-navigation-tools tmux tmux-cssh)
-if [[ "$OSTYPE" == "darwin"* ]]; then
+if [[ "$OSTYPE" == darwin* ]]; then
     plugins+=(brew)
-elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    plugins+=(archlinux systemd)
+elif [[ "$OSTYPE" == linux-gnu* ]]; then
+    plugins+=(systemd)
 fi
 
 source $ZSH/oh-my-zsh.sh
@@ -85,8 +85,7 @@ source $ZSH/oh-my-zsh.sh
 # export MANPATH="/usr/local/man:$MANPATH"
 
 # You may need to manually set your language environment
-export LANG=en_US.UTF-8
-export LC_ALL=en_US.UTF-8
+export LANG="${LANG:-en_US.UTF-8}"
 
 # Preferred editor for local and remote sessions
 # if [[ -n $SSH_CONNECTION ]]; then
@@ -106,7 +105,18 @@ export LC_ALL=en_US.UTF-8
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
-alias updatedb="/usr/libexec/locate.updatedb"
+if [[ "$OSTYPE" == darwin* ]]; then
+    alias updatedb="/usr/libexec/locate.updatedb"
+fi
+
+# Homebrew uses /opt/homebrew on Apple Silicon and /usr/local on Intel Macs.
+if [[ "$OSTYPE" == darwin* ]]; then
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+fi
 
 # iterm2 integration
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
