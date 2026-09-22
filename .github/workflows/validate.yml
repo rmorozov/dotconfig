@@ -8,12 +8,25 @@ permissions:
   contents: read
 
 jobs:
-  shell:
-    runs-on: ubuntu-latest
+  platform:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-26.04
+          - macos-26
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install validators
+      - name: Verify Apple Silicon runner
+        if: runner.os == 'macOS'
+        run: test "$(uname -m)" = arm64
+
+      - name: Install Ubuntu validators
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y curl shellcheck zsh
@@ -21,13 +34,25 @@ jobs:
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Validate scripts
+      - name: Install macOS validators
+        if: runner.os == 'macOS'
+        run: brew install chezmoi shellcheck
+
+      - name: Validate source scripts
         run: |
           shellcheck install.sh packages/install.sh
           bash -n install.sh
-          zsh -n home/dot_zshrc
           bash -n packages/install.sh
-          bash packages/install.sh --dry-run
+          zsh -n home/dot_zshrc
+
+      - name: Validate package check
+        shell: bash
+        run: |
+          set +e
+          bash packages/install.sh --check
+          status=$?
+          set -e
+          test "$status" -le 1
 
       - name: Validate Vim Bootstrap snapshot
         run: |
@@ -37,9 +62,13 @@ jobs:
           grep -q "call plug#end" home/dot_vimrc
 
       - name: Render and apply chezmoi source state
+        shell: bash
         run: |
           test_home="$(mktemp -d)"
           HOME="$test_home" chezmoi --source "$GITHUB_WORKSPACE" apply
           test -f "$test_home/.zshrc"
           test -f "$test_home/.vimrc"
           test -f "$test_home/.vim/coc-settings.json"
+          test -x "$test_home/.local/bin/dotconfig"
+          shellcheck "$test_home/.local/bin/dotconfig"
+          bash -n "$test_home/.local/bin/dotconfig"
