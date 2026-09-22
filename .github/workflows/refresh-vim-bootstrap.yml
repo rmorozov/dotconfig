@@ -44,6 +44,7 @@ jobs:
           test -s home/dot_vimrc
           grep -q 'vim-bootstrap snapshot' home/dot_vimrc
           grep -q "call plug#begin" home/dot_vimrc
+          grep -q 'source ~/.vim/plugin-lock.vim' home/dot_vimrc
           grep -q "call plug#end" home/dot_vimrc
 
       - name: Open or update refresh pull request
