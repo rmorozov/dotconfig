@@ -52,9 +52,11 @@ jobs:
 
       - name: Validate source scripts
         run: |
-          shellcheck install.sh packages/install.sh scripts/update-runtime-versions.sh
+          shellcheck install.sh packages/install.sh scripts/install-oh-my-zsh.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh
           bash -n install.sh
           bash -n packages/install.sh
+          bash -n scripts/install-oh-my-zsh.sh
+          bash -n scripts/update-oh-my-zsh.sh
           bash -n scripts/update-runtime-versions.sh
           zsh -n home/dot_config/zsh/common.zsh
           zsh -n home/dot_config/zsh/darwin.zsh
@@ -105,6 +107,40 @@ jobs:
           zsh -n "$test_home/.zshrc"
           shellcheck "$test_home/.local/bin/dotconfig"
           bash -n "$test_home/.local/bin/dotconfig"
+          grep -Eq '^[0-9a-f]{40}          HOME="$test_home" EDITOR=true "$test_home/.local/bin/dotconfig" private
+          private_file="$test_home/.zshrc.${{ matrix.machine_role }}.local"
+          test -f "$private_file"
+          test -z "$(find "$private_file" -perm -077 -print)"
+
+      - name: Validate first-run profile defaults
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          init_home="$(mktemp -d)"
+          HOME="$init_home" chezmoi \
+            --source "$GITHUB_WORKSPACE" \
+            init --apply --promptDefaults
+          grep -q 'DOTCONFIG_ROLE="personal"' "$init_home/.zshrc"
+          grep -q 'DOTCONFIG_HOST_TYPE="laptop"' "$init_home/.zshrc"
+ versions/oh-my-zsh
+
+          remote_repo="$(mktemp -d)"
+          work_repo="$(mktemp -d)"
+          git -C "$remote_repo" init --bare
+          git -C "$work_repo" init
+          git -C "$work_repo" config user.name test
+          git -C "$work_repo" config user.email test@example.com
+          touch "$work_repo/README"
+          git -C "$work_repo" add README
+          git -C "$work_repo" commit -m initial
+          git -C "$work_repo" remote add origin "$remote_repo"
+          git -C "$work_repo" push origin HEAD:master
+          test_revision="$(git -C "$work_repo" rev-parse HEAD)"
+          printf '%s\n' "$test_revision" > versions/oh-my-zsh
+          OH_MY_ZSH_REPOSITORY="$remote_repo" \
+          OH_MY_ZSH_HOME="$test_home/.oh-my-zsh" \
+            bash scripts/install-oh-my-zsh.sh
+          test "$(git -C "$test_home/.oh-my-zsh" rev-parse HEAD)" = "$test_revision"
           HOME="$test_home" EDITOR=true "$test_home/.local/bin/dotconfig" private
           private_file="$test_home/.zshrc.${{ matrix.machine_role }}.local"
           test -f "$private_file"
