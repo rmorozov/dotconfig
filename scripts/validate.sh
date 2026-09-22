@@ -43,6 +43,17 @@ extension_count="$(grep -vc '^#' versions/coc-extensions)"
 generated_extension_count="$(grep -c '@[0-9]' home/dot_vim/coc-extensions.vim)"
 test "$extension_count" = "$generated_extension_count"
 awk 'NR > 1 && $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+/ { exit 1 }' versions/coc-extensions
+awk 'NR > 1 && (NF < 2 || $2 !~ /^GHSA-/) { exit 1 }' versions/coc-extensions-disabled
+
+overlap="$(
+    comm -12 \
+        <(awk 'NR > 1 { print $1 }' versions/coc-extensions | LC_ALL=C sort) \
+        <(awk 'NR > 1 { print $1 }' versions/coc-extensions-disabled | LC_ALL=C sort)
+)"
+[[ -z "$overlap" ]] || {
+    echo "CoC extensions cannot be both active and quarantined: $overlap" >&2
+    exit 1
+}
 
 plugin_count="$(grep -vc '^#' versions/vim-plugins)"
 lock_count="$(grep -c '^call s:DotconfigPin' home/dot_vim/plugin-lock.vim)"
