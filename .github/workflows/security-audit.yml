@@ -22,7 +22,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-          cache: npm
 
       - name: Audit exact CoC extension versions
         run: bash scripts/audit-coc-extensions.sh
