@@ -35,16 +35,16 @@ jobs:
           test -s "$output"
           grep -q 'vim-bootstrap' "$output"
           sed -i '1c\" vim-bootstrap snapshot; refreshed by .github/workflows/refresh-vim-bootstrap.yml' "$output"
-          mv "$output" vim/.vimrc
+          mv "$output" home/dot_vimrc
 
       - name: Validate generated snapshot
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -s vim/.vimrc
-          grep -q 'vim-bootstrap snapshot' vim/.vimrc
-          grep -q "call plug#begin" vim/.vimrc
-          grep -q "call plug#end" vim/.vimrc
+          test -s home/dot_vimrc
+          grep -q 'vim-bootstrap snapshot' home/dot_vimrc
+          grep -q "call plug#begin" home/dot_vimrc
+          grep -q "call plug#end" home/dot_vimrc
 
       - name: Open or update refresh pull request
         env:
@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          if git diff --quiet -- vim/.vimrc; then
+          if git diff --quiet -- home/dot_vimrc; then
             echo "Vim Bootstrap snapshot is already current."
             exit 0
           fi
@@ -61,7 +61,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --create "$refresh_branch"
-          git add vim/.vimrc
+          git add home/dot_vimrc
           git commit -m "Refresh Vim Bootstrap snapshot"
           git push --force-with-lease origin "HEAD:$refresh_branch"
 
