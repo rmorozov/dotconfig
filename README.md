@@ -173,7 +173,15 @@ The generated base is therefore reproducible on every machine while upstream imp
 
 ## Validation
 
-GitHub Actions runs:
+Run the same static checks locally before pushing:
+
+```sh
+bash scripts/validate.sh
+```
+
+The validator discovers shell scripts and Zsh modules automatically, checks generated dependency files, and validates pinned manifests. Adding another script does not require maintaining a parallel filename list in CI.
+
+GitHub Actions additionally runs:
 
 - ShellCheck and Bash/Zsh syntax checks;
 - package-manifest script validation;
