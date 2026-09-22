@@ -67,7 +67,7 @@ install_chezmoi() {
 install_chezmoi
 
 if ! "$SKIP_PACKAGES"; then
-    "$REPO_ROOT/packages/install.sh"
+    bash "$REPO_ROOT/packages/install.sh"
 fi
 
 chezmoi --source "$REPO_ROOT" apply --verbose
