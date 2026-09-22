@@ -12,7 +12,7 @@ usage() {
 Usage: ./install.sh [options]
 
 Options:
-  --skip-packages      Do not install missing system packages.
+  --skip-packages      Do not apply the package baseline.
   --skip-plugins       Do not install or update Vim plugins.
   --skip-shell-change  Do not change the login shell.
   -h, --help           Show this help.
@@ -33,20 +33,8 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-install_packages() {
-    local missing=()
-    local command_name
-
-    for command_name in git curl zsh vim node; do
-        command_exists "$command_name" || missing+=("$command_name")
-    done
-
-    (("${#missing[@]}" == 0)) && return
-
-    if "$SKIP_PACKAGES"; then
-        printf 'Missing commands (package installation skipped): %s\n' "${missing[*]}" >&2
-        return
-    fi
+install_chezmoi() {
+    command_exists chezmoi && return
 
     case "$(uname -s)" in
         Darwin)
@@ -58,16 +46,16 @@ install_packages() {
             elif [[ -x /usr/local/bin/brew ]]; then
                 eval "$(/usr/local/bin/brew shellenv)"
             fi
-            brew install git curl zsh vim node
+            brew install chezmoi
             ;;
         Linux)
-            if command_exists apt-get; then
+            if ! command_exists curl; then
                 sudo apt-get update
-                sudo apt-get install -y git curl zsh vim nodejs
-            else
-                echo "Only Ubuntu/Debian package installation is supported on Linux." >&2
-                exit 1
+                sudo apt-get install -y curl ca-certificates
             fi
+            mkdir -p "$HOME/.local/bin"
+            sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
+            export PATH="$HOME/.local/bin:$PATH"
             ;;
         *)
             echo "Unsupported operating system: $(uname -s)" >&2
@@ -76,43 +64,13 @@ install_packages() {
     esac
 }
 
-backup_and_link() {
-    local source_path="$1"
-    local target_path="$2"
-    local backup_path="${target_path}.pre-dotconfig"
+install_chezmoi
 
-    mkdir -p "$(dirname -- "$target_path")"
+if ! "$SKIP_PACKAGES"; then
+    "$REPO_ROOT/packages/install.sh"
+fi
 
-    if [[ -L "$target_path" && "$(readlink "$target_path")" == "$source_path" ]]; then
-        return
-    fi
-
-    if [[ -e "$target_path" || -L "$target_path" ]]; then
-        if [[ ! -e "$backup_path" && ! -L "$backup_path" ]]; then
-            mv -- "$target_path" "$backup_path"
-            echo "Backed up $target_path to $backup_path"
-        else
-            rm -- "$target_path"
-        fi
-    fi
-
-    ln -s -- "$source_path" "$target_path"
-}
-
-install_packages
-
-for required_command in git curl zsh vim node; do
-    if ! command_exists "$required_command"; then
-        echo "Required command is unavailable: $required_command" >&2
-        exit 1
-    fi
-done
-
-backup_and_link "$REPO_ROOT/vim/.vimrc" "$HOME/.vimrc"
-backup_and_link "$REPO_ROOT/vim/.vimrc.local" "$HOME/.vimrc.local"
-backup_and_link "$REPO_ROOT/vim/.vimrc.local.bundles" "$HOME/.vimrc.local.bundles"
-backup_and_link "$REPO_ROOT/vim/.vim/coc-settings.json" "$HOME/.vim/coc-settings.json"
-backup_and_link "$REPO_ROOT/shell/zshrc" "$HOME/.zshrc"
+chezmoi --source "$REPO_ROOT" apply --verbose
 
 OH_MY_ZSH_HOME="$HOME/.oh-my-zsh"
 if [[ ! -d "$OH_MY_ZSH_HOME/.git" ]]; then
@@ -134,3 +92,4 @@ if ! "$SKIP_SHELL_CHANGE"; then
 fi
 
 echo "dotconfig installation complete"
+echo "Review future changes with: chezmoi --source \"$REPO_ROOT\" diff"
