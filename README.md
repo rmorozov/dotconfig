@@ -42,8 +42,8 @@ The installer:
 
 1. installs chezmoi if necessary;
 2. applies `packages/Brewfile` on macOS or `packages/ubuntu.txt` on Ubuntu;
-3. installs the mise-managed Node.js, Go, and Python versions;
-4. asks for the machine profile on first use and deploys the home-directory files;
+3. asks for the machine profile on first use and deploys the home-directory files;
+4. installs the mise-managed Node.js, Go, and Python versions;
 5. installs Oh My Zsh and Vim plugins;
 6. optionally changes the login shell.
 
@@ -141,7 +141,7 @@ GitHub Actions runs:
 
 ## Repository maintenance automation
 
-The repository has three independent maintenance loops:
+The repository has independent maintenance loops for validation and controlled upgrades:
 
 - every pull request validates Ubuntu 26.04 and Apple Silicon macOS 26;
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
