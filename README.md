@@ -1,6 +1,6 @@
 # dotconfig
 
-Shared Vim, Zsh, and command-line configuration for current Apple Silicon macOS and Ubuntu machines.
+Shared Vim, Zsh, runtime, and command-line configuration for current Apple Silicon macOS and Ubuntu machines.
 
 ## Model
 
@@ -42,9 +42,10 @@ The installer:
 
 1. installs chezmoi if necessary;
 2. applies `packages/Brewfile` on macOS or `packages/ubuntu.txt` on Ubuntu;
-3. asks for the machine profile on first use and deploys the home-directory files;
-4. installs Oh My Zsh and Vim plugins;
-5. optionally changes the login shell.
+3. installs the mise-managed Node.js, Go, and Python versions;
+4. asks for the machine profile on first use and deploys the home-directory files;
+5. installs Oh My Zsh and Vim plugins;
+6. optionally changes the login shell.
 
 Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
 
@@ -70,6 +71,7 @@ The individual operations remain available:
 ```sh
 dotconfig apply
 dotconfig packages
+dotconfig runtimes
 dotconfig path
 ```
 
@@ -85,10 +87,12 @@ chezmoi --source "$(dotconfig path)" apply
 The manifests target equivalent capabilities rather than identical package versions:
 
 - Git, Curl and Zsh
-- Vim, Node.js and Go
+- Vim and mise
 - tmux, fzf, ripgrep and The Silver Searcher
 - Universal Ctags
 - chezmoi on macOS; Ubuntu bootstrap installs chezmoi directly when needed
+
+Node.js, Go, and Python are intentionally absent from the native manifests. Their exact shared versions live in `home/dot_config/mise/config.toml`, and `dotconfig runtimes` installs any missing pins.
 
 GUI applications, corporate tooling, Docker, and machine-role-specific packages are deliberately excluded for now.
 
@@ -107,6 +111,16 @@ On macOS this uses `brew bundle check`; on Ubuntu it queries the installed dpkg 
 - `home/dot_vimrc.local` and `home/dot_vimrc.local.bundles` contain personal Vim and CoC customization.
 - `home/dot_vim/coc-settings.json` becomes `~/.vim/coc-settings.json`.
 - `~/.zshrc.local` is loaded when present but is never committed.
+
+## Runtime versions
+
+mise supplies the same runtime versions on macOS and Ubuntu:
+
+- Node.js tracks the current LTS line;
+- Go tracks the latest stable release;
+- Python tracks the latest stable 3.14 patch release.
+
+The committed file contains exact versions, so machines do not resolve moving aliases independently. The **Refresh runtime versions** workflow runs monthly, rewrites those pins from the allowed channels, and opens a pull request for review. After merging one, run `dotconfig update` and then `dotconfig runtimes` on each machine.
 
 ## Updating Vim Bootstrap
 
@@ -131,6 +145,7 @@ The repository has three independent maintenance loops:
 
 - every pull request validates Ubuntu 26.04 and Apple Silicon macOS 26;
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
-- Dependabot groups GitHub Actions updates into a monthly reviewable pull request.
+- Dependabot groups GitHub Actions updates into a monthly reviewable pull request;
+- the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each month.
 
 Vim Bootstrap remains on its separate monthly refresh workflow. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
