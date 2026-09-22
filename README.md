@@ -80,6 +80,7 @@ The individual operations remain available:
 dotconfig apply
 dotconfig packages
 dotconfig runtimes
+dotconfig shell
 dotconfig private
 dotconfig path
 ```
@@ -133,6 +134,12 @@ mise supplies the same runtime versions on macOS and Ubuntu:
 
 The committed file contains exact versions, so machines do not resolve moving aliases independently. The **Refresh runtime versions** workflow runs monthly, rewrites those pins from the allowed channels, and opens a pull request for review. After merging one, run `dotconfig update` and then `dotconfig runtimes` on each machine.
 
+## Updating Oh My Zsh
+
+Oh My Zsh is installed at the exact commit recorded in `versions/oh-my-zsh`. This prevents newly bootstrapped machines from silently receiving different shell behavior. Run `dotconfig shell` to converge a machine on the committed revision.
+
+The **Refresh Oh My Zsh** workflow proposes a new upstream commit monthly. The change remains inert on machines until its pull request is reviewed, merged, and applied explicitly.
+
 ## Updating Vim Bootstrap
 
 The **Refresh Vim Bootstrap** GitHub Actions workflow runs monthly and can also be started manually. It regenerates `home/dot_vimrc`, normalizes the generated timestamp, validates the snapshot, and opens or updates a pull request only when substantive content changed.
@@ -157,6 +164,7 @@ The repository has independent maintenance loops for validation and controlled u
 - every pull request validates Ubuntu 26.04 and Apple Silicon macOS 26;
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
 - Dependabot groups GitHub Actions updates into a monthly reviewable pull request;
-- the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each month.
+- the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each month;
+- the Oh My Zsh refresh workflow proposes a new exact upstream revision each month.
 
 Vim Bootstrap remains on its separate monthly refresh workflow. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
