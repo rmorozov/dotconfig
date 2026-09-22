@@ -14,7 +14,7 @@ trap 'rm -f "$output"' EXIT
         [[ -n "${package_name:-}" && "$package_name" != "#" ]] || continue
         printf '%s\n' "            \\ '${package_name}@${version}',"
     done < "$MANIFEST"
-    echo '            \\ ]'
+    printf '%s\\n' '            \\ ]'
 } > "$output"
 
 mv "$output" "$GENERATED"
