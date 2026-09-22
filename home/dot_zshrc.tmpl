@@ -118,6 +118,11 @@ if [[ "$OSTYPE" == darwin* ]]; then
     fi
 fi
 
+# Activate repository-managed language runtimes.
+if command -v mise >/dev/null 2>&1; then
+    eval "$(mise activate zsh)"
+fi
+
 # iterm2 integration
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
 
