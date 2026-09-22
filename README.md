@@ -42,4 +42,4 @@ git pull --ff-only
 ./install.sh
 ```
 
-GitHub Actions checks shell syntax, ShellCheck findings, and whether the committed Vim configuration can be sourced.
+GitHub Actions checks shell syntax, ShellCheck findings, and the structural integrity of the generated Vim Bootstrap snapshot.
