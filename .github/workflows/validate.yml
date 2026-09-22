@@ -50,29 +50,8 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install chezmoi mise shellcheck
 
-      - name: Validate source scripts
-        run: |
-          shellcheck install.sh packages/install.sh scripts/add-coc-extension.sh scripts/add-vim-plugin.sh scripts/generate-coc-extensions.sh scripts/generate-vim-plugin-lock.sh scripts/install-oh-my-zsh.sh scripts/update-coc-extensions.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh scripts/update-vim-plugins.sh
-          bash -n install.sh
-          bash -n scripts/add-coc-extension.sh
-          bash -n scripts/add-vim-plugin.sh
-          bash -n scripts/generate-coc-extensions.sh
-          bash -n scripts/generate-vim-plugin-lock.sh
-          bash -n packages/install.sh
-          bash -n scripts/install-oh-my-zsh.sh
-          bash -n scripts/update-coc-extensions.sh
-          bash -n scripts/update-oh-my-zsh.sh
-          bash -n scripts/update-vim-plugins.sh
-          bash -n scripts/update-runtime-versions.sh
-          zsh -n home/dot_config/zsh/common.zsh
-          zsh -n home/dot_config/zsh/darwin.zsh
-          zsh -n home/dot_config/zsh/linux.zsh
-
-      - name: Validate generated dependency files
-        run: |
-          bash scripts/generate-coc-extensions.sh
-          bash scripts/generate-vim-plugin-lock.sh
-          git diff --exit-code -- home/dot_vim/coc-extensions.vim home/dot_vim/plugin-lock.vim
+      - name: Run repository validation
+        run: bash scripts/validate.sh
 
       - name: Validate package check
         shell: bash
@@ -123,9 +102,7 @@ jobs:
           test -f "$test_home/.config/zsh/common.zsh"
           test -f "$test_home/.config/zsh/darwin.zsh"
           test -f "$test_home/.config/zsh/linux.zsh"
-          grep -q 'node = "24.21.0"' "$test_home/.config/mise/config.toml"
-          grep -q 'go = "1.27.1"' "$test_home/.config/mise/config.toml"
-          grep -q 'python = "3.14.7"' "$test_home/.config/mise/config.toml"
+          cmp home/dot_config/mise/config.toml "$test_home/.config/mise/config.toml"
           grep -q 'DOTCONFIG_ROLE="${{ matrix.machine_role }}"' "$test_home/.zshrc"
           zsh -n "$test_home/.zshrc"
           shellcheck "$test_home/.local/bin/dotconfig"
