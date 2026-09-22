@@ -22,6 +22,7 @@ Commands:
   packages  Apply the native package baseline.
   runtimes  Install the pinned language runtimes.
   shell     Install the pinned Oh My Zsh revision.
+  vim        Install the pinned Vim plugins and CoC extensions.
   private   Create or edit the active role's private shell file.
   path      Print the source repository path.
 EOF
@@ -102,6 +103,13 @@ private_command() {
 
     chmod 600 "$private_file"
     "$editor" "$private_file"
+}
+
+vim_install() {
+    vim -Nu "$HOME/.vimrc" -n -es \
+        +'silent! PlugInstall --sync' \
+        +'silent! CocInstall -sync' \
+        +qall
 }
 
 runtime_install() {
@@ -240,6 +248,7 @@ case "${1:-}" in
     packages) bash "$PACKAGE_INSTALLER" ;;
     runtimes) runtime_install ;;
     shell) bash "$OH_MY_ZSH_INSTALLER" ;;
+    vim) vim_install ;;
     private) private_command ;;
     path) printf '%s\n' "$REPO_ROOT" ;;
     -h|--help|"") usage ;;
