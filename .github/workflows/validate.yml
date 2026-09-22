@@ -18,7 +18,7 @@ jobs:
 
       - name: Validate scripts
         run: |
-          shellcheck install.sh
+          shellcheck install.sh packages/install.sh
           bash -n install.sh
           zsh -n home/dot_zshrc
           bash -n packages/install.sh
