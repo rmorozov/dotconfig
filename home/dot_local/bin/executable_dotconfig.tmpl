@@ -19,6 +19,7 @@ Commands:
   update    Fast-forward the repository, show the diff, and apply after confirmation.
   packages  Apply the native package baseline.
   runtimes  Install the pinned language runtimes.
+  private   Create or edit the active role's private shell file.
   path      Print the source repository path.
 EOF
 }
@@ -37,6 +38,49 @@ runtime_status() {
         return 1
     fi
     mise current
+}
+
+private_files() {
+    printf '%s\n' \
+        "$HOME/.zshrc.local" \
+        "$HOME/.zshrc.$MACHINE_ROLE.local"
+}
+
+private_permissions_check() {
+    local failures=0
+    local private_file
+
+    while IFS= read -r private_file; do
+        [[ -e "$private_file" ]] || continue
+        if [[ ! -f "$private_file" ]]; then
+            echo "warning: private configuration is not a regular file: $private_file" >&2
+            failures=$((failures + 1))
+        elif [[ -n "$(find "$private_file" -perm -077 -print)" ]]; then
+            echo "warning: private configuration is readable or writable by other users: $private_file" >&2
+            failures=$((failures + 1))
+        else
+            echo "ok: private configuration permissions: $private_file"
+        fi
+    done < <(private_files)
+
+    return "$failures"
+}
+
+private_command() {
+    local private_file="$HOME/.zshrc.$MACHINE_ROLE.local"
+    local editor="${VISUAL:-${EDITOR:-vim}}"
+
+    if [[ ! -e "$private_file" ]]; then
+        umask 077
+        : > "$private_file"
+        echo "Created $private_file"
+    elif [[ ! -f "$private_file" ]]; then
+        echo "Refusing to replace non-regular path: $private_file" >&2
+        return 1
+    fi
+
+    chmod 600 "$private_file"
+    "$editor" "$private_file"
 }
 
 runtime_install() {
@@ -115,6 +159,10 @@ doctor_command() {
         failures=$((failures + 1))
     fi
 
+    if ! private_permissions_check; then
+        failures=$((failures + 1))
+    fi
+
     if ((failures > 0)); then
         echo "$failures check(s) need attention" >&2
         return 1
@@ -167,6 +215,7 @@ case "${1:-}" in
     update) update_command ;;
     packages) bash "$PACKAGE_INSTALLER" ;;
     runtimes) runtime_install ;;
+    private) private_command ;;
     path) printf '%s\n' "$REPO_ROOT" ;;
     -h|--help|"") usage ;;
     *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;
