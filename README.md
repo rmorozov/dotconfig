@@ -28,7 +28,15 @@ The rendered shell exports these as `DOTCONFIG_ROLE` and `DOTCONFIG_HOST_TYPE`. 
 
 These files are deliberately unmanaged. They are suitable for corporate paths, proxy configuration, internal certificate locations, and other settings that must not enter the public repository. The existing `~/.zshrc.local` remains the shared per-machine override.
 
+Use `dotconfig private` to create or edit the active role-specific file. New files are created with mode `0600`, and existing files are tightened to that mode before the editor opens. `dotconfig doctor` reports private override files that are accessible to group or other users.
+
 Run `dotconfig status` or `dotconfig doctor` to see the active profile. To change it later, edit the chezmoi configuration with `chezmoi edit-config`, then run `dotconfig apply`.
+
+## Private configuration
+
+The repository never reads private override contents into Git. Keep ordinary machine-specific values in `~/.zshrc.local` and role-specific or sensitive values in `~/.zshrc.personal.local` or `~/.zshrc.work.local`.
+
+This is local secret hygiene, not secret synchronization. Do not commit passwords, tokens, private keys, or corporate configuration. Cross-machine encrypted synchronization requires a separately backed-up encryption identity and is intentionally deferred until that key-storage policy is chosen.
 
 ## Bootstrap
 
@@ -72,6 +80,7 @@ The individual operations remain available:
 dotconfig apply
 dotconfig packages
 dotconfig runtimes
+dotconfig private
 dotconfig path
 ```
 
