@@ -3,8 +3,6 @@ ca-certificates
 curl
 fzf
 git
-golang-go
-nodejs
 ripgrep
 silversearcher-ag
 tmux
