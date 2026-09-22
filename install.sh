@@ -70,7 +70,7 @@ if ! "$SKIP_PACKAGES"; then
     bash "$REPO_ROOT/packages/install.sh"
 fi
 
-chezmoi --source "$REPO_ROOT" apply --verbose
+chezmoi --source "$REPO_ROOT" init --apply
 
 OH_MY_ZSH_HOME="$HOME/.oh-my-zsh"
 if [[ ! -d "$OH_MY_ZSH_HOME/.git" ]]; then
