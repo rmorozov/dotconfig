@@ -133,7 +133,7 @@ mise supplies the same runtime versions on macOS and Ubuntu:
 - Go tracks the latest stable release;
 - Python tracks the latest stable 3.14 patch release.
 
-The committed file contains exact versions, so machines do not resolve moving aliases independently. The **Refresh runtime versions** workflow runs monthly, rewrites those pins from the allowed channels, and opens a pull request for review. After merging one, run `dotconfig update` and then `dotconfig runtimes` on each machine.
+The committed file contains exact versions, so machines do not resolve moving aliases independently. The **Refresh runtime versions** workflow runs nightly, rewrites those pins from the allowed channels, and opens a pull request for review. After merging one, run `dotconfig update` and then `dotconfig runtimes` on each machine.
 
 ## Updating Oh My Zsh
 
@@ -161,7 +161,7 @@ scripts/add-vim-plugin.sh owner/repository
 scripts/add-vim-plugin.sh owner/repository release-branch
 ```
 
-Use `-` when a native package is intentionally absent on one platform. Each helper rejects duplicate capability or dependency names, updates its authoritative manifest, and regenerates deployed files. The Vim and CoC helpers also resolve an exact current revision or version. Existing pinned dependencies are refreshed by the monthly workflows. Runtimes remain simple keys in `home/dot_config/mise/config.toml`; Zsh plugins are grouped in the shared and platform-specific Zsh modules.
+Use `-` when a native package is intentionally absent on one platform. Each helper rejects duplicate capability or dependency names, updates its authoritative manifest, and regenerates deployed files. The Vim and CoC helpers also resolve an exact current revision or version. Existing pinned dependencies are refreshed by the nightly workflows. Runtimes remain simple keys in `home/dot_config/mise/config.toml`; Zsh plugins are grouped in the shared and platform-specific Zsh modules.
 
 ## CoC extension versions
 
@@ -169,7 +169,7 @@ The 23 CoC extensions are installed as exact npm versions generated from `versio
 
 ## Updating Vim Bootstrap
 
-The **Refresh Vim Bootstrap** GitHub Actions workflow runs monthly and can also be started manually. It regenerates `home/dot_vimrc`, normalizes the generated timestamp, validates the snapshot, and opens or updates a pull request only when substantive content changed.
+The **Refresh Vim Bootstrap** GitHub Actions workflow runs nightly and can also be started manually. It regenerates `home/dot_vimrc`, normalizes the generated timestamp, validates the snapshot, and opens or updates a pull request only when substantive content changed.
 
 The generated base is therefore reproducible on every machine while upstream improvements still arrive for review.
 
@@ -196,11 +196,15 @@ GitHub Actions additionally runs:
 
 The repository has independent maintenance loops for validation and controlled upgrades:
 
+Nightly discovery does not mean nightly installation. Each stream force-updates one stable automation branch and pull request, so a later run supersedes an unmerged proposal instead of creating a queue. Updates remain exact, reviewable pins and are never auto-merged or deployed to machines.
+
+The nightly advisory audit builds a temporary npm lock from the exact CoC extension versions with lifecycle scripts disabled, then runs `npm audit` at high severity. This detects published npm advisories, including affected transitive dependencies. It cannot prove that a new release is trustworthy, and it does not cover Vim Git commits or vulnerabilities managed by macOS/Ubuntu package repositories.
+
 - every pull request validates Ubuntu 26.04 and Apple Silicon macOS 26;
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
-- Dependabot groups GitHub Actions updates into a monthly reviewable pull request;
-- the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each month;
-- the Oh My Zsh refresh workflow proposes a new exact upstream revision each month;
+- Dependabot checks GitHub Actions daily and groups updates into a reviewable pull request;
+- the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each night;
+- the Oh My Zsh refresh workflow proposes a new exact upstream revision each night;
 - the Vim plugin and CoC extension workflows propose exact reviewed editor dependency updates.
 
-Vim Bootstrap and Vim plugin revisions remain on separate monthly refresh workflows: the first updates configuration, while the second updates executable plugin code. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
+Vim Bootstrap and Vim plugin revisions remain on separate nightly refresh workflows: the first updates configuration, while the second updates executable plugin code. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
