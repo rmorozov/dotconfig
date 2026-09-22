@@ -1,0 +1,14 @@
+# Shared command-line baseline for macOS.
+# GUI applications and machine-specific tools belong in separate manifests.
+brew "chezmoi"
+brew "curl"
+brew "fzf"
+brew "git"
+brew "go"
+brew "node"
+brew "ripgrep"
+brew "the_silver_searcher"
+brew "tmux"
+brew "universal-ctags"
+brew "vim"
+brew "zsh"
