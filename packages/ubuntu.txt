@@ -1,0 +1,13 @@
+# Shared command-line baseline for Ubuntu.
+ca-certificates
+curl
+fzf
+git
+golang-go
+nodejs
+ripgrep
+silversearcher-ag
+tmux
+universal-ctags
+vim
+zsh
