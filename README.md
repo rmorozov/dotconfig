@@ -200,6 +200,8 @@ The repository has independent maintenance loops for validation and controlled u
 
 Nightly discovery does not mean nightly installation. Each stream force-updates one stable automation branch and pull request, so a later run supersedes an unmerged proposal instead of creating a queue. Updates remain exact, reviewable pins and are never auto-merged or deployed to machines.
 
+All refresh workflows use `scripts/open-refresh-pr.sh` for the shared commit, force-push, and PR-upsert behavior. The local validator exercises that helper against an isolated bare Git repository and a fake `gh` client.
+
 The nightly advisory audit builds a temporary npm lock from the exact CoC extension versions with lifecycle scripts disabled, then runs `npm audit` at high severity. This detects published npm advisories, including affected transitive dependencies. It cannot prove that a new release is trustworthy, and it does not cover Vim Git commits or vulnerabilities managed by macOS/Ubuntu package repositories.
 
 - every pull request validates Ubuntu 26.04 and Apple Silicon macOS 26;
