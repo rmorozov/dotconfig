@@ -5,6 +5,8 @@ set -Eeuo pipefail
 SOURCE_DIR={{ .chezmoi.sourceDir | quote }}
 REPO_ROOT="$(git -C "$SOURCE_DIR" rev-parse --show-toplevel)"
 PACKAGE_INSTALLER="$REPO_ROOT/packages/install.sh"
+MACHINE_ROLE={{ .machineRole | quote }}
+HOST_TYPE={{ .hostType | quote }}
 
 usage() {
     cat <<'EOF'
@@ -30,6 +32,7 @@ package_check() {
 
 status_command() {
     echo "Platform: $(uname -s) $(uname -m)"
+    echo "Profile: $MACHINE_ROLE / $HOST_TYPE"
     echo "Repository: $REPO_ROOT"
     git -C "$REPO_ROOT" status --short --branch
 
@@ -53,6 +56,7 @@ doctor_command() {
     local command_name
 
     echo "Platform: $(uname -s) $(uname -m)"
+    echo "Profile: $MACHINE_ROLE / $HOST_TYPE"
     echo "Repository: $REPO_ROOT"
 
     for command_name in bash chezmoi git vim zsh; do
