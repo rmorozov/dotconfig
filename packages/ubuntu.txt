@@ -1,3 +1,4 @@
+# Generated from packages/packages.tsv; do not edit by hand.
 # Shared command-line baseline for Ubuntu.
 ca-certificates
 curl
