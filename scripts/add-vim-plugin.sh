@@ -22,7 +22,7 @@ name="${name%.git}"
 repository="https://github.com/$slug"
 [[ "$repository" == *.git ]] || repository="$repository.git"
 
-grep -Eq "^${name//./\.} " "$MANIFEST" && {
+awk -v name="$name" '$1 == name { found=1 } END { exit !found }' "$MANIFEST" && {
     echo "Plugin name already configured: $name" >&2
     exit 1
 }
