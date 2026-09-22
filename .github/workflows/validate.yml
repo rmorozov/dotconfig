@@ -27,6 +27,7 @@ jobs:
           bash -n install.sh
           zsh -n home/dot_zshrc
           bash -n packages/install.sh
+          bash packages/install.sh --dry-run
 
       - name: Validate Vim Bootstrap snapshot
         run: |
@@ -35,7 +36,10 @@ jobs:
           grep -q "call plug#begin" home/dot_vimrc
           grep -q "call plug#end" home/dot_vimrc
 
-      - name: Render chezmoi source state
+      - name: Render and apply chezmoi source state
         run: |
-          chezmoi --source "$GITHUB_WORKSPACE" cat ~/.zshrc >/dev/null
-          chezmoi --source "$GITHUB_WORKSPACE" cat ~/.vimrc >/dev/null
+          test_home="$(mktemp -d)"
+          HOME="$test_home" chezmoi --source "$GITHUB_WORKSPACE" apply
+          test -f "$test_home/.zshrc"
+          test -f "$test_home/.vimrc"
+          test -f "$test_home/.vim/coc-settings.json"
