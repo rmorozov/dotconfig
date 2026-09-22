@@ -33,31 +33,9 @@ jobs:
       - name: Open or update refresh pull request
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -Eeuo pipefail
-          config_file="home/dot_config/mise/config.toml"
-          if git diff --quiet -- "$config_file"; then
-            echo "Runtime versions are already current."
-            exit 0
-          fi
-
-          refresh_branch="automation/refresh-runtime-versions"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch --create "$refresh_branch"
-          git add "$config_file"
-          git commit -m "Refresh runtime versions"
-          git push --force-with-lease origin "HEAD:$refresh_branch"
-
-          if gh pr view "$refresh_branch" >/dev/null 2>&1; then
-            gh pr edit "$refresh_branch" \
-              --title "Refresh runtime versions" \
-              --body "Automated nightly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
-          else
-            gh pr create \
-              --base "${GITHUB_REF_NAME}" \
-              --head "$refresh_branch" \
-              --title "Refresh runtime versions" \
-              --body "Automated nightly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
-          fi
+          bash scripts/open-refresh-pr.sh \
+            "automation/refresh-runtime-versions" \
+            "Refresh runtime versions" \
+            "Automated nightly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases." \
+            "home/dot_config/mise/config.toml"
