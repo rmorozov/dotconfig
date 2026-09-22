@@ -3,22 +3,21 @@
 set -Eeuo pipefail
 
 PACKAGE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-DRY_RUN=false
+MODE=install
 
-if [[ "${1:-}" == "--dry-run" ]]; then
-    DRY_RUN=true
-elif [[ -n "${1:-}" ]]; then
-    echo "Usage: $0 [--dry-run]" >&2
-    exit 2
-fi
+case "${1:-}" in
+    "") ;;
+    --check|--dry-run) MODE=check ;;
+    *) echo "Usage: $0 [--check]" >&2; exit 2 ;;
+esac
 
 case "$(uname -s)" in
     Darwin)
         if ! command -v brew >/dev/null 2>&1; then
-            echo "Homebrew is required before applying the macOS package baseline." >&2
+            echo "missing: Homebrew" >&2
             exit 1
         fi
-        if "$DRY_RUN"; then
+        if [[ "$MODE" == check ]]; then
             brew bundle check --file "$PACKAGE_DIR/Brewfile"
         else
             brew bundle --file "$PACKAGE_DIR/Brewfile"
@@ -30,8 +29,17 @@ case "$(uname -s)" in
             exit 1
         fi
         mapfile -t packages < <(sed -E '/^[[:space:]]*(#|$)/d' "$PACKAGE_DIR/ubuntu.txt")
-        if "$DRY_RUN"; then
-            printf 'Ubuntu packages: %s\n' "${packages[*]}"
+        if [[ "$MODE" == check ]]; then
+            missing=()
+            for package_name in "${packages[@]}"; do
+                dpkg-query -W -f='${db:Status-Abbrev}' "$package_name" 2>/dev/null |
+                    grep -q '^ii ' || missing+=("$package_name")
+            done
+            if (("${#missing[@]}" > 0)); then
+                printf 'missing Ubuntu packages: %s\n' "${missing[*]}" >&2
+                exit 1
+            fi
+            echo "Ubuntu package baseline is satisfied."
         else
             sudo apt-get update
             sudo apt-get install -y "${packages[@]}"
