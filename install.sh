@@ -64,6 +64,20 @@ install_chezmoi() {
     esac
 }
 
+install_mise() {
+    command_exists mise && return
+
+    case "$(uname -s)" in
+        Darwin)
+            brew install mise
+            ;;
+        Linux)
+            curl --fail --silent --show-error --location https://mise.run | sh
+            export PATH="$HOME/.local/bin:$PATH"
+            ;;
+    esac
+}
+
 install_chezmoi
 
 if ! "$SKIP_PACKAGES"; then
@@ -71,6 +85,9 @@ if ! "$SKIP_PACKAGES"; then
 fi
 
 chezmoi --source "$REPO_ROOT" init --apply
+
+install_mise
+mise install
 
 OH_MY_ZSH_HOME="$HOME/.oh-my-zsh"
 if [[ ! -d "$OH_MY_ZSH_HOME/.git" ]]; then
