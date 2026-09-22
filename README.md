@@ -165,7 +165,9 @@ Use `-` when a native package is intentionally absent on one platform. Each help
 
 ## CoC extension versions
 
-Configured CoC extensions are installed as exact npm versions generated from `versions/coc-extensions`. They converge through the existing `dotconfig vim` command. The **Refresh CoC extensions** workflow proposes version bumps monthly without changing `coc.nvim` or the Vim Bootstrap snapshot.
+Configured CoC extensions are installed as exact npm versions generated from `versions/coc-extensions`. They converge through the existing `dotconfig vim` command. The **Refresh CoC extensions** workflow proposes version bumps nightly without changing `coc.nvim` or the Vim Bootstrap snapshot.
+
+Extensions removed because of unresolved advisories remain recorded in `versions/coc-extensions-disabled`, together with the advisory that caused quarantine. The **Reconsider quarantined CoC extensions** workflow audits each package's latest release nightly with lifecycle scripts disabled. Vulnerable packages remain quiet and disabled; when a package resolves without high-severity npm advisories, automation removes it from quarantine and opens a reviewable PR restoring its exact current version.
 
 ## Updating Vim Bootstrap
 
