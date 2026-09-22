@@ -52,11 +52,12 @@ jobs:
 
       - name: Validate source scripts
         run: |
-          shellcheck install.sh packages/install.sh scripts/install-oh-my-zsh.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh
+          shellcheck install.sh packages/install.sh scripts/install-oh-my-zsh.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh scripts/update-vim-plugins.sh
           bash -n install.sh
           bash -n packages/install.sh
           bash -n scripts/install-oh-my-zsh.sh
           bash -n scripts/update-oh-my-zsh.sh
+          bash -n scripts/update-vim-plugins.sh
           bash -n scripts/update-runtime-versions.sh
           zsh -n home/dot_config/zsh/common.zsh
           zsh -n home/dot_config/zsh/darwin.zsh
@@ -76,7 +77,13 @@ jobs:
           test -s home/dot_vimrc
           grep -q 'vim-bootstrap snapshot' home/dot_vimrc
           grep -q "call plug#begin" home/dot_vimrc
+          grep -q 'source ~/.vim/plugin-lock.vim' home/dot_vimrc
           grep -q "call plug#end" home/dot_vimrc
+          test -s home/dot_vim/plugin-lock.vim
+          manifest_count="$(grep -vc '^#' versions/vim-plugins)"
+          lock_count="$(grep -c '^call s:DotconfigPin' home/dot_vim/plugin-lock.vim)"
+          test "$manifest_count" = "$lock_count"
+          awk 'NR > 1 && $4 !~ /^[0-9a-f]{40}$/ { exit 1 }' versions/vim-plugins
 
       - name: Render profile and apply chezmoi source state
         shell: bash
