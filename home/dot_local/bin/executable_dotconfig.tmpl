@@ -18,6 +18,7 @@ Commands:
   apply     Apply the currently checked-out configuration.
   update    Fast-forward the repository, show the diff, and apply after confirmation.
   packages  Apply the native package baseline.
+  runtimes  Install the pinned language runtimes.
   path      Print the source repository path.
 EOF
 }
@@ -28,6 +29,22 @@ dotfile_drift() {
 
 package_check() {
     bash "$PACKAGE_INSTALLER" --check
+}
+
+runtime_status() {
+    if ! command -v mise >/dev/null 2>&1; then
+        echo "missing: mise" >&2
+        return 1
+    fi
+    mise current
+}
+
+runtime_install() {
+    command -v mise >/dev/null 2>&1 || {
+        echo "missing: mise; run dotconfig packages first" >&2
+        return 1
+    }
+    mise install
 }
 
 status_command() {
@@ -49,6 +66,10 @@ status_command() {
     echo
     echo "Package drift:"
     package_check
+
+    echo
+    echo "Runtime versions:"
+    runtime_status
 }
 
 doctor_command() {
@@ -59,7 +80,7 @@ doctor_command() {
     echo "Profile: $MACHINE_ROLE / $HOST_TYPE"
     echo "Repository: $REPO_ROOT"
 
-    for command_name in bash chezmoi git vim zsh; do
+    for command_name in bash chezmoi git mise vim zsh; do
         if command -v "$command_name" >/dev/null 2>&1; then
             printf 'ok: %s (%s)\n' "$command_name" "$(command -v "$command_name")"
         else
@@ -84,6 +105,12 @@ doctor_command() {
 
     if package_check; then
         echo "ok: package baseline is satisfied"
+    else
+        failures=$((failures + 1))
+    fi
+
+    if runtime_status; then
+        echo "ok: runtime configuration is available"
     else
         failures=$((failures + 1))
     fi
@@ -139,6 +166,7 @@ case "${1:-}" in
     apply) apply_command ;;
     update) update_command ;;
     packages) bash "$PACKAGE_INSTALLER" ;;
+    runtimes) runtime_install ;;
     path) printf '%s\n' "$REPO_ROOT" ;;
     -h|--help|"") usage ;;
     *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;
