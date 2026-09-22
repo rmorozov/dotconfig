@@ -26,11 +26,6 @@ grep -Eq "^${name//./\.} " "$MANIFEST" && {
     echo "Plugin name already configured: $name" >&2
     exit 1
 }
-grep -Fq "Plug '$slug'" "$REPO_ROOT/home/dot_vimrc" || \
-grep -Fq "Plug '$slug'" "$BUNDLES" || {
-    printf "\n\" added with scripts/add-vim-plugin.sh\nPlug '%s'\n" "$slug" >> "$BUNDLES"
-}
-
 revision="$(git ls-remote "$repository" "$ref" | awk 'NR == 1 { print $1 }')"
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
     echo "Could not resolve $slug ($ref)" >&2
@@ -44,4 +39,9 @@ revision="$(git ls-remote "$repository" "$ref" | awk 'NR == 1 { print $1 }')"
 } | { read -r header; printf '%s\n' "$header"; LC_ALL=C sort -u; } > "$MANIFEST.tmp"
 mv "$MANIFEST.tmp" "$MANIFEST"
 bash "$REPO_ROOT/scripts/generate-vim-plugin-lock.sh"
+grep -Fq "Plug '$slug'" "$REPO_ROOT/home/dot_vimrc" || \
+grep -Fq "Plug '$slug'" "$BUNDLES" || {
+    printf "\n\" added with scripts/add-vim-plugin.sh\nPlug '%s'\n" "$slug" >> "$BUNDLES"
+}
+
 echo "Added $slug at $revision"
