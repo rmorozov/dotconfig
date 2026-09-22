@@ -22,6 +22,8 @@ git -C "$work" push origin master >/dev/null
 printf '%s\n' changed > "$work/tracked"
 
 mkdir -p "$fake_bin"
+# These variables belong to the generated fake gh script, not this test process.
+# shellcheck disable=SC2016
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'if [[ "$1 $2" == "pr view" ]]; then exit 1; fi' \
