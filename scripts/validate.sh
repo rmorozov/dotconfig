@@ -12,6 +12,13 @@ for command_name in "${required_commands[@]}"; do
     }
 done
 
+while IFS= read -r action_line; do
+    [[ "$action_line" =~ uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$) ]] || {
+        echo "GitHub Action is not pinned to a full commit SHA: $action_line" >&2
+        exit 1
+    }
+done < <(grep -RhE 'uses:[[:space:]]+[^[:space:]]+@' .github/workflows)
+
 shell_scripts=(install.sh packages/install.sh scripts/*.sh)
 shellcheck "${shell_scripts[@]}"
 for script in "${shell_scripts[@]}"; do
