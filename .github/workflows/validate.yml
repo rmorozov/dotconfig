@@ -52,10 +52,11 @@ jobs:
 
       - name: Validate source scripts
         run: |
-          shellcheck install.sh packages/install.sh scripts/install-oh-my-zsh.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh scripts/update-vim-plugins.sh
+          shellcheck install.sh packages/install.sh scripts/install-oh-my-zsh.sh scripts/update-coc-extensions.sh scripts/update-oh-my-zsh.sh scripts/update-runtime-versions.sh scripts/update-vim-plugins.sh
           bash -n install.sh
           bash -n packages/install.sh
           bash -n scripts/install-oh-my-zsh.sh
+          bash -n scripts/update-coc-extensions.sh
           bash -n scripts/update-oh-my-zsh.sh
           bash -n scripts/update-vim-plugins.sh
           bash -n scripts/update-runtime-versions.sh
@@ -80,6 +81,11 @@ jobs:
           grep -q 'source ~/.vim/plugin-lock.vim' home/dot_vimrc
           grep -q "call plug#end" home/dot_vimrc
           test -s home/dot_vim/plugin-lock.vim
+          test -s home/dot_vim/coc-extensions.vim
+          extension_count="$(grep -vc '^#' versions/coc-extensions)"
+          generated_extension_count="$(grep -c "@[0-9]" home/dot_vim/coc-extensions.vim)"
+          test "$extension_count" = "$generated_extension_count"
+          awk 'NR > 1 && $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+/ { exit 1 }' versions/coc-extensions
           manifest_count="$(grep -vc '^#' versions/vim-plugins)"
           lock_count="$(grep -c '^call s:DotconfigPin' home/dot_vim/plugin-lock.vim)"
           test "$manifest_count" = "$lock_count"
