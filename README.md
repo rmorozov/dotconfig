@@ -95,7 +95,7 @@ chezmoi --source "$(dotconfig path)" apply
 
 ## Package baseline
 
-The manifests target equivalent capabilities rather than identical package versions:
+The authoritative `packages/packages.tsv` manifest maps equivalent capabilities to their Homebrew and Ubuntu package names. `packages/Brewfile` and `packages/ubuntu.txt` are generated from it.
 
 - Git, Curl and Zsh
 - Vim and mise
@@ -154,12 +154,14 @@ Files under `versions/` are authoritative; generated Vim files say so in their f
 Use the helpers for additions:
 
 ```sh
+scripts/add-native-package.sh jq jq jq
+scripts/add-native-package.sh capability homebrew-formula ubuntu-package
 scripts/add-coc-extension.sh coc-example
 scripts/add-vim-plugin.sh owner/repository
 scripts/add-vim-plugin.sh owner/repository release-branch
 ```
 
-Each helper resolves the current exact version or commit, rejects duplicate names, updates the authoritative manifest, and regenerates the deployed file. Existing entries are refreshed by the monthly workflows. Native packages remain simple one-entry-per-line edits in `packages/Brewfile` and `packages/ubuntu.txt`; runtimes remain simple keys in `home/dot_config/mise/config.toml`; Zsh plugins are grouped in the shared and platform-specific Zsh modules.
+Use `-` when a native package is intentionally absent on one platform. Each helper rejects duplicate capability or dependency names, updates its authoritative manifest, and regenerates deployed files. The Vim and CoC helpers also resolve an exact current revision or version. Existing pinned dependencies are refreshed by the monthly workflows. Runtimes remain simple keys in `home/dot_config/mise/config.toml`; Zsh plugins are grouped in the shared and platform-specific Zsh modules.
 
 ## CoC extension versions
 
