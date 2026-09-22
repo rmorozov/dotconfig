@@ -1,14 +1,14 @@
 name: Refresh CoC extensions
 on:
   schedule:
-    - cron: "7 7 1 * *"
+    - cron: "7 4 * * *"
   workflow_dispatch:
 permissions:
   contents: write
   pull-requests: write
 concurrency:
   group: refresh-coc-extensions
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -36,7 +36,7 @@ jobs:
           git commit -m "Refresh CoC extension versions"
           git push --force-with-lease origin "HEAD:$refresh_branch"
           if gh pr view "$refresh_branch" >/dev/null 2>&1; then
-            gh pr edit "$refresh_branch" --title "Refresh CoC extension versions" --body "Automated monthly refresh of exact CoC npm extension versions."
+            gh pr edit "$refresh_branch" --title "Refresh CoC extension versions" --body "Automated nightly refresh of exact CoC npm extension versions."
           else
-            gh pr create --base "${GITHUB_REF_NAME}" --head "$refresh_branch" --title "Refresh CoC extension versions" --body "Automated monthly refresh of exact CoC npm extension versions."
+            gh pr create --base "${GITHUB_REF_NAME}" --head "$refresh_branch" --title "Refresh CoC extension versions" --body "Automated nightly refresh of exact CoC npm extension versions."
           fi
