@@ -81,6 +81,7 @@ dotconfig apply
 dotconfig packages
 dotconfig runtimes
 dotconfig shell
+dotconfig vim
 dotconfig private
 dotconfig path
 ```
@@ -140,6 +141,12 @@ Oh My Zsh is installed at the exact commit recorded in `versions/oh-my-zsh`. Thi
 
 The **Refresh Oh My Zsh** workflow proposes a new upstream commit monthly. The change remains inert on machines until its pull request is reviewed, merged, and applied explicitly.
 
+## Vim plugin revisions
+
+Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Chezmoi deploys the generated `~/.vim/plugin-lock.vim`, which applies exact commit constraints before vim-plug finishes initialization. Existing `do` hooks therefore run against the pinned revision.
+
+Run `dotconfig vim` to converge a machine. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin monthly and opens a reviewable PR containing both the manifest and generated lock.
+
 ## Updating Vim Bootstrap
 
 The **Refresh Vim Bootstrap** GitHub Actions workflow runs monthly and can also be started manually. It regenerates `home/dot_vimrc`, normalizes the generated timestamp, validates the snapshot, and opens or updates a pull request only when substantive content changed.
@@ -167,4 +174,4 @@ The repository has independent maintenance loops for validation and controlled u
 - the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each month;
 - the Oh My Zsh refresh workflow proposes a new exact upstream revision each month.
 
-Vim Bootstrap remains on its separate monthly refresh workflow. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
+Vim Bootstrap and Vim plugin revisions remain on separate monthly refresh workflows: the first updates configuration, while the second updates executable plugin code. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
