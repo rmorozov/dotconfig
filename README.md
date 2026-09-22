@@ -147,6 +147,20 @@ Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Chezmoi deploys
 
 Run `dotconfig vim` to converge a machine. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin monthly and opens a reviewable PR containing both the manifest and generated lock.
 
+## Maintaining dependency lists
+
+Files under `versions/` are authoritative; generated Vim files say so in their first line and should not be edited directly. CI regenerates them and fails when a manifest change was not propagated.
+
+Use the helpers for additions:
+
+```sh
+scripts/add-coc-extension.sh coc-example
+scripts/add-vim-plugin.sh owner/repository
+scripts/add-vim-plugin.sh owner/repository release-branch
+```
+
+Each helper resolves the current exact version or commit, rejects duplicate names, updates the authoritative manifest, and regenerates the deployed file. Existing entries are refreshed by the monthly workflows. Native packages remain simple one-entry-per-line edits in `packages/Brewfile` and `packages/ubuntu.txt`; runtimes remain simple keys in `home/dot_config/mise/config.toml`; Zsh plugins are grouped in the shared and platform-specific Zsh modules.
+
 ## CoC extension versions
 
 The 23 CoC extensions are installed as exact npm versions generated from `versions/coc-extensions`. They converge through the existing `dotconfig vim` command. The **Refresh CoC extensions** workflow proposes version bumps monthly without changing `coc.nvim` or the Vim Bootstrap snapshot.
