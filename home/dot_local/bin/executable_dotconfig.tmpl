@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SOURCE_DIR={{ .chezmoi.sourceDir | quote }}
+REPO_ROOT="$(git -C "$SOURCE_DIR" rev-parse --show-toplevel)"
+PACKAGE_INSTALLER="$REPO_ROOT/packages/install.sh"
+
+usage() {
+    cat <<'EOF'
+Usage: dotconfig <command>
+
+Commands:
+  status    Show repository, dotfile, and package drift.
+  doctor    Check configuration prerequisites and report problems.
+  apply     Apply the currently checked-out configuration.
+  update    Fast-forward the repository, show the diff, and apply after confirmation.
+  packages  Apply the native package baseline.
+  path      Print the source repository path.
+EOF
+}
+
+dotfile_drift() {
+    chezmoi --source "$REPO_ROOT" diff
+}
+
+package_check() {
+    bash "$PACKAGE_INSTALLER" --check
+}
+
+status_command() {
+    echo "Platform: $(uname -s) $(uname -m)"
+    echo "Repository: $REPO_ROOT"
+    git -C "$REPO_ROOT" status --short --branch
+
+    echo
+    echo "Dotfile drift:"
+    local drift
+    drift="$(dotfile_drift)"
+    if [[ -n "$drift" ]]; then
+        printf '%s\n' "$drift"
+    else
+        echo "none"
+    fi
+
+    echo
+    echo "Package drift:"
+    package_check
+}
+
+doctor_command() {
+    local failures=0
+    local command_name
+
+    echo "Platform: $(uname -s) $(uname -m)"
+    echo "Repository: $REPO_ROOT"
+
+    for command_name in bash chezmoi git vim zsh; do
+        if command -v "$command_name" >/dev/null 2>&1; then
+            printf 'ok: %s (%s)\n' "$command_name" "$(command -v "$command_name")"
+        else
+            printf 'missing: %s\n' "$command_name" >&2
+            failures=$((failures + 1))
+        fi
+    done
+
+    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+        echo "warning: source repository has uncommitted changes" >&2
+        failures=$((failures + 1))
+    else
+        echo "ok: source repository is clean"
+    fi
+
+    if [[ -n "$(dotfile_drift)" ]]; then
+        echo "warning: managed dotfiles differ from source state" >&2
+        failures=$((failures + 1))
+    else
+        echo "ok: managed dotfiles match source state"
+    fi
+
+    if package_check; then
+        echo "ok: package baseline is satisfied"
+    else
+        failures=$((failures + 1))
+    fi
+
+    if ((failures > 0)); then
+        echo "$failures check(s) need attention" >&2
+        return 1
+    fi
+    echo "all checks passed"
+}
+
+apply_command() {
+    chezmoi --source "$REPO_ROOT" diff
+    chezmoi --source "$REPO_ROOT" apply --verbose
+}
+
+update_command() {
+    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+        echo "Refusing to update a repository with uncommitted changes: $REPO_ROOT" >&2
+        exit 1
+    fi
+
+    git -C "$REPO_ROOT" pull --ff-only
+
+    local drift
+    drift="$(dotfile_drift)"
+    if [[ -z "$drift" ]]; then
+        echo "Managed dotfiles are already current."
+        package_check || true
+        return
+    fi
+
+    printf '%s\n' "$drift"
+    if [[ -t 0 ]]; then
+        printf 'Apply these dotfile changes? [y/N] '
+        read -r answer
+        [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]] || {
+            echo "Not applied."
+            return
+        }
+    else
+        echo "Non-interactive session: refusing to apply without confirmation." >&2
+        exit 1
+    fi
+
+    chezmoi --source "$REPO_ROOT" apply --verbose
+    package_check || true
+}
+
+case "${1:-}" in
+    status) status_command ;;
+    doctor) doctor_command ;;
+    apply) apply_command ;;
+    update) update_command ;;
+    packages) bash "$PACKAGE_INSTALLER" ;;
+    path) printf '%s\n' "$REPO_ROOT" ;;
+    -h|--help|"") usage ;;
+    *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;
+esac
