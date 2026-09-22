@@ -3,9 +3,16 @@ name: Validate configuration
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   platform:
