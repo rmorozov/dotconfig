@@ -106,7 +106,9 @@ On macOS this uses `brew bundle check`; on Ubuntu it queries the installed dpkg 
 
 ## Configuration layers
 
-- `home/dot_zshrc` becomes `~/.zshrc`.
+- `home/dot_zshrc.tmpl` becomes the small `~/.zshrc` orchestrator.
+- `home/dot_config/zsh/common.zsh` contains shared shell behavior.
+- `home/dot_config/zsh/darwin.zsh` and `linux.zsh` isolate platform-specific paths, plugins, and aliases.
 - `home/dot_vimrc` becomes `~/.vimrc`.
 - `home/dot_vimrc.local` and `home/dot_vimrc.local.bundles` contain personal Vim and CoC customization.
 - `home/dot_vim/coc-settings.json` becomes `~/.vim/coc-settings.json`.
