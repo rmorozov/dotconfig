@@ -107,22 +107,7 @@ jobs:
           zsh -n "$test_home/.zshrc"
           shellcheck "$test_home/.local/bin/dotconfig"
           bash -n "$test_home/.local/bin/dotconfig"
-          grep -Eq '^[0-9a-f]{40}          HOME="$test_home" EDITOR=true "$test_home/.local/bin/dotconfig" private
-          private_file="$test_home/.zshrc.${{ matrix.machine_role }}.local"
-          test -f "$private_file"
-          test -z "$(find "$private_file" -perm -077 -print)"
-
-      - name: Validate first-run profile defaults
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          init_home="$(mktemp -d)"
-          HOME="$init_home" chezmoi \
-            --source "$GITHUB_WORKSPACE" \
-            init --apply --promptDefaults
-          grep -q 'DOTCONFIG_ROLE="personal"' "$init_home/.zshrc"
-          grep -q 'DOTCONFIG_HOST_TYPE="laptop"' "$init_home/.zshrc"
- versions/oh-my-zsh
+          grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 
           remote_repo="$(mktemp -d)"
           work_repo="$(mktemp -d)"
