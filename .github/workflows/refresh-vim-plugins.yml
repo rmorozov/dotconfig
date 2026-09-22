@@ -1,0 +1,46 @@
+name: Refresh Vim plugins
+
+on:
+  schedule:
+    - cron: "53 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-vim-plugins
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: bash scripts/update-vim-plugins.sh
+      - name: Open or update refresh pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          paths=(versions/vim-plugins home/dot_vim/plugin-lock.vim)
+          if git diff --quiet -- "${paths[@]}"; then
+            echo "Vim plugins are already current."
+            exit 0
+          fi
+          refresh_branch="automation/refresh-vim-plugins"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$refresh_branch"
+          git add "${paths[@]}"
+          git commit -m "Refresh Vim plugin revisions"
+          git push --force-with-lease origin "HEAD:$refresh_branch"
+          if gh pr view "$refresh_branch" >/dev/null 2>&1; then
+            gh pr edit "$refresh_branch" --title "Refresh Vim plugin revisions" --body "Automated monthly refresh of exact Vim plugin commits."
+          else
+            gh pr create --base "${GITHUB_REF_NAME}" --head "$refresh_branch" --title "Refresh Vim plugin revisions" --body "Automated monthly refresh of exact Vim plugin commits."
+          fi
