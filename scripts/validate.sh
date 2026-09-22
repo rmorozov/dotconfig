@@ -23,8 +23,13 @@ for script in home/dot_config/zsh/*.zsh; do
 done
 
 bash scripts/generate-coc-extensions.sh
+bash scripts/generate-native-packages.sh
 bash scripts/generate-vim-plugin-lock.sh
-git diff --exit-code --     home/dot_vim/coc-extensions.vim     home/dot_vim/plugin-lock.vim
+git diff --exit-code -- \
+    home/dot_vim/coc-extensions.vim \
+    home/dot_vim/plugin-lock.vim \
+    packages/Brewfile \
+    packages/ubuntu.txt
 
 test -s home/dot_vimrc
 grep -q 'vim-bootstrap snapshot' home/dot_vimrc
@@ -44,6 +49,14 @@ lock_count="$(grep -c '^call s:DotconfigPin' home/dot_vim/plugin-lock.vim)"
 test "$plugin_count" = "$lock_count"
 awk 'NR > 1 && $4 !~ /^[0-9a-f]{40}$/ { exit 1 }' versions/vim-plugins
 
-grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
+awk '
+    NR == 1 { next }
+    NF != 3 { exit 1 }
+    $2 == "-" && $3 == "-" { exit 1 }
+' packages/packages.tsv
+
+grep -Eq '^[0-9a-f]{40}
+echo "Static validation passed"
+ versions/oh-my-zsh
 
 echo "Static validation passed"
