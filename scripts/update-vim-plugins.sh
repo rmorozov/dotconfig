@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$REPO_ROOT/versions/vim-plugins"
-LOCK_FILE="$REPO_ROOT/home/dot_vim/plugin-lock.vim"
 updated="$(mktemp)"
-lock="$(mktemp)"
-trap 'rm -f "$updated" "$lock"' EXIT
+trap 'rm -f "$updated"' EXIT
 
 printf '%s\n' '# name repository ref commit' > "$updated"
 while read -r name repository ref _commit; do
@@ -20,22 +17,6 @@ while read -r name repository ref _commit; do
     printf '%s %s %s %s\n' "$name" "$repository" "$ref" "$revision" >> "$updated"
 done < "$MANIFEST"
 
-{
-    echo '" Generated from versions/vim-plugins; do not edit by hand.'
-    echo 'function! s:DotconfigPin(name, commit) abort'
-    echo '  if has_key(g:plugs, a:name)'
-    echo '    let g:plugs[a:name].commit = a:commit'
-    echo '  endif'
-    echo 'endfunction'
-    echo
-    while read -r name _repository _ref commit; do
-        [[ -n "${name:-}" && "$name" != "#" ]] || continue
-        printf "call s:DotconfigPin('%s', '%s')\n" "$name" "$commit"
-    done < "$updated"
-    echo
-    echo 'delfunction s:DotconfigPin'
-} > "$lock"
-
 mv "$updated" "$MANIFEST"
-mv "$lock" "$LOCK_FILE"
 trap - EXIT
+bash "$REPO_ROOT/scripts/generate-vim-plugin-lock.sh"
