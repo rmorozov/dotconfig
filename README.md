@@ -12,6 +12,24 @@ The repository separates three kinds of state:
 
 macOS and Ubuntu are kept behaviorally close, but package names and system integration remain native to each platform.
 
+## Machine profiles
+
+On first bootstrap, chezmoi asks for two stable attributes:
+
+- role: `personal` or `work`;
+- host type: `laptop`, `desktop`, or `server`.
+
+The rendered shell exports these as `DOTCONFIG_ROLE` and `DOTCONFIG_HOST_TYPE`. The selected role also enables an optional private file:
+
+```text
+~/.zshrc.personal.local
+~/.zshrc.work.local
+```
+
+These files are deliberately unmanaged. They are suitable for corporate paths, proxy configuration, internal certificate locations, and other settings that must not enter the public repository. The existing `~/.zshrc.local` remains the shared per-machine override.
+
+Run `dotconfig status` or `dotconfig doctor` to see the active profile. To change it later, edit the chezmoi configuration with `chezmoi edit-config`, then run `dotconfig apply`.
+
 ## Bootstrap
 
 Clone the repository, then run:
@@ -24,7 +42,7 @@ The installer:
 
 1. installs chezmoi if necessary;
 2. applies `packages/Brewfile` on macOS or `packages/ubuntu.txt` on Ubuntu;
-3. uses chezmoi to deploy the home-directory files;
+3. asks for the machine profile on first use and deploys the home-directory files;
 4. installs Oh My Zsh and Vim plugins;
 5. optionally changes the login shell.
 
