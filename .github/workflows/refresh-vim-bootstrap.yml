@@ -1,0 +1,77 @@
+name: Refresh Vim Bootstrap
+
+on:
+  schedule:
+    - cron: "17 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-vim-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          output="$(mktemp)"
+          curl --fail --silent --show-error --location \
+            --retry 3 \
+            'https://vim-bootstrap.com/generate.vim' \
+            --data 'langs=c&langs=python&langs=go&editor=vim&additional-plugins=fzf,vim-easymotion' \
+            > "$output"
+          test -s "$output"
+          grep -q 'vim-bootstrap' "$output"
+          sed -i '1c\" vim-bootstrap snapshot; refreshed by .github/workflows/refresh-vim-bootstrap.yml' "$output"
+          mv "$output" vim/.vimrc
+
+      - name: Validate generated Vim configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          vim -Nu NONE -n -es \
+            +"source vim/.vimrc" \
+            +qall
+
+      - name: Open or update refresh pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet -- vim/.vimrc; then
+            echo "Vim Bootstrap snapshot is already current."
+            exit 0
+          fi
+
+          refresh_branch="automation/refresh-vim-bootstrap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$refresh_branch"
+          git add vim/.vimrc
+          git commit -m "Refresh Vim Bootstrap snapshot"
+          git push --force-with-lease origin "HEAD:$refresh_branch"
+
+          if gh pr view "$refresh_branch" >/dev/null 2>&1; then
+            gh pr edit "$refresh_branch" \
+              --title "Refresh Vim Bootstrap snapshot" \
+              --body "Automated monthly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
+          else
+            gh pr create \
+              --base "${GITHUB_REF_NAME}" \
+              --head "$refresh_branch" \
+              --title "Refresh Vim Bootstrap snapshot" \
+              --body "Automated monthly refresh of the committed Vim Bootstrap base. Local Vim and CoC configuration remains unchanged."
+          fi
