@@ -14,32 +14,8 @@ set updatetime=300
 " diagnostics appear/become resolved
 set signcolumn=yes
 
-" install coc plugins
-let g:coc_global_extensions = [
-            \'coc-clang-format-style-options',
-            \'coc-clangd',
-            \'coc-cmake',
-            \'coc-css',
-            \'coc-docker',
-            \'coc-flutter',
-            \'coc-go',
-            \'coc-graphql',
-            \'coc-highlight',
-            \'coc-html',
-            \'coc-json',
-            \'coc-markdownlint',
-            \'coc-python',
-            \'coc-rust-analyzer',
-            \'coc-sh',
-            \'coc-snippets',
-            \'coc-sql',
-            \'coc-svg',
-            \'coc-swagger',
-            \'coc-toml',
-            \'coc-vimlsp',
-            \'coc-yaml',
-            \'coc-yank',
-            \]
+" Install exact CoC extension versions managed by this repository.
+source ~/.vim/coc-extensions.vim
 
 " Use tab for trigger completion with characters ahead and navigate
 " NOTE: There's always complete item selected by default, you may want to enable
