@@ -14,7 +14,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install validators
-        run: sudo apt-get update && sudo apt-get install -y chezmoi shellcheck zsh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl shellcheck zsh
+          mkdir -p "$HOME/.local/bin"
+          sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Validate scripts
         run: |
