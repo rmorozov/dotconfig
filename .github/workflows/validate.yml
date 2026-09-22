@@ -25,5 +25,5 @@ jobs:
       - name: Validate Vim configuration
         run: |
           vim -Nu NONE -n -es \
-            +"source vim/.vimrc" \
+            +"silent! source vim/.vimrc" \
             +qall
