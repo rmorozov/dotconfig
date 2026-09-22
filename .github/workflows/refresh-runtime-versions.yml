@@ -2,7 +2,7 @@ name: Refresh runtime versions
 
 on:
   schedule:
-    - cron: "29 6 1 * *"
+    - cron: "29 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: refresh-runtime-versions
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
@@ -53,11 +53,11 @@ jobs:
           if gh pr view "$refresh_branch" >/dev/null 2>&1; then
             gh pr edit "$refresh_branch" \
               --title "Refresh runtime versions" \
-              --body "Automated monthly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
+              --body "Automated nightly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
           else
             gh pr create \
               --base "${GITHUB_REF_NAME}" \
               --head "$refresh_branch" \
               --title "Refresh runtime versions" \
-              --body "Automated monthly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
+              --body "Automated nightly refresh of the pinned Node.js LTS, Go, and Python 3.14 patch releases."
           fi
