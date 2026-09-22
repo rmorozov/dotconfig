@@ -9,17 +9,21 @@ permissions:
 
 jobs:
   platform:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} / ${{ matrix.machine_role }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-26.04
-          - macos-26
+        include:
+          - os: ubuntu-26.04
+            machine_role: work
+            host_type: laptop
+          - os: macos-26
+            machine_role: personal
+            host_type: laptop
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify Apple Silicon runner
         if: runner.os == 'macOS'
@@ -43,7 +47,6 @@ jobs:
           shellcheck install.sh packages/install.sh
           bash -n install.sh
           bash -n packages/install.sh
-          zsh -n home/dot_zshrc
 
       - name: Validate package check
         shell: bash
@@ -61,14 +64,36 @@ jobs:
           grep -q "call plug#begin" home/dot_vimrc
           grep -q "call plug#end" home/dot_vimrc
 
-      - name: Render and apply chezmoi source state
+      - name: Render profile and apply chezmoi source state
         shell: bash
         run: |
           test_home="$(mktemp -d)"
-          HOME="$test_home" chezmoi --source "$GITHUB_WORKSPACE" apply
+          config_file="$test_home/chezmoi.toml"
+          cat > "$config_file" <<EOF
+          [data]
+              machineRole = "${{ matrix.machine_role }}"
+              hostType = "${{ matrix.host_type }}"
+          EOF
+          HOME="$test_home" chezmoi \
+            --config "$config_file" \
+            --source "$GITHUB_WORKSPACE" \
+            apply
           test -f "$test_home/.zshrc"
           test -f "$test_home/.vimrc"
           test -f "$test_home/.vim/coc-settings.json"
           test -x "$test_home/.local/bin/dotconfig"
+          grep -q 'DOTCONFIG_ROLE="${{ matrix.machine_role }}"' "$test_home/.zshrc"
+          zsh -n "$test_home/.zshrc"
           shellcheck "$test_home/.local/bin/dotconfig"
           bash -n "$test_home/.local/bin/dotconfig"
+
+      - name: Validate first-run profile defaults
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          init_home="$(mktemp -d)"
+          HOME="$init_home" chezmoi \
+            --source "$GITHUB_WORKSPACE" \
+            init --apply --promptDefaults
+          grep -q 'DOTCONFIG_ROLE="personal"' "$init_home/.zshrc"
+          grep -q 'DOTCONFIG_HOST_TYPE="laptop"' "$init_home/.zshrc"
