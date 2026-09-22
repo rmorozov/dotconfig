@@ -42,7 +42,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           vim -Nu NONE -n -es \
-            +"source vim/.vimrc" \
+            +"silent! source vim/.vimrc" \
             +qall
 
       - name: Open or update refresh pull request
