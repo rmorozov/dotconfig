@@ -147,6 +147,10 @@ Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Chezmoi deploys
 
 Run `dotconfig vim` to converge a machine. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin monthly and opens a reviewable PR containing both the manifest and generated lock.
 
+## CoC extension versions
+
+The 23 CoC extensions are installed as exact npm versions generated from `versions/coc-extensions`. They converge through the existing `dotconfig vim` command. The **Refresh CoC extensions** workflow proposes version bumps monthly without changing `coc.nvim` or the Vim Bootstrap snapshot.
+
 ## Updating Vim Bootstrap
 
 The **Refresh Vim Bootstrap** GitHub Actions workflow runs monthly and can also be started manually. It regenerates `home/dot_vimrc`, normalizes the generated timestamp, validates the snapshot, and opens or updates a pull request only when substantive content changed.
@@ -172,6 +176,7 @@ The repository has independent maintenance loops for validation and controlled u
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
 - Dependabot groups GitHub Actions updates into a monthly reviewable pull request;
 - the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each month;
-- the Oh My Zsh refresh workflow proposes a new exact upstream revision each month.
+- the Oh My Zsh refresh workflow proposes a new exact upstream revision each month;
+- the Vim plugin and CoC extension workflows propose exact reviewed editor dependency updates.
 
 Vim Bootstrap and Vim plugin revisions remain on separate monthly refresh workflows: the first updates configuration, while the second updates executable plugin code. None of these workflows upgrade packages or plugins on personal machines; those changes remain explicit through `dotconfig packages` and normal configuration review.
