@@ -12,9 +12,9 @@ trap 'rm -f "$output"' EXIT
     echo 'let g:coc_global_extensions = ['
     while read -r package_name version; do
         [[ -n "${package_name:-}" && "$package_name" != "#" ]] || continue
-        printf "            \\'%s@%s',\n" "$package_name" "$version"
+        printf '%s\n' "            \\ '${package_name}@${version}',"
     done < "$MANIFEST"
-    echo '            \]'
+    echo '            \\ ]'
 } > "$output"
 
 mv "$output" "$GENERATED"
