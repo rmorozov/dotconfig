@@ -89,10 +89,7 @@ chezmoi --source "$REPO_ROOT" init --apply
 install_mise
 mise install
 
-OH_MY_ZSH_HOME="$HOME/.oh-my-zsh"
-if [[ ! -d "$OH_MY_ZSH_HOME/.git" ]]; then
-    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$OH_MY_ZSH_HOME"
-fi
+bash "$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 
 if ! "$SKIP_PLUGINS"; then
     vim -Nu "$HOME/.vimrc" -n -es \
