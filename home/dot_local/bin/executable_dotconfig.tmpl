@@ -5,6 +5,8 @@ set -Eeuo pipefail
 SOURCE_DIR={{ .chezmoi.sourceDir | quote }}
 REPO_ROOT="$(git -C "$SOURCE_DIR" rev-parse --show-toplevel)"
 PACKAGE_INSTALLER="$REPO_ROOT/packages/install.sh"
+OH_MY_ZSH_INSTALLER="$REPO_ROOT/scripts/install-oh-my-zsh.sh"
+OH_MY_ZSH_REVISION_FILE="$REPO_ROOT/versions/oh-my-zsh"
 MACHINE_ROLE={{ .machineRole | quote }}
 HOST_TYPE={{ .hostType | quote }}
 
@@ -19,6 +21,7 @@ Commands:
   update    Fast-forward the repository, show the diff, and apply after confirmation.
   packages  Apply the native package baseline.
   runtimes  Install the pinned language runtimes.
+  shell     Install the pinned Oh My Zsh revision.
   private   Create or edit the active role's private shell file.
   path      Print the source repository path.
 EOF
@@ -30,6 +33,24 @@ dotfile_drift() {
 
 package_check() {
     bash "$PACKAGE_INSTALLER" --check
+}
+
+shell_status() {
+    local expected
+    local actual
+    expected="$(tr -d '[:space:]' < "$OH_MY_ZSH_REVISION_FILE")"
+
+    if [[ ! -d "$HOME/.oh-my-zsh/.git" ]]; then
+        echo "missing: Oh My Zsh" >&2
+        return 1
+    fi
+
+    actual="$(git -C "$HOME/.oh-my-zsh" rev-parse HEAD)"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "Oh My Zsh drift: expected $expected, found $actual" >&2
+        return 1
+    fi
+    echo "Oh My Zsh: $actual"
 }
 
 runtime_status() {
@@ -159,8 +180,11 @@ doctor_command() {
         failures=$((failures + 1))
     fi
 
-    if ! private_permissions_check; then
+    if ! shell_status; then
         failures=$((failures + 1))
+    fi
+
+    if ! private_permissions_check; then        failures=$((failures + 1))
     fi
 
     if ((failures > 0)); then
@@ -215,6 +239,7 @@ case "${1:-}" in
     update) update_command ;;
     packages) bash "$PACKAGE_INSTALLER" ;;
     runtimes) runtime_install ;;
+    shell) bash "$OH_MY_ZSH_INSTALLER" ;;
     private) private_command ;;
     path) printf '%s\n' "$REPO_ROOT" ;;
     -h|--help|"") usage ;;
