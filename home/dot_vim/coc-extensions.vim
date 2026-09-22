@@ -17,7 +17,6 @@ let g:coc_global_extensions = [
             \ 'coc-sh@1.2.4',
             \ 'coc-snippets@3.4.10',
             \ 'coc-sql@0.15.0',
-            \ 'coc-svg@0.0.13',
             \ 'coc-swagger@0.0.4',
             \ 'coc-toml@2.1.0',
             \ 'coc-vimlsp@0.13.1',
