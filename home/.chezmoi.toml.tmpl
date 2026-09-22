@@ -1,0 +1,7 @@
+{{- $roles := list "personal" "work" -}}
+{{- $machineRole := promptChoiceOnce . "machineRole" "Machine role" $roles "personal" -}}
+{{- $hostTypes := list "laptop" "desktop" "server" -}}
+{{- $hostType := promptChoiceOnce . "hostType" "Host type" $hostTypes "laptop" -}}
+[data]
+    machineRole = {{ $machineRole | quote }}
+    hostType = {{ $hostType | quote }}
