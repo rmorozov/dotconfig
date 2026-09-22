@@ -22,8 +22,9 @@ jobs:
           bash -n install.sh
           zsh -n shell/zshrc
 
-      - name: Validate Vim configuration
+      - name: Validate Vim Bootstrap snapshot
         run: |
-          vim -Nu NONE -n -es \
-            +"silent! source vim/.vimrc" \
-            +qall
+          test -s vim/.vimrc
+          grep -q 'vim-bootstrap snapshot' vim/.vimrc
+          grep -q "call plug#begin" vim/.vimrc
+          grep -q "call plug#end" vim/.vimrc
