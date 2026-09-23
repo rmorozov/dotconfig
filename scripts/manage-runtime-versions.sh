@@ -11,7 +11,7 @@ command -v mise >/dev/null 2>&1 || {
 
 pins=()
 in_tools=false
-declare -A seen=()
+seen=()
 while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*\[tools\][[:space:]]*$ ]]; then
         in_tools=true
@@ -25,11 +25,13 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*([a-z][a-z0-9_-]*)[[:space:]]*=[[:space:]]*\"([0-9]+\.[0-9]+\.[0-9]+)\"[[:space:]]*(#.*)?$ ]]; then
         tool="${BASH_REMATCH[1]}"
         version="${BASH_REMATCH[2]}"
-        [[ ! -v seen[$tool] ]] || {
-            echo "duplicate runtime pin: $tool" >&2
-            exit 1
-        }
-        seen[$tool]=1
+        for existing in "${seen[@]}"; do
+            if [[ "$existing" == "$tool" ]]; then
+                echo "duplicate runtime pin: $tool" >&2
+                exit 1
+            fi
+        done
+        seen+=("$tool")
         pins+=("$tool@$version")
     else
         echo "invalid runtime pin in $CONFIG_FILE: $line" >&2
