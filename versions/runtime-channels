@@ -1,4 +1,4 @@
-# tool mise-selector
-node node@lts
-go go@latest
-python python@3.14
+# tool mise-selector executable version-argument
+node node@lts node --version
+go go@latest go version
+python python@3.14 python --version
