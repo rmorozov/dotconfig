@@ -9,6 +9,7 @@ OH_MY_ZSH_INSTALLER="$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 OH_MY_ZSH_REVISION_FILE="$REPO_ROOT/versions/oh-my-zsh"
 EDITOR_STATE_CHECKER="$REPO_ROOT/scripts/check-editor-state.sh"
 BOOTSTRAP_STATE_CHECKER="$REPO_ROOT/scripts/check-bootstrap-tools.sh"
+BOOTSTRAP_INSTALLER="$REPO_ROOT/scripts/install-bootstrap-tool.sh"
 MACHINE_ROLE={{ .machineRole | quote }}
 HOST_TYPE={{ .hostType | quote }}
 UPDATE_CAN_CONVERGE=false
@@ -24,6 +25,7 @@ Commands:
   update    Fast-forward the repository, show the diff, and apply after confirmation.
   sync      Update, then converge runtimes, Oh My Zsh, Vim plugins, and CoC.
   packages  Apply the native package baseline.
+  bootstrap Install the reviewed chezmoi and mise versions.
   runtimes  Install the pinned language runtimes.
   shell     Install the pinned Oh My Zsh revision.
   vim        Install the pinned Vim plugins and CoC extensions.
@@ -114,6 +116,13 @@ vim_install() {
         +'silent! PlugInstall --sync' \
         +'silent! CocInstall -sync' \
         +qall
+}
+
+bootstrap_install() {
+    bash "$BOOTSTRAP_INSTALLER" mise
+    bash "$BOOTSTRAP_INSTALLER" chezmoi
+    export PATH="$HOME/.local/bin:$PATH"
+    bash "$BOOTSTRAP_STATE_CHECKER"
 }
 
 runtime_install() {
@@ -317,6 +326,7 @@ case "${1:-}" in
     update) update_command ;;
     sync) sync_command ;;
     packages) bash "$PACKAGE_INSTALLER" ;;
+    bootstrap) bootstrap_install ;;
     runtimes) runtime_install ;;
     shell) bash "$OH_MY_ZSH_INSTALLER" ;;
     vim) vim_install ;;
