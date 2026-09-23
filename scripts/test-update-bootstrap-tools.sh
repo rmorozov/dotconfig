@@ -12,8 +12,8 @@ printf 'previous manifest\n' > "$test_root/repo/versions/bootstrap-tools"
 
 printf '%s\n' '#!/usr/bin/env bash' \
     'case "$2" in' \
-    '  repos/twpayne/chezmoi/releases/latest) printf "v2.73.0\n" ;;' \
-    '  repos/jdx/mise/releases/latest) printf "v2026.9.13\n" ;;' \
+    '  repos/twpayne/chezmoi/releases/latest) printf "2.73.0\n" ;;' \
+    '  repos/jdx/mise/releases/latest) printf "2026.9.13\n" ;;' \
     '  *) exit 1 ;;' \
     'esac' > "$test_root/bin/gh"
 printf '%s\n' '#!/usr/bin/env bash' \
