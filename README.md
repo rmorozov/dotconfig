@@ -165,6 +165,8 @@ The **Refresh Oh My Zsh** workflow proposes a new upstream commit nightly. Befor
 
 ## Vim plugin revisions
 
+The vim-plug manager itself is vendored at `home/dot_vim/autoload/plug.vim`, with its upstream commit and file hash recorded in `versions/vim-plug`. Its first-run fallback URL in the generated vimrc points to that exact commit. The **Refresh vim-plug** workflow proposes changes to both files nightly when upstream code changes; the static validator checks that the vendored file and fallback URL match the pin.
+
 Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Chezmoi deploys the generated `~/.vim/plugin-lock.vim`, which applies exact commit constraints before vim-plug finishes initialization. Existing `do` hooks therefore run against the pinned revision.
 
 Run `dotconfig vim` to converge a machine. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin nightly and opens a reviewable PR containing both the manifest and generated lock.
