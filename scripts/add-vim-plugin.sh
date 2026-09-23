@@ -24,12 +24,12 @@ home_dir="${3:-}"
     exit 2
 }
 if [[ -n "$home_dir" ]]; then
-    [[ "$home_dir" =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]] &&
-        [[ "$home_dir" != .. && "$home_dir" != ../* &&
-           "$home_dir" != */../* && "$home_dir" != */.. ]] || {
+    if ! [[ "$home_dir" =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]] ||
+        [[ "$home_dir" == .. || "$home_dir" == ../* ||
+           "$home_dir" == */../* || "$home_dir" == */.. ]]; then
         echo "Expected a safe home-relative directory: $home_dir" >&2
         exit 2
-    }
+    fi
 fi
 
 name="${slug##*/}"
