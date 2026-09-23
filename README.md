@@ -173,7 +173,7 @@ Run `dotconfig vim` to converge a machine. The installer, `dotconfig vim`, and `
 
 ## Maintaining dependency lists
 
-Files under `versions/` are authoritative; generated Vim files say so in their first line and should not be edited directly. CI regenerates them and fails when a manifest change was not propagated.
+Files under `versions/` are authoritative; generated Vim files say so in their first line and should not be edited directly. CI regenerates them and fails when a manifest change was not propagated. It also compares every Git-backed `Plug` declaration in the snapshot and local bundles with `versions/vim-plugins`; a Vim Bootstrap refresh that adds or removes a plugin needs a matching manifest update before merge.
 
 Use the helpers for additions:
 
