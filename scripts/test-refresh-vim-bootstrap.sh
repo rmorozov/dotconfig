@@ -8,7 +8,7 @@ mkdir "$temp/bin"
 cat > "$temp/bin/curl" <<'CURL'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$TEST_CURL_ARGS"
-printf '%s\n' '" vim-bootstrap generated' 'call plug#begin()' 'source ~/.vim/plugin-lock.vim' 'call plug#end()'
+printf '%s\n' '" vim-bootstrap generated' 'https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim' 'call plug#begin()' 'source ~/.vim/plugin-lock.vim' 'call plug#end()'
 CURL
 chmod +x "$temp/bin/curl"
 export PATH="$temp/bin:$PATH" TEST_CURL_ARGS="$temp/args"
@@ -36,5 +36,6 @@ if bash "$REPO_ROOT/scripts/refresh-vim-bootstrap.sh" "$temp/profile" "$temp/out
     echo 'Duplicate language unexpectedly accepted' >&2
     exit 1
 fi
+grep -Fq "https://raw.githubusercontent.com/junegunn/vim-plug/$(awk '{ print $1 }' "$REPO_ROOT/versions/vim-plug")/plug.vim" "$temp/output"
 grep -Fxq 'call plug#end()' "$temp/output"
 echo 'Vim Bootstrap profile test passed'
