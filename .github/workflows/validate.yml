@@ -66,6 +66,7 @@ jobs:
           export HOME="$runtime_home"
           bash scripts/manage-runtime-versions.sh install
           bash scripts/manage-runtime-versions.sh status
+          bash scripts/manage-runtime-versions.sh smoke
 
       - name: Validate package check
         shell: bash
