@@ -58,6 +58,15 @@ jobs:
           bash scripts/validate.sh
           bash scripts/check-bootstrap-tools.sh
 
+      - name: Install and check pinned runtimes
+        shell: bash
+        run: |
+          runtime_home="$(mktemp -d)"
+          trap 'rm -rf "$runtime_home"' EXIT
+          export HOME="$runtime_home"
+          bash scripts/manage-runtime-versions.sh install
+          bash scripts/manage-runtime-versions.sh status
+
       - name: Validate package check
         shell: bash
         run: |
