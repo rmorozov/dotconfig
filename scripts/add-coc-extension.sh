@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-[[ "$#" -eq 1 ]] || {
-    echo "Usage: $0 <npm-package>" >&2
+[[ "$#" -ge 1 && "$#" -le 2 ]] || {
+    echo "Usage: $0 <npm-package> [exact-version]" >&2
     exit 2
 }
 
@@ -15,7 +15,7 @@ awk -v name="$package_name" '$1 == name { found=1 } END { exit !found }' "$MANIF
     exit 1
 }
 
-version="$(npm view "$package_name" version --silent)"
+version="${2:-$(npm view "$package_name" version --silent)}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || {
     echo "Could not resolve $package_name" >&2
     exit 1
