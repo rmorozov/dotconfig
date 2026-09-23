@@ -79,10 +79,27 @@ awk '
 
 grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 awk '
+    BEGIN {
+        required["chezmoi"] = "version"
+        required["chezmoi-installer"] = "revision"
+        required["homebrew-installer"] = "revision"
+        required["mise"] = "version"
+        required["mise-linux-arm64-sha256"] = "digest"
+        required["mise-linux-x64-sha256"] = "digest"
+        required["mise-macos-arm64-sha256"] = "digest"
+        required["mise-macos-x64-sha256"] = "digest"
+    }
     NR == 1 { next }
-    NF != 2 { exit 1 }
-    $1 ~ /-installer$/ && $2 !~ /^[0-9a-f]{40}$/ { exit 1 }
-    $1 !~ /-installer$/ && $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/ { exit 1 }
+    NF != 2 || !($1 in required) || seen[$1]++ { invalid = 1; next }
+    required[$1] == "revision" && $2 !~ /^[0-9a-f]{40}$/ { invalid = 1 }
+    required[$1] == "version" && $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/ { invalid = 1 }
+    required[$1] == "digest" && $2 !~ /^[0-9a-f]{64}$/ { invalid = 1 }
+    END {
+        for (key in required) {
+            if (seen[key] != 1) invalid = 1
+        }
+        exit invalid
+    }
 ' versions/bootstrap-tools
 
 if grep -RE 'curl[^|]*\|[[:space:]]*(sh|bash)' install.sh scripts .github/workflows; then
