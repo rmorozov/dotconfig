@@ -6,7 +6,26 @@ VIM_MANIFEST="${VIM_PLUGIN_MANIFEST:-$REPO_ROOT/versions/vim-plugins}"
 COC_MANIFEST="${COC_EXTENSION_MANIFEST:-$REPO_ROOT/versions/coc-extensions}"
 VIM_ROOT="${VIM_PLUGIN_HOME:-$HOME/.vim/plugged}"
 COC_ROOT="${COC_EXTENSION_HOME:-${COC_DATA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/coc}/extensions/node_modules}"
+VIM_PLUG_PIN="${VIM_PLUG_MANIFEST:-$REPO_ROOT/versions/vim-plug}"
+VIM_PLUG_FILE="${VIM_PLUG_HOME:-$HOME/.vim/autoload/plug.vim}"
 failures=0
+
+read -r vim_plug_revision expected_vim_plug_blob < "$VIM_PLUG_PIN"
+if [[ ! "$vim_plug_revision" =~ ^[0-9a-f]{40}$ || ! "$expected_vim_plug_blob" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "invalid: vim-plug pin $VIM_PLUG_PIN" >&2
+    failures=$((failures + 1))
+elif [[ ! -f "$VIM_PLUG_FILE" ]]; then
+    echo "missing: vim-plug $VIM_PLUG_FILE" >&2
+    failures=$((failures + 1))
+else
+    actual_vim_plug_blob="$(git hash-object "$VIM_PLUG_FILE")"
+    if [[ "$actual_vim_plug_blob" != "$expected_vim_plug_blob" ]]; then
+        echo "drift: vim-plug expected $expected_vim_plug_blob, found $actual_vim_plug_blob" >&2
+        failures=$((failures + 1))
+    else
+        echo "ok: vim-plug $vim_plug_revision"
+    fi
+fi
 
 while read -r name _repository _ref expected; do
     [[ -n "${name:-}" && "$name" != "#" ]] || continue
