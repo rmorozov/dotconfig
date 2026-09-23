@@ -8,6 +8,7 @@ mkdir -p "$tmpdir/scripts" "$tmpdir/versions" "$tmpdir/bin" "$tmpdir/home"
 cp "$REPO_ROOT/scripts/install-bootstrap-tool.sh" "$tmpdir/scripts/"
 printf 'mise 2026.9.12\nmise-linux-x64-sha256 %064d\n' 0 > "$tmpdir/versions/bootstrap-tools"
 
+# shellcheck disable=SC2016 -- generated mock scripts must contain literal variable references
 printf '%s\n' '#!/bin/sh' \
     'if [ "${1:-}" = -m ]; then printf "x86_64\n"; else printf "Linux\n"; fi' \
     > "$tmpdir/bin/uname"
