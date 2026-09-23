@@ -26,11 +26,12 @@ cat > "$test_dir/bin/chezmoi" <<'EOF'
 }
 EOF
 chmod +x "$test_dir/bin/chezmoi"
-sed \
-    -e "s|{{ .chezmoi.sourceDir | quote }}|\"$test_dir/machine\"|" \
-    -e 's|{{ .machineRole | quote }}|"personal"|' \
-    -e 's|{{ .hostType | quote }}|"laptop"|' \
-    "$REPO_ROOT/home/dot_local/bin/executable_dotconfig.tmpl" > "$test_dir/dotconfig"
+awk -v source="$test_dir/machine" '
+    /^SOURCE_DIR=/ { print "SOURCE_DIR=\\"" source "\\""; next }
+    /^MACHINE_ROLE=/ { print "MACHINE_ROLE=\\"personal\\""; next }
+    /^HOST_TYPE=/ { print "HOST_TYPE=\\"laptop\\""; next }
+    { print }
+' "$REPO_ROOT/home/dot_local/bin/executable_dotconfig.tmpl" > "$test_dir/dotconfig"
 chmod +x "$test_dir/dotconfig"
 
 printf '%s\n' 'changed implementation' > "$test_dir/author/scripts/maintenance.sh"
