@@ -46,6 +46,21 @@ done < "$CONFIG_FILE"
 
 case "${1:-}" in
     install) mise install "${pins[@]}" ;;
+    smoke)
+        for pin in "${pins[@]}"; do
+            tool="${pin%@*}"
+            version="${pin#*@}"
+            reported="$(mise exec "$pin" -- "$tool" --version)" || {
+                echo "failed: $pin executable" >&2
+                exit 1
+            }
+            if [[ "$reported" != *"$version"* ]]; then
+                echo "version mismatch for $pin: $reported" >&2
+                exit 1
+            fi
+            echo "ok: $pin executes ($reported)"
+        done
+        ;;
     status)
         failures=0
         for pin in "${pins[@]}"; do
@@ -58,5 +73,5 @@ case "${1:-}" in
         done
         ((failures == 0))
         ;;
-    *) echo "Usage: $0 {install|status}" >&2; exit 2 ;;
+    *) echo "Usage: $0 {install|status|smoke}" >&2; exit 2 ;;
 esac
