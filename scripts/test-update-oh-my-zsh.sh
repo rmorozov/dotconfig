@@ -31,7 +31,7 @@ OH_MY_ZSH_REPOSITORY="$remote" OH_MY_ZSH_REVISION_FILE="$revision_file" \
     bash "$REPO_ROOT/scripts/update-oh-my-zsh.sh" >/dev/null
 test "$(cat "$revision_file")" = "$expected"
 
-rm "$remote/plugins/systemd/systemd.plugin.zsh"
+git -C "$remote" rm -qr plugins/systemd
 git -C "$remote" add -u
 git -C "$remote" commit -qm missing-plugin
 if OH_MY_ZSH_REPOSITORY="$remote" OH_MY_ZSH_REVISION_FILE="$revision_file" \
