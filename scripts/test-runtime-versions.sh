@@ -27,7 +27,10 @@ export MISE_TEST_MISSING=''
 
 cd "$test_dir/project"
 bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" install
-mapfile -t expected < <(awk -F '"' '/^[a-z]+ = "[0-9]+\.[0-9]+\.[0-9]+"$/ { split($1, key, " "); print key[1] "@" $2 }' "$REPO_ROOT/home/dot_config/mise/config.toml")
+expected=()
+while IFS= read -r pin; do
+    expected+=("$pin")
+done < <(awk -F '"' '/^[a-z]+ = "[0-9]+\.[0-9]+\.[0-9]+"$/ { split($1, key, " "); print key[1] "@" $2 }' "$REPO_ROOT/home/dot_config/mise/config.toml")
 [[ "$(cat "$MISE_TEST_LOG")" == "install ${expected[*]}" ]]
 
 : > "$MISE_TEST_LOG"
