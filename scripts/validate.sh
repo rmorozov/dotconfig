@@ -30,6 +30,7 @@ bash scripts/test-bootstrap-tools.sh
 bash scripts/test-first-run-bootstrap.sh
 bash scripts/test-runtime-versions.sh
 bash scripts/test-dotconfig-review.sh
+bash scripts/test-package-freshness.sh
 bash scripts/test-update-runtime-versions.sh
 bash scripts/test-update-bootstrap-tools.sh
 bash scripts/test-mise-archive-checksum.sh
