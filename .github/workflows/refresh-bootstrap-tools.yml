@@ -33,5 +33,5 @@ jobs:
           bash scripts/open-refresh-pr.sh \
             "automation/refresh-bootstrap-tools" \
             "Refresh bootstrap tool pins" \
-            "Automated nightly refresh of exact chezmoi and mise releases, immutable installer revisions, and reviewed mise archive SHA-256 values." \
+            "Automated nightly refresh of exact chezmoi and mise releases, reviewed archive SHA-256 values, and the immutable Homebrew installer revision." \
             "versions/bootstrap-tools"
