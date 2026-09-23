@@ -51,9 +51,10 @@ done
 : > "$MISE_TEST_LOG"
 bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" smoke
 for pin in "${expected[@]}"; do
-    version_argument=--version
-    [[ "${pin%@*}" == go ]] && version_argument=version
-    grep -Fxq "exec $pin -- ${pin%@*} $version_argument" "$MISE_TEST_LOG"
+    while read -r tool selector executable version_argument; do
+        [[ "$tool" == "${pin%@*}" ]] || continue
+        grep -Fxq "exec $pin -- $executable $version_argument" "$MISE_TEST_LOG"
+    done < "$REPO_ROOT/versions/runtime-channels"
 done
 
 export MISE_TEST_BAD_VERSION="${expected[0]}"
