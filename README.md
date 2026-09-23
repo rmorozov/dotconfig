@@ -221,7 +221,7 @@ GitHub Actions additionally runs:
 
 The repository has independent maintenance loops for validation and controlled upgrades:
 
-Nightly discovery does not mean nightly installation. Each stream force-updates one stable automation branch and pull request, so a later run supersedes an unmerged proposal instead of creating a queue. Updates remain exact, reviewable pins and are never auto-merged or deployed to machines.
+Nightly discovery does not mean nightly installation. Each stream force-updates one stable automation branch and pull request, so a later run supersedes an unmerged proposal instead of creating a queue. If the latest discovery matches the base branch, the workflow closes the now-obsolete automation PR and deletes its branch. Updates remain exact, reviewable pins and are never auto-merged or deployed to machines.
 
 All refresh workflows use `scripts/open-refresh-pr.sh` for the shared commit, force-push, and PR-upsert behavior. The local validator exercises that helper against an isolated bare Git repository and a fake `gh` client.
 
