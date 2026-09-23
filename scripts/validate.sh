@@ -4,7 +4,7 @@ set -Eeuo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-required_commands=(git shellcheck zsh)
+required_commands=(git python3 shellcheck zsh)
 for command_name in "${required_commands[@]}"; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "Missing validation dependency: $command_name" >&2
