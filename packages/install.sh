@@ -8,7 +8,8 @@ MODE=install
 case "${1:-}" in
     "") ;;
     --check|--dry-run) MODE=check ;;
-    *) echo "Usage: $0 [--check]" >&2; exit 2 ;;
+    --outdated) MODE=outdated ;;
+    *) echo "Usage: $0 [--check|--outdated]" >&2; exit 2 ;;
 esac
 
 case "$(uname -s)" in
@@ -17,7 +18,18 @@ case "$(uname -s)" in
             echo "missing: Homebrew" >&2
             exit 1
         fi
-        if [[ "$MODE" == check ]]; then
+        if [[ "$MODE" == outdated ]]; then
+            formulae=()
+            while IFS= read -r formula; do
+                formulae+=("$formula")
+            done < <(awk 'NR > 1 && $2 != "-" { print $2 }' "$PACKAGE_DIR/packages.tsv")
+            updates="$(brew outdated --verbose --formula "${formulae[@]}")" || exit 1
+            if [[ -n "$updates" ]]; then
+                printf 'Available baseline formula updates:\n%s\n' "$updates"
+            else
+                echo "No baseline formula updates in current Homebrew metadata."
+            fi
+        elif [[ "$MODE" == check ]]; then
             brew bundle check --file "$PACKAGE_DIR/Brewfile"
         else
             brew bundle --file "$PACKAGE_DIR/Brewfile"
@@ -29,7 +41,19 @@ case "$(uname -s)" in
             exit 1
         fi
         mapfile -t packages < <(sed -E '/^[[:space:]]*(#|$)/d' "$PACKAGE_DIR/ubuntu.txt")
-        if [[ "$MODE" == check ]]; then
+        if [[ "$MODE" == outdated ]]; then
+            simulation="$(LC_ALL=C apt-get -s upgrade)" || exit 1
+            updates="$(awk '
+                NR == FNR { if (NR > 1 && $3 != "-") baseline[$3] = 1; next }
+                $1 == "Inst" && ($2 in baseline) { print $0 }
+            ' "$PACKAGE_DIR/packages.tsv" <(printf '%s\n' "$simulation"))"
+            if [[ -n "$updates" ]]; then
+                printf 'Available baseline package updates:\n%s\n' "$updates"
+            else
+                echo "No baseline package updates in cached apt metadata."
+            fi
+            echo "APT metadata may be stale; refresh it with: sudo apt-get update"
+        elif [[ "$MODE" == check ]]; then
             missing=()
             for package_name in "${packages[@]}"; do
                 dpkg-query -W -f='${db:Status-Abbrev}' "$package_name" 2>/dev/null |
