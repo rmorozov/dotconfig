@@ -94,7 +94,7 @@ fi
 
 chezmoi --source "$REPO_ROOT" init --apply
 
-mise install
+bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" install
 
 bash "$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 
