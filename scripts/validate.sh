@@ -29,6 +29,7 @@ bash scripts/test-editor-state.sh
 bash scripts/test-bootstrap-tools.sh
 bash scripts/test-first-run-bootstrap.sh
 bash scripts/test-runtime-versions.sh
+bash scripts/test-node-version.sh
 bash scripts/test-dotconfig-review.sh
 bash scripts/test-package-freshness.sh
 bash scripts/test-update-runtime-versions.sh
