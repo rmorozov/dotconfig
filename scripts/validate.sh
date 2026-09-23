@@ -25,6 +25,7 @@ for script in "${shell_scripts[@]}"; do
     bash -n "$script"
 done
 
+bash scripts/test-editor-state.sh
 bash scripts/test-open-refresh-pr.sh
 
 for script in home/dot_config/zsh/*.zsh; do
