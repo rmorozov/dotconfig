@@ -74,6 +74,14 @@ Safely fast-forward the repository, review the rendered diff, and confirm before
 dotconfig update
 ```
 
+To bring a machine fully onto the reviewed repository state in one pass, use:
+
+```sh
+dotconfig sync
+```
+
+After the same pull, diff, and confirmation flow, `sync` installs the pinned mise runtimes, converges the exact Oh My Zsh revision, and installs the pinned Vim plugins and CoC extensions. If the dotfile update is declined, the remaining convergence steps do not run. Native packages stay separate because Ubuntu may require `sudo` and package-manager changes deserve an explicit operation.
+
 The individual operations remain available:
 
 ```sh
