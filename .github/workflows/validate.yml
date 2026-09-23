@@ -47,10 +47,16 @@ jobs:
 
       - name: Install macOS validators
         if: runner.os == 'macOS'
-        run: brew install chezmoi mise shellcheck
+        run: |
+          brew install chezmoi mise shellcheck
+          bash scripts/install-bootstrap-tool.sh mise
+          bash scripts/install-bootstrap-tool.sh chezmoi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run repository validation
-        run: bash scripts/validate.sh
+        run: |
+          bash scripts/validate.sh
+          bash scripts/check-bootstrap-tools.sh
 
       - name: Validate package check
         shell: bash
@@ -107,6 +113,7 @@ jobs:
           shellcheck "$test_home/.local/bin/dotconfig"
           bash -n "$test_home/.local/bin/dotconfig"
           "$test_home/.local/bin/dotconfig" --help | grep -q '^  sync '
+          "$test_home/.local/bin/dotconfig" --help | grep -q '^  bootstrap '
           grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 
           remote_repo="$(mktemp -d)"
