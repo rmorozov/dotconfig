@@ -18,8 +18,14 @@ base_branch="${GITHUB_REF_NAME:-master}"
     exit 2
 }
 
+open_pr="$(gh pr list --head "$refresh_branch" --state open --json number --jq '.[0].number // empty')"
+
 if git diff --quiet -- "${paths[@]}"; then
     echo "No changes for $title."
+    if [[ -n "$open_pr" ]]; then
+        gh pr close "$open_pr" --delete-branch \
+            --comment "The latest refresh matches the base branch; this proposal is no longer needed."
+    fi
     exit 0
 fi
 
@@ -30,8 +36,8 @@ git add "${paths[@]}"
 git commit -m "$title"
 git push --force-with-lease origin "HEAD:$refresh_branch"
 
-if gh pr view "$refresh_branch" >/dev/null 2>&1; then
-    gh pr edit "$refresh_branch" --title "$title" --body "$body"
+if [[ -n "$open_pr" ]]; then
+    gh pr edit "$open_pr" --title "$title" --body "$body"
 else
     gh pr create \
         --base "$base_branch" \
