@@ -51,3 +51,49 @@ for attempt in 1 2; do
 done
 
 echo "Repository-only changes remain pending until review"
+
+python3 - "$test_dir/dotconfig" "$test_dir/bin" <<'PY'
+import errno
+import os
+import pty
+import select
+import signal
+import sys
+
+command, fake_bin = sys.argv[1:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["PATH"] = fake_bin + os.pathsep + os.environ["PATH"]
+    os.execv("/bin/bash", ["bash", command, "update"])
+
+os.write(fd, b"y\n")
+output = bytearray()
+while True:
+    if not select.select([fd], [], [], 20)[0]:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        raise SystemExit("Interactive update timed out")
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError as error:
+        if error.errno == errno.EIO:
+            break
+        raise
+    if not chunk:
+        break
+    output.extend(chunk)
+
+_, status = os.waitpid(pid, 0)
+if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+    sys.stderr.write(output.decode(errors="replace"))
+    raise SystemExit("Interactive update failed")
+if b"Accept these changes" not in output:
+    raise SystemExit("Interactive review prompt was missing")
+PY
+
+new_head="$(git -C "$test_dir/machine" rev-parse HEAD)"
+[[ "$(git -C "$test_dir/machine" config --local --get dotconfig.reviewedHead)" == "$new_head" ]]
+PATH="$test_dir/bin:$PATH" bash "$test_dir/dotconfig" update > "$test_dir/output" 2>&1
+grep -q 'Repository and managed dotfiles are already current' "$test_dir/output"
+
+echo "Repository review approval persists across updates"
