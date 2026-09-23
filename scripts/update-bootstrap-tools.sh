@@ -57,7 +57,7 @@ macos_arm64="$(mise_checksum "mise-v$mise_version-macos-arm64.tar.gz")"
 macos_x64="$(mise_checksum "mise-v$mise_version-macos-x64.tar.gz")"
 
 printf '%s\n' \
-    '# component version-or-revision' \
+    '# component version-or-revision-or-sha256' \
     "chezmoi $chezmoi_version" \
     "chezmoi-installer $chezmoi_installer" \
     "homebrew-installer $homebrew_installer" \
