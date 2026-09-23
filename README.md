@@ -181,6 +181,7 @@ Use the helpers for additions:
 scripts/add-native-package.sh jq jq jq
 scripts/add-native-package.sh capability homebrew-formula ubuntu-package
 scripts/add-coc-extension.sh coc-example
+scripts/add-coc-extension.sh coc-example 1.2.3
 scripts/add-vim-plugin.sh owner/repository
 scripts/add-vim-plugin.sh owner/repository release-branch
 scripts/add-vim-plugin.sh owner/repository HEAD .vim/custom-checkout
@@ -192,7 +193,7 @@ Use `-` when a native package is intentionally absent on one platform. Each help
 
 Configured CoC extensions are installed as exact npm versions generated from `versions/coc-extensions`. They converge through the existing `dotconfig vim` command. The **Refresh CoC extensions** workflow proposes version bumps nightly without changing `coc.nvim` or the Vim Bootstrap snapshot.
 
-Extensions removed because of unresolved advisories remain recorded in `versions/coc-extensions-disabled`, together with the advisory that caused quarantine. The **Reconsider quarantined CoC extensions** workflow audits each package's latest release nightly with lifecycle scripts disabled. Vulnerable packages remain quiet and disabled; when a package resolves without high-severity npm advisories, automation removes it from quarantine and opens a reviewable PR restoring its exact current version.
+Extensions removed because of unresolved advisories remain recorded in `versions/coc-extensions-disabled`, together with the advisory that caused quarantine. The **Reconsider quarantined CoC extensions** workflow audits each package's latest release nightly with lifecycle scripts disabled. Vulnerable packages remain quiet and disabled; when a package resolves without high-severity npm advisories, automation removes it from quarantine and opens a reviewable PR restoring the same exact version it audited.
 
 ## Updating Vim Bootstrap
 
