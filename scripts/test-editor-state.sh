@@ -8,6 +8,8 @@ vim_root="$test_root/vim"
 coc_root="$test_root/coc"
 vim_manifest="$test_root/vim-plugins"
 coc_manifest="$test_root/coc-extensions"
+vim_plug_manifest="$test_root/vim-plug"
+vim_plug_file="$test_root/plug.vim"
 plugin_dir="$vim_root/demo"
 package_dir="$coc_root/coc-demo"
 
@@ -29,12 +31,37 @@ printf '%s\n' \
     'coc-demo 1.2.3' \
     > "$coc_manifest"
 printf '%s\n' '{"name":"coc-demo","version":"1.2.3"}' > "$package_dir/package.json"
+printf '%s\n' '" vim-plug test fixture' > "$vim_plug_file"
+printf '%s %s\n' "$revision" "$(git hash-object "$vim_plug_file")" > "$vim_plug_manifest"
+export VIM_PLUG_MANIFEST="$vim_plug_manifest" VIM_PLUG_HOME="$vim_plug_file"
 
 VIM_PLUGIN_MANIFEST="$vim_manifest" \
 COC_EXTENSION_MANIFEST="$coc_manifest" \
 VIM_PLUGIN_HOME="$vim_root" \
 COC_EXTENSION_HOME="$coc_root" \
     bash "$REPO_ROOT/scripts/check-editor-state.sh" >/dev/null
+
+printf '%s\n' '" changed manager' > "$vim_plug_file"
+if VIM_PLUGIN_MANIFEST="$vim_manifest" \
+    COC_EXTENSION_MANIFEST="$coc_manifest" \
+    VIM_PLUGIN_HOME="$vim_root" \
+    COC_EXTENSION_HOME="$coc_root" \
+    bash "$REPO_ROOT/scripts/check-editor-state.sh" >"$test_root/output" 2>&1; then
+    echo "Expected vim-plug drift to fail validation." >&2
+    exit 1
+fi
+grep -q 'drift: vim-plug' "$test_root/output"
+rm "$vim_plug_file"
+if VIM_PLUGIN_MANIFEST="$vim_manifest" \
+    COC_EXTENSION_MANIFEST="$coc_manifest" \
+    VIM_PLUGIN_HOME="$vim_root" \
+    COC_EXTENSION_HOME="$coc_root" \
+    bash "$REPO_ROOT/scripts/check-editor-state.sh" >"$test_root/output" 2>&1; then
+    echo "Expected missing vim-plug to fail validation." >&2
+    exit 1
+fi
+grep -q 'missing: vim-plug' "$test_root/output"
+printf '%s\n' '" vim-plug test fixture' > "$vim_plug_file"
 
 printf '%s\n' '{"name":"coc-demo","version":"9.9.9"}' > "$package_dir/package.json"
 if VIM_PLUGIN_MANIFEST="$vim_manifest" \
