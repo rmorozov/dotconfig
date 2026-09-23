@@ -107,6 +107,7 @@ jobs:
           zsh -n "$test_home/.zshrc"
           shellcheck "$test_home/.local/bin/dotconfig"
           bash -n "$test_home/.local/bin/dotconfig"
+          "$test_home/.local/bin/dotconfig" --help | grep -q '^  sync '
           grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 
           remote_repo="$(mktemp -d)"
