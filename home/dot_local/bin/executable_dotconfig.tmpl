@@ -25,7 +25,7 @@ Commands:
   apply     Apply the currently checked-out configuration.
   update    Fast-forward the repository, show the diff, and apply after confirmation.
   sync      Update, then converge runtimes, Oh My Zsh, Vim plugins, and CoC.
-  packages  Apply the native package baseline.
+  packages  Apply or inspect the native package baseline.
   bootstrap Install the reviewed chezmoi and mise versions.
   runtimes  Install the pinned language runtimes.
   shell     Install the pinned Oh My Zsh revision.
@@ -359,7 +359,7 @@ case "${1:-}" in
     apply) apply_command ;;
     update) update_command ;;
     sync) sync_command ;;
-    packages) bash "$PACKAGE_INSTALLER" ;;
+    packages) shift; bash "$PACKAGE_INSTALLER" "$@" ;;
     bootstrap) bootstrap_install ;;
     runtimes) runtime_install ;;
     shell) bash "$OH_MY_ZSH_INSTALLER" ;;
