@@ -145,7 +145,7 @@ mise supplies the same runtime versions on macOS and Ubuntu:
 - Go tracks the latest stable release;
 - Python tracks the latest stable 3.14 patch release.
 
-The committed file contains exact versions, so machines do not resolve moving aliases independently. The **Refresh runtime versions** workflow runs nightly, rewrites those pins from the allowed channels, and opens a pull request for review. After merging one, run `dotconfig update` and then `dotconfig runtimes` on each machine.
+The committed file contains exact versions, so machines do not resolve moving aliases independently. Installation and status checks use these exact pins even when invoked inside a project with its own mise configuration. Add or update runtime keys in `home/dot_config/mise/config.toml`; the shared runtime command reads the full `[tools]` section. The **Refresh runtime versions** workflow runs nightly, rewrites those pins from the allowed channels, and opens a pull request for review. After merging one, run `dotconfig update` and then `dotconfig runtimes` on each machine.
 
 ## Updating Oh My Zsh
 
