@@ -8,6 +8,7 @@ PACKAGE_INSTALLER="$REPO_ROOT/packages/install.sh"
 OH_MY_ZSH_INSTALLER="$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 OH_MY_ZSH_REVISION_FILE="$REPO_ROOT/versions/oh-my-zsh"
 EDITOR_STATE_CHECKER="$REPO_ROOT/scripts/check-editor-state.sh"
+BOOTSTRAP_STATE_CHECKER="$REPO_ROOT/scripts/check-bootstrap-tools.sh"
 MACHINE_ROLE={{ .machineRole | quote }}
 HOST_TYPE={{ .hostType | quote }}
 UPDATE_CAN_CONVERGE=false
@@ -149,6 +150,12 @@ status_command() {
     fi
 
     echo
+    echo "Bootstrap tools:"
+    if ! bash "$BOOTSTRAP_STATE_CHECKER"; then
+        failures=$((failures + 1))
+    fi
+
+    echo
     echo "Runtime versions:"
     if ! runtime_status; then
         failures=$((failures + 1))
@@ -206,6 +213,10 @@ doctor_command() {
     if package_check; then
         echo "ok: package baseline is satisfied"
     else
+        failures=$((failures + 1))
+    fi
+
+    if ! bash "$BOOTSTRAP_STATE_CHECKER"; then
         failures=$((failures + 1))
     fi
 
