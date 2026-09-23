@@ -13,6 +13,10 @@ while read -r package_name advisory reason; do
     [[ -n "${package_name:-}" && "$package_name" != "#" ]] || continue
 
     version="$(npm view "$package_name" version --silent)"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || {
+        echo "Could not resolve $package_name" >&2
+        exit 1
+    }
     package_dir="$audit_root/${package_name//\//_}"
     mkdir -p "$package_dir"
     printf '{"name":"dotconfig-quarantine-check","private":true,"version":"0.0.0","dependencies":{"%s":"%s"}}\n' \
@@ -29,7 +33,7 @@ while read -r package_name advisory reason; do
         npm audit --omit=dev --audit-level=high >/dev/null
     ); then
         echo "$package_name@$version no longer has a high-severity npm advisory; restoring it for review."
-        bash "$REPO_ROOT/scripts/add-coc-extension.sh" "$package_name"
+        bash "$REPO_ROOT/scripts/add-coc-extension.sh" "$package_name" "$version"
     else
         printf '%s %s %s\n' "$package_name" "$advisory" "$reason" >> "$updated"
         echo "$package_name@$version remains quarantined ($advisory)."
