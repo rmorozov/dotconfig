@@ -50,7 +50,9 @@ case "${1:-}" in
         for pin in "${pins[@]}"; do
             tool="${pin%@*}"
             version="${pin#*@}"
-            reported="$(mise exec "$pin" -- "$tool" --version)" || {
+            version_argument=--version
+            [[ "$tool" == go ]] && version_argument=version
+            reported="$(mise exec "$pin" -- "$tool" "$version_argument")" || {
                 echo "failed: $pin executable" >&2
                 exit 1
             }
