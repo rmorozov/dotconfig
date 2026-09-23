@@ -33,7 +33,7 @@ printf '%s\n' \
 printf '%s\n' '{"name":"coc-demo","version":"1.2.3"}' > "$package_dir/package.json"
 printf '%s\n' '" vim-plug test fixture' > "$vim_plug_file"
 printf '%s %s\n' "$revision" "$(git hash-object "$vim_plug_file")" > "$vim_plug_manifest"
-export VIM_PLUG_MANIFEST="$vim_plug_manifest" VIM_PLUG_HOME="$vim_plug_file"
+export VIM_PLUG_MANIFEST="$vim_plug_manifest" VIM_PLUG_FILE="$vim_plug_file"
 
 VIM_PLUGIN_MANIFEST="$vim_manifest" \
 COC_EXTENSION_MANIFEST="$coc_manifest" \
