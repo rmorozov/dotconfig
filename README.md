@@ -70,7 +70,7 @@ dotconfig status
 dotconfig doctor
 ```
 
-Both commands compare installed chezmoi and mise versions with `versions/bootstrap-tools`, as well as installed Vim plugin commits and CoC extension versions with the committed manifests. `status` reports every category before returning failure on drift, rather than stopping at the first missing package; `doctor` includes the same editor checks in its prerequisite diagnosis.
+Both commands compare installed chezmoi and mise versions with `versions/bootstrap-tools`, as well as the installed vim-plug file, Vim plugin commits, and CoC extension versions with the committed manifests. `status` reports every category before returning failure on drift, rather than stopping at the first missing package; `doctor` includes the same editor checks in its prerequisite diagnosis.
 
 Safely fast-forward the repository, review pulled repository changes and the rendered dotfile diff, and confirm before applying:
 
