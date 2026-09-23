@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 -- generated mock scripts use literal variable references
+# Generated mock scripts intentionally use literal variable references.
+# shellcheck disable=SC2016
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
