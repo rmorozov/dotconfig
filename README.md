@@ -161,7 +161,7 @@ The committed file contains exact versions, so machines do not resolve moving al
 
 Oh My Zsh is installed at the exact commit recorded in `versions/oh-my-zsh`. This prevents newly bootstrapped machines from silently receiving different shell behavior. Run `dotconfig shell` to converge a machine on the committed revision.
 
-The **Refresh Oh My Zsh** workflow proposes a new upstream commit nightly. The change remains inert on machines until its pull request is reviewed, merged, and applied explicitly.
+The **Refresh Oh My Zsh** workflow proposes a new upstream commit nightly. Before advancing the pin, it checks that the candidate revision still contains every plugin named in the shared, Linux, and macOS Zsh modules. A missing plugin fails the refresh, leaving the previous pin in place for investigation. The change remains inert on machines until its pull request is reviewed, merged, and applied explicitly.
 
 ## Vim plugin revisions
 
