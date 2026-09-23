@@ -71,8 +71,17 @@ case "$tool" in
         download "$release_url/$archive" "$tmpdir/$archive"
         download "$release_url/SHASUMS256.txt" "$tmpdir/SHASUMS256.txt"
         expected="$(
-            awk -v archive="$archive" '$2 == archive { print $1; found=1 } END { exit !found }' \
-                "$tmpdir/SHASUMS256.txt"
+            awk -v archive="$archive" '
+                {
+                    filename = $2
+                    sub(/^\.\//, "", filename)
+                    if (filename == archive) {
+                        print $1
+                        found = 1
+                    }
+                }
+                END { exit !found }
+            ' "$tmpdir/SHASUMS256.txt"
         )"
         if command -v sha256sum >/dev/null 2>&1; then
             printf '%s  %s\n' "$expected" "$tmpdir/$archive" | sha256sum -c -
