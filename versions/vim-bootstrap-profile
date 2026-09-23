@@ -1,0 +1,7 @@
+# Kind value. Repeat language and plugin rows to extend the Vim Bootstrap profile.
+editor vim
+language c
+language python
+language go
+plugin fzf
+plugin vim-easymotion
