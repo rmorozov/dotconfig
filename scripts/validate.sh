@@ -76,6 +76,17 @@ awk '
     $2 == "-" && $3 == "-" { exit 1 }
 ' packages/packages.tsv
 
-grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
+grep -Eq '^[0-9a-f]{40} versions/oh-my-zsh
+awk '
+    NR == 1 { next }
+    NF != 2 { exit 1 }
+    $1 ~ /-installer$/ && $2 !~ /^[0-9a-f]{40}$/ { exit 1 }
+    $1 !~ /-installer$/ && $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/ { exit 1 }
+' versions/bootstrap-tools
+
+if grep -RE 'curl[^|]*\|[[:space:]]*(sh|bash)' install.sh scripts .github/workflows; then
+    echo "Refusing streamed remote script execution." >&2
+    exit 1
+fi
 
 echo "Static validation passed"
