@@ -17,6 +17,14 @@ printf '%s\n' "$*" >> "$MISE_TEST_LOG"
 case "$1" in
     install) [[ "$*" != *'@1.0.0'* ]] ;;
     where) [[ "$2" != *'@1.0.0' && "$2" != "$MISE_TEST_MISSING" ]] ;;
+    exec)
+        [[ "$2" != *'@1.0.0' ]] || exit 1
+        if [[ "$2" == "${MISE_TEST_BAD_VERSION:-}" ]]; then
+            echo "$4 version 0.0.0"
+        else
+            echo "$4 version ${2#*@}"
+        fi
+        ;;
     *) exit 1 ;;
 esac
 EOF
@@ -39,6 +47,20 @@ bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" status
 for pin in "${expected[@]}"; do
     grep -Fxq "where $pin" "$MISE_TEST_LOG"
 done
+
+: > "$MISE_TEST_LOG"
+bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" smoke
+for pin in "${expected[@]}"; do
+    grep -Fxq "exec $pin -- ${pin%@*} --version" "$MISE_TEST_LOG"
+done
+
+export MISE_TEST_BAD_VERSION="${expected[0]}"
+if bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" smoke > "$test_dir/smoke.log" 2>&1; then
+    echo "Runtime smoke passed despite wrong reported version" >&2
+    exit 1
+fi
+grep -Fq "version mismatch for ${expected[0]}" "$test_dir/smoke.log"
+unset MISE_TEST_BAD_VERSION
 
 export MISE_TEST_MISSING="${expected[1]}"
 if bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" status > "$test_dir/status.log" 2>&1; then
