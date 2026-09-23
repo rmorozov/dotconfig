@@ -57,7 +57,7 @@ The installer:
 
 Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
 
-Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. This is detection only: merging a bootstrap refresh does not replace an existing executable. Review the new pin, then update the appropriate package or rerun the pinned bootstrap helper explicitly. Homebrew may lag behind the upstream release, so macOS can report drift until that version is available or installed directly. Ubuntu installs the exact mise release only after verifying its upstream SHA-256 checksum, and installs the exact chezmoi release through an installer fetched from an immutable commit. A missing Homebrew installation uses the same immutable-commit rule. Remote scripts are downloaded to temporary files rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
+Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. Merging a bootstrap refresh does not replace an existing executable. After reviewing the new pin, run `dotconfig bootstrap` to install the exact chezmoi and mise releases into `~/.local/bin` and verify the versions now selected on `PATH`. This is explicit and separate from `dotconfig sync`. On macOS the native Homebrew formulae remain installed for the package baseline, but the pinned user-local binaries take precedence in the managed Zsh configuration; Homebrew can lag upstream. Ubuntu installs the exact mise release only after verifying its upstream SHA-256 checksum, and installs the exact chezmoi release through an installer fetched from an immutable commit. A missing Homebrew installation uses the same immutable-commit rule. Remote scripts are downloaded to temporary files rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
 
 ## Normal update workflow
 
@@ -91,6 +91,7 @@ The individual operations remain available:
 ```sh
 dotconfig apply
 dotconfig packages
+dotconfig bootstrap
 dotconfig runtimes
 dotconfig shell
 dotconfig vim
