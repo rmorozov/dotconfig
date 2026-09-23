@@ -195,6 +195,8 @@ Extensions removed because of unresolved advisories remain recorded in `versions
 
 The **Refresh Vim Bootstrap** GitHub Actions workflow runs nightly and can also be started manually. It regenerates `home/dot_vimrc`, normalizes the generated timestamp, validates the snapshot, and opens or updates a pull request only when substantive content changed.
 
+Edit `versions/vim-bootstrap-profile` to add or remove `language` and `plugin` rows; keep the single `editor vim` row. The nightly workflow reads this profile and proposes the resulting Vim snapshot for review. Run `bash scripts/refresh-vim-bootstrap.sh` to generate it locally after editing the profile.
+
 The generated base is therefore reproducible on every machine while upstream improvements still arrive for review.
 
 ## Validation
