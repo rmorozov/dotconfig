@@ -76,7 +76,7 @@ awk '
     $2 == "-" && $3 == "-" { exit 1 }
 ' packages/packages.tsv
 
-grep -Eq '^[0-9a-f]{40} versions/oh-my-zsh
+grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 awk '
     NR == 1 { next }
     NF != 2 { exit 1 }
