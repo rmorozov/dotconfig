@@ -48,7 +48,7 @@ bash install.sh
 
 The installer:
 
-1. installs chezmoi if necessary;
+1. installs missing chezmoi and mise from the exact, checksum-verified release archives;
 2. applies `packages/Brewfile` on macOS or `packages/ubuntu.txt` on Ubuntu;
 3. asks for the machine profile on first use and deploys the home-directory files;
 4. installs the mise-managed Node.js, Go, and Python versions;
@@ -57,7 +57,7 @@ The installer:
 
 Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
 
-Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. Merging a bootstrap refresh does not replace an existing executable. After reviewing the new pin, run `dotconfig bootstrap` to install the exact chezmoi and mise releases into `~/.local/bin` and verify the versions now selected on `PATH`. This is explicit and separate from `dotconfig sync`. On macOS the native Homebrew formulae remain installed for the package baseline, but the pinned user-local binaries take precedence in the managed Zsh configuration; Homebrew can lag upstream. On both target platforms, the exact mise and chezmoi release archives are checked against SHA-256 values committed in the manifest before extraction. A missing Homebrew installation still uses an installer fetched from an immutable commit. That script is downloaded to a temporary file rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
+Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. Merging a bootstrap refresh does not replace an existing executable. After reviewing the new pin, run `dotconfig bootstrap` to install the exact chezmoi and mise releases into `~/.local/bin` and verify the versions now selected on `PATH`. This is explicit and separate from `dotconfig sync`. On macOS the native Homebrew formulae remain installed for the package baseline, but the pinned user-local binaries take precedence in the managed Zsh configuration; Homebrew can lag upstream. Fresh installs select verified binaries before the package step. An existing chezmoi or mise is left in place by `install.sh`; use `dotconfig bootstrap` to converge it explicitly. Homebrew is installed only when the native package baseline is requested. On both target platforms, the exact mise and chezmoi release archives are checked against SHA-256 values committed in the manifest before extraction. A missing Homebrew installation still uses an installer fetched from an immutable commit. That script is downloaded to a temporary file rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
 
 ## Normal update workflow
 
