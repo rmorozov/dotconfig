@@ -26,15 +26,17 @@ mkdir -p "$fake_bin"
 # shellcheck disable=SC2016
 printf '%s\n' \
     '#!/usr/bin/env bash' \
-    'if [[ "$1 $2" == "pr view" ]]; then exit 1; fi' \
+    'if [[ "$1 $2" == "pr list" ]]; then cat "$GH_OPEN_PR_FILE"; exit 0; fi' \
     'printf "%s\\n" "$*" >> "$GH_LOG"' \
     > "$fake_bin/gh"
 chmod +x "$fake_bin/gh"
+: > "$test_root/open-pr"
 
 (
     cd "$work"
     PATH="$fake_bin:$PATH" \
     GH_LOG="$gh_log" \
+    GH_OPEN_PR_FILE="$test_root/open-pr" \
     GITHUB_REF_NAME=master \
         bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
             automation/test-refresh \
@@ -45,3 +47,53 @@ chmod +x "$fake_bin/gh"
 
 git --git-dir="$remote" rev-parse --verify refs/heads/automation/test-refresh >/dev/null
 grep -q '^pr create --base master --head automation/test-refresh' "$gh_log"
+
+git clone --branch master "$remote" "$test_root/next-work" >/dev/null 2>&1
+printf '%s\n' refreshed > "$test_root/next-work/tracked"
+printf '%s\n' 42 > "$test_root/open-pr"
+(
+    cd "$test_root/next-work"
+    PATH="$fake_bin:$PATH" \
+    GH_LOG="$gh_log" \
+    GH_OPEN_PR_FILE="$test_root/open-pr" \
+    GITHUB_REF_NAME=master \
+        bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
+            automation/test-refresh \
+            "Test refresh" \
+            "Test body" \
+            tracked
+)
+grep -q '^pr edit 42 --title Test refresh --body Test body' "$gh_log"
+
+git -C "$work" switch master >/dev/null
+(
+    cd "$work"
+    PATH="$fake_bin:$PATH" \
+    GH_LOG="$gh_log" \
+    GH_OPEN_PR_FILE="$test_root/open-pr" \
+    GITHUB_REF_NAME=master \
+        bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
+            automation/test-refresh \
+            "Test refresh" \
+            "Test body" \
+            tracked
+)
+grep -q '^pr close 42 --delete-branch --comment ' "$gh_log"
+
+: > "$test_root/open-pr"
+before="$(wc -l < "$gh_log")"
+(
+    cd "$work"
+    PATH="$fake_bin:$PATH" \
+    GH_LOG="$gh_log" \
+    GH_OPEN_PR_FILE="$test_root/open-pr" \
+    GITHUB_REF_NAME=master \
+        bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
+            automation/test-refresh \
+            "Test refresh" \
+            "Test body" \
+            tracked
+)
+[[ "$(wc -l < "$gh_log")" == "$before" ]]
+
+echo "Refresh PR cleanup passed"
