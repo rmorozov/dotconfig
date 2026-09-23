@@ -37,6 +37,7 @@ bash scripts/test-update-bootstrap-tools.sh
 bash scripts/test-mise-archive-checksum.sh
 bash scripts/test-chezmoi-archive-checksum.sh
 bash scripts/test-open-refresh-pr.sh
+bash scripts/test-update-oh-my-zsh.sh
 bash scripts/test-refresh-vim-bootstrap.sh
 
 for script in home/dot_config/zsh/*.zsh; do
