@@ -27,9 +27,10 @@ cat > "$test_dir/bin/chezmoi" <<'EOF'
 EOF
 chmod +x "$test_dir/bin/chezmoi"
 awk -v source="$test_dir/machine" '
-    /^SOURCE_DIR=/ { print "SOURCE_DIR=\\"" source "\\""; next }
-    /^MACHINE_ROLE=/ { print "MACHINE_ROLE=\\"personal\\""; next }
-    /^HOST_TYPE=/ { print "HOST_TYPE=\\"laptop\\""; next }
+    BEGIN { q = sprintf("%c", 34) }
+    /^SOURCE_DIR=/ { print "SOURCE_DIR=" q source q; next }
+    /^MACHINE_ROLE=/ { print "MACHINE_ROLE=" q "personal" q; next }
+    /^HOST_TYPE=/ { print "HOST_TYPE=" q "laptop" q; next }
     { print }
 ' "$REPO_ROOT/home/dot_local/bin/executable_dotconfig.tmpl" > "$test_dir/dotconfig"
 chmod +x "$test_dir/dotconfig"
