@@ -24,18 +24,7 @@ jobs:
 
       - name: Generate snapshot
         shell: bash
-        run: |
-          set -Eeuo pipefail
-          output="$(mktemp)"
-          curl --fail --silent --show-error --location \
-            --retry 3 \
-            'https://vim-bootstrap.com/generate.vim' \
-            --data 'langs=c&langs=python&langs=go&editor=vim&additional-plugins=fzf,vim-easymotion' \
-            > "$output"
-          test -s "$output"
-          grep -q 'vim-bootstrap' "$output"
-          sed -i '1c\" vim-bootstrap snapshot; refreshed by .github/workflows/refresh-vim-bootstrap.yml' "$output"
-          mv "$output" home/dot_vimrc
+        run: bash scripts/refresh-vim-bootstrap.sh
 
       - name: Validate generated snapshot
         shell: bash
