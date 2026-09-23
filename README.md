@@ -129,6 +129,14 @@ bash packages/install.sh --check
 
 On macOS this uses `brew bundle check`; on Ubuntu it queries the installed dpkg state.
 
+To see available updates for the native package baseline without changing installed packages:
+
+```sh
+dotconfig packages --outdated
+```
+
+On macOS this queries Homebrew for formulae in the shared manifest. On Ubuntu it filters a simulated apt upgrade to the manifest packages and uses the local apt cache; run `sudo apt-get update` separately if the cache is stale. This reports available versions, not confirmed vulnerabilities. Native upgrades remain an explicit machine operation.
+
 ## Configuration layers
 
 - `home/dot_zshrc.tmpl` becomes the small `~/.zshrc` orchestrator.
