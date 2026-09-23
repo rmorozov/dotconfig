@@ -72,7 +72,7 @@ dotconfig doctor
 
 Both commands compare installed chezmoi and mise versions with `versions/bootstrap-tools`, as well as installed Vim plugin commits and CoC extension versions with the committed manifests. `status` reports every category before returning failure on drift, rather than stopping at the first missing package; `doctor` includes the same editor checks in its prerequisite diagnosis.
 
-Safely fast-forward the repository, review the rendered diff, and confirm before applying it:
+Safely fast-forward the repository, review pulled repository changes and the rendered dotfile diff, and confirm before applying:
 
 ```sh
 dotconfig update
@@ -84,7 +84,9 @@ To bring a machine fully onto the reviewed repository state in one pass, use:
 dotconfig sync
 ```
 
-After the same pull, diff, and confirmation flow, `sync` installs the pinned mise runtimes, converges the exact Oh My Zsh revision, and installs the pinned Vim plugins and CoC extensions. If the dotfile update is declined, the remaining convergence steps do not run. Native packages stay separate because Ubuntu may require `sudo` and package-manager changes deserve an explicit operation.
+The accepted commit is recorded in the clone's local Git config. If confirmation is declined, a later `update` or `sync` still shows the unreviewed changes and asks again, including when only scripts or manifests changed. A successful first installation records its initial commit. `dotconfig status` reports a pending review.
+
+After the same pull, diff, and confirmation flow, `sync` installs the pinned mise runtimes, converges the exact Oh My Zsh revision, and installs the pinned Vim plugins and CoC extensions. If review is declined, the remaining convergence steps do not run. Native packages stay separate because Ubuntu may require `sudo` and package-manager changes deserve an explicit operation.
 
 The individual operations remain available:
 
