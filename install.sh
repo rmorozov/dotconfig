@@ -99,10 +99,7 @@ bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" install
 bash "$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 
 if ! "$SKIP_PLUGINS"; then
-    vim -Nu "$HOME/.vimrc" -n -es \
-        +'silent! PlugInstall --sync' \
-        +'silent! CocInstall -sync' \
-        +qall
+    bash "$REPO_ROOT/scripts/converge-vim.sh"
 fi
 
 if ! "$SKIP_SHELL_CHANGE"; then
