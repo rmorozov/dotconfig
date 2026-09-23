@@ -112,5 +112,9 @@ if ! "$SKIP_SHELL_CHANGE"; then
     fi
 fi
 
+if git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" config --local dotconfig.reviewedHead "$(git -C "$REPO_ROOT" rev-parse HEAD)"
+fi
+
 echo "dotconfig installation complete"
 echo "Review future changes with: chezmoi --source \"$REPO_ROOT\" diff"
