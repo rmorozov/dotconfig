@@ -21,7 +21,7 @@ for tool in chezmoi mise; do
     }
     case "$tool" in
         chezmoi)
-            if [[ "$version_output" =~ ^chezmoi[[:space:]]+version[[:space:]]+v?([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$) ]]; then
+            if [[ "$version_output" =~ ^chezmoi[[:space:]]+version[[:space:]]+v?([0-9]+\.[0-9]+\.[0-9]+)([[:space:],]|$) ]]; then
                 actual="${BASH_REMATCH[1]}"
             else
                 actual=""
