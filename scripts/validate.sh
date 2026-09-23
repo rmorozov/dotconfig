@@ -27,6 +27,7 @@ done
 
 bash scripts/test-editor-state.sh
 bash scripts/test-bootstrap-tools.sh
+bash scripts/test-mise-archive-checksum.sh
 bash scripts/test-open-refresh-pr.sh
 
 for script in home/dot_config/zsh/*.zsh; do
