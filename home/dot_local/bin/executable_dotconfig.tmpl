@@ -142,6 +142,10 @@ status_command() {
     echo "Profile: $MACHINE_ROLE / $HOST_TYPE"
     echo "Repository: $REPO_ROOT"
     git -C "$REPO_ROOT" status --short --branch
+    if [[ "$(git -C "$REPO_ROOT" config --local --get dotconfig.reviewedHead || true)" != "$(git -C "$REPO_ROOT" rev-parse HEAD)" ]]; then
+        echo "Repository changes await review; run: dotconfig update" >&2
+        failures=$((failures + 1))
+    fi
 
     echo
     echo "Dotfile drift:"
@@ -265,31 +269,60 @@ update_command() {
         exit 1
     fi
 
-    git -C "$REPO_ROOT" pull --ff-only
-
+    local old_head
+    local new_head
+    local reviewed_head
+    local diff_base
     local drift
+    old_head="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    git -C "$REPO_ROOT" pull --ff-only
+    new_head="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    reviewed_head="$(git -C "$REPO_ROOT" config --local --get dotconfig.reviewedHead || true)"
+    [[ "$reviewed_head" =~ ^[0-9a-f]{40}$ ]] || reviewed_head=""
+
     drift="$(dotfile_drift)"
-    if [[ -z "$drift" ]]; then
-        echo "Managed dotfiles are already current."
+    if [[ "$reviewed_head" == "$new_head" && -z "$drift" ]]; then
+        echo "Repository and managed dotfiles are already current."
         UPDATE_CAN_CONVERGE=true
         package_check || true
         return
     fi
 
-    printf '%s\n' "$drift"
+    if [[ "$reviewed_head" != "$new_head" ]]; then
+        diff_base="$old_head"
+        if [[ -n "$reviewed_head" ]] && git -C "$REPO_ROOT" merge-base --is-ancestor "$reviewed_head" "$new_head"; then
+            diff_base="$reviewed_head"
+        fi
+        if [[ "$diff_base" != "$new_head" ]]; then
+            echo "Repository changes awaiting review ($diff_base..$new_head):"
+            git -C "$REPO_ROOT" --no-pager diff "$diff_base" "$new_head"
+        else
+            echo "Repository revision has not been reviewed on this machine:"
+            git -C "$REPO_ROOT" --no-pager show --stat --oneline "$new_head"
+        fi
+    fi
+
+    if [[ -n "$drift" ]]; then
+        echo "Managed dotfile changes:"
+        printf '%s\n' "$drift"
+    fi
+
     if [[ -t 0 ]]; then
-        printf 'Apply these dotfile changes? [y/N] '
+        printf 'Accept these changes and apply managed dotfiles? [y/N] '
         read -r answer
         [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]] || {
             echo "Not applied."
             return
         }
     else
-        echo "Non-interactive session: refusing to apply without confirmation." >&2
+        echo "Non-interactive session: refusing to apply or converge without confirmation." >&2
         exit 1
     fi
 
-    chezmoi --source "$REPO_ROOT" apply --verbose
+    if [[ -n "$drift" ]]; then
+        chezmoi --source "$REPO_ROOT" apply --verbose
+    fi
+    git -C "$REPO_ROOT" config --local dotconfig.reviewedHead "$new_head"
     UPDATE_CAN_CONVERGE=true
     package_check || true
 }
