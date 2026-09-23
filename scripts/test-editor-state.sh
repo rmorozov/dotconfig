@@ -7,6 +7,7 @@ trap 'rm -rf "$test_root"' EXIT
 vim_root="$test_root/vim"
 coc_root="$test_root/coc"
 vim_manifest="$test_root/vim-plugins"
+vim_locations="$test_root/vim-plugin-locations"
 coc_manifest="$test_root/coc-extensions"
 vim_plug_manifest="$test_root/vim-plug"
 vim_plug_file="$test_root/plug.vim"
@@ -21,10 +22,13 @@ printf '%s\n' test > "$plugin_dir/plugin.vim"
 git -C "$plugin_dir" add plugin.vim
 git -C "$plugin_dir" commit -m test >/dev/null
 revision="$(git -C "$plugin_dir" rev-parse HEAD)"
+git clone -q "$plugin_dir" "$test_root/.fzf"
+printf "%s\n" "# plugin home-relative-directory" "fzf .fzf" > "$vim_locations"
 
 printf '%s\n' \
     '# name repository ref commit' \
     "demo https://example.invalid/demo.git HEAD $revision" \
+    "fzf https://example.invalid/fzf.git HEAD $revision" \
     > "$vim_manifest"
 printf '%s\n' \
     '# npm package version' \
@@ -36,10 +40,24 @@ printf '%s %s\n' "$revision" "$(git hash-object "$vim_plug_file")" > "$vim_plug_
 export VIM_PLUG_MANIFEST="$vim_plug_manifest" VIM_PLUG_FILE="$vim_plug_file"
 
 VIM_PLUGIN_MANIFEST="$vim_manifest" \
+VIM_PLUGIN_LOCATIONS="$vim_locations" \
+VIM_PLUGIN_HOMEDIR="$test_root" \
 COC_EXTENSION_MANIFEST="$coc_manifest" \
 VIM_PLUGIN_HOME="$vim_root" \
 COC_EXTENSION_HOME="$coc_root" \
     bash "$REPO_ROOT/scripts/check-editor-state.sh" >/dev/null
+
+mv "$test_root/.fzf" "$test_root/fzf-hidden"
+if VIM_PLUGIN_MANIFEST="$vim_manifest" \
+    COC_EXTENSION_MANIFEST="$coc_manifest" \
+    VIM_PLUGIN_HOME="$vim_root" \
+    COC_EXTENSION_HOME="$coc_root" \
+    bash "$REPO_ROOT/scripts/check-editor-state.sh" >"$test_root/output" 2>&1; then
+    echo "Expected missing custom-location fzf to fail validation." >&2
+    exit 1
+fi
+grep -q 'missing: Vim plugin fzf' "$test_root/output"
+mv "$test_root/fzf-hidden" "$test_root/.fzf"
 
 printf '%s\n' '" changed manager' > "$vim_plug_file"
 if VIM_PLUGIN_MANIFEST="$vim_manifest" \
