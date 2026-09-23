@@ -1,6 +1,9 @@
 # component version-or-revision-or-sha256
 chezmoi 2.72.2
-chezmoi-installer 593166436bf621259efb33d12ebeecd7bae17329
+chezmoi-linux-arm64-sha256 499925fd10804b7c1a5dc4b4a275c8935261d02a4be0c18bbd41b7747810de67
+chezmoi-linux-amd64-sha256 a2be1b8bcdf06c6f173e070bb3ddbcc52c50478fe9b57f6e6c63d15c7cff4f03
+chezmoi-darwin-arm64-sha256 2b0c7e57f3f2da44628fa9f6863b9bd41f0935cfd2416228aa9df6daab6690f5
+chezmoi-darwin-amd64-sha256 08ad1ba33a73e68f7657ee226f72b5d800b5a947954b06e185e8591bd32b0063
 homebrew-installer b41c8e7b3588e2899974119faf3b2a897428648d
 mise 2026.9.12
 mise-linux-arm64-sha256 e4a0921da0a76ce4666832d5b57b6f0eb9f22d149ba92845ebae4c38638c6775
