@@ -53,6 +53,7 @@ bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" smoke
 for pin in "${expected[@]}"; do
     while read -r tool selector executable version_argument; do
         [[ "$tool" == "${pin%@*}" ]] || continue
+        [[ "$selector" == "$tool@"* ]]
         grep -Fxq "exec $pin -- $executable $version_argument" "$MISE_TEST_LOG"
     done < "$REPO_ROOT/versions/runtime-channels"
 done
