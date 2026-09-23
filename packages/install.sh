@@ -40,7 +40,11 @@ case "$(uname -s)" in
             echo "The Linux package baseline currently supports Ubuntu/Debian only." >&2
             exit 1
         fi
-        mapfile -t packages < <(sed -E '/^[[:space:]]*(#|$)/d' "$PACKAGE_DIR/ubuntu.txt")
+        packages=()
+        while IFS= read -r package_name; do
+            [[ "$package_name" =~ ^[[:space:]]*(#|$) ]] && continue
+            packages+=("$package_name")
+        done < "$PACKAGE_DIR/ubuntu.txt"
         if [[ "$MODE" == outdated ]]; then
             simulation="$(LC_ALL=C apt-get -s upgrade)" || exit 1
             updates="$(awk '
