@@ -5,6 +5,8 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VIM_MANIFEST="${VIM_PLUGIN_MANIFEST:-$REPO_ROOT/versions/vim-plugins}"
 COC_MANIFEST="${COC_EXTENSION_MANIFEST:-$REPO_ROOT/versions/coc-extensions}"
 VIM_ROOT="${VIM_PLUGIN_HOME:-$HOME/.vim/plugged}"
+VIM_LOCATIONS="${VIM_PLUGIN_LOCATIONS:-$REPO_ROOT/versions/vim-plugin-locations}"
+VIM_HOMEDIR="${VIM_PLUGIN_HOMEDIR:-$HOME}"
 COC_ROOT="${COC_EXTENSION_HOME:-${COC_DATA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/coc}/extensions/node_modules}"
 VIM_PLUG_PIN="${VIM_PLUG_MANIFEST:-$REPO_ROOT/versions/vim-plug}"
 VIM_PLUG_FILE="${VIM_PLUG_FILE:-$HOME/.vim/autoload/plug.vim}"
@@ -30,6 +32,13 @@ fi
 while read -r name _repository _ref expected; do
     [[ -n "${name:-}" && "$name" != "#" ]] || continue
     plugin_dir="$VIM_ROOT/$name"
+    while read -r mapped_name home_relative_dir; do
+        [[ -n "${mapped_name:-}" && "$mapped_name" != "#" ]] || continue
+        if [[ "$mapped_name" == "$name" ]]; then
+            plugin_dir="$VIM_HOMEDIR/$home_relative_dir"
+            break
+        fi
+    done < "$VIM_LOCATIONS"
 
     if [[ ! -d "$plugin_dir/.git" ]]; then
         echo "missing: Vim plugin $name" >&2
