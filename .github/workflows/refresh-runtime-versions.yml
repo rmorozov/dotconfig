@@ -24,7 +24,7 @@ jobs:
 
       - name: Install mise
         run: |
-          curl --fail --silent --show-error --location https://mise.run | sh
+          bash scripts/install-bootstrap-tool.sh mise
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Refresh pinned versions
