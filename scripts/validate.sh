@@ -39,6 +39,7 @@ bash scripts/test-chezmoi-archive-checksum.sh
 bash scripts/test-open-refresh-pr.sh
 bash scripts/test-update-oh-my-zsh.sh
 bash scripts/test-refresh-vim-bootstrap.sh
+bash scripts/test-update-vim-plug.sh
 
 for script in home/dot_config/zsh/*.zsh; do
     zsh -n "$script"
@@ -52,6 +53,11 @@ git diff --exit-code -- \
     home/dot_vim/plugin-lock.vim \
     packages/Brewfile \
     packages/ubuntu.txt
+
+read -r vim_plug_revision vim_plug_blob < versions/vim-plug
+[[ "$vim_plug_revision" =~ ^[0-9a-f]{40}$ && "$vim_plug_blob" =~ ^[0-9a-f]{40}$ ]]
+test "$(git hash-object home/dot_vim/autoload/plug.vim)" = "$vim_plug_blob"
+grep -Fq "https://raw.githubusercontent.com/junegunn/vim-plug/$vim_plug_revision/plug.vim" home/dot_vimrc
 
 test -s home/dot_vimrc
 grep -q 'vim-bootstrap snapshot' home/dot_vimrc
