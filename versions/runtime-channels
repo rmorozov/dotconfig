@@ -1,0 +1,4 @@
+# tool mise-selector
+node node@lts
+go go@latest
+python python@3.14
