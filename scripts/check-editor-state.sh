@@ -39,7 +39,10 @@ while read -r package_name expected; do
         continue
     fi
 
-    actual="$(awk -F '"' '$2 == "version" { print $4; exit }' "$package_json")"
+    actual="$(
+        sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$package_json" |
+            head -n 1
+    )"
     if [[ -z "$actual" ]]; then
         echo "invalid: CoC extension metadata $package_name" >&2
         failures=$((failures + 1))
