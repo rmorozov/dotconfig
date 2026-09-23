@@ -167,7 +167,7 @@ The **Refresh Oh My Zsh** workflow proposes a new upstream commit nightly. Befor
 
 The vim-plug manager itself is vendored at `home/dot_vim/autoload/plug.vim`, with its upstream commit and file hash recorded in `versions/vim-plug`. Its first-run fallback URL in the generated vimrc points to that exact commit. The **Refresh vim-plug** workflow proposes changes to both files nightly when upstream code changes; it stages the manager, pin, and fallback URL before updating the repository, and a later run repairs any interrupted partial update. The static validator checks that the vendored file and fallback URL match the pin.
 
-Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Plugins installed outside vim-plug's default `~/.vim/plugged/<name>` directory are listed in `versions/vim-plugin-locations` using a home-relative path; `fzf` currently uses `~/.fzf`. Add an entry there when a new plugin specifies a custom `dir` in the Vim configuration. Chezmoi deploys the generated `~/.vim/plugin-lock.vim`, which applies exact commit constraints before vim-plug finishes initialization. Existing `do` hooks therefore run against the pinned revision.
+Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Plugins installed outside vim-plug's default `~/.vim/plugged/<name>` directory are listed in `versions/vim-plugin-locations` using a home-relative path; `fzf` currently uses `~/.fzf`. Pass a home-relative directory as the third argument to `scripts/add-vim-plugin.sh` to create the matching Vim declaration and location entry together. Chezmoi deploys the generated `~/.vim/plugin-lock.vim`, which applies exact commit constraints before vim-plug finishes initialization. Existing `do` hooks therefore run against the pinned revision.
 
 Run `dotconfig vim` to converge a machine. The installer, `dotconfig vim`, and `dotconfig sync` verify the installed vim-plug file, Vim plugin commits, and CoC extension versions before reporting success. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin nightly and opens a reviewable PR containing both the manifest and generated lock.
 
@@ -183,6 +183,7 @@ scripts/add-native-package.sh capability homebrew-formula ubuntu-package
 scripts/add-coc-extension.sh coc-example
 scripts/add-vim-plugin.sh owner/repository
 scripts/add-vim-plugin.sh owner/repository release-branch
+scripts/add-vim-plugin.sh owner/repository HEAD .vim/custom-checkout
 ```
 
 Use `-` when a native package is intentionally absent on one platform. Each helper rejects duplicate capability or dependency names, updates its authoritative manifest, and regenerates deployed files. The Vim and CoC helpers also resolve an exact current revision or version. Existing pinned dependencies are refreshed by the nightly workflows. Runtimes remain simple keys in `home/dot_config/mise/config.toml`; Zsh plugins are grouped in the shared and platform-specific Zsh modules.
