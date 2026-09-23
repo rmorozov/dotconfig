@@ -28,6 +28,7 @@ done
 bash scripts/test-editor-state.sh
 bash scripts/test-add-vim-plugin.sh
 bash scripts/test-vim-plugin-declarations.sh
+bash scripts/test-reconsider-coc-extensions.sh
 bash scripts/test-converge-vim.sh
 bash scripts/test-bootstrap-tools.sh
 bash scripts/test-first-run-bootstrap.sh
