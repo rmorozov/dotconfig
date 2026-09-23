@@ -37,7 +37,7 @@ release_checksum() {
     local archive="$1"
     local checksum_file="$2"
     local digest
-    digest="$(awk -v archive="$archive" '
+    if ! digest="$(awk -v archive="$archive" '
         {
             filename = $2
             sub(/^\.\//, "", filename)
@@ -47,7 +47,10 @@ release_checksum() {
             }
         }
         END { exit (count != 1) }
-    ' "$checksum_file")"
+    ' "$checksum_file")"; then
+        echo "Missing or duplicate upstream checksum for $archive" >&2
+        return 1
+    fi
     [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
         echo "Invalid upstream checksum for $archive" >&2
         return 1
