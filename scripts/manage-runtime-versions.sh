@@ -50,9 +50,20 @@ case "${1:-}" in
         for pin in "${pins[@]}"; do
             tool="${pin%@*}"
             version="${pin#*@}"
-            version_argument=--version
-            [[ "$tool" == go ]] && version_argument=version
-            reported="$(mise exec "$pin" -- "$tool" "$version_argument")" || {
+            matches=0
+            while read -r configured_tool selector executable version_argument extra; do
+                [[ "$configured_tool" == "$tool" ]] || continue
+                if ((matches > 0)) || [[ "$selector" != "$tool@"* || -z "$executable" || -z "$version_argument" || -n "$extra" ]]; then
+                    echo "invalid smoke command for $tool" >&2
+                    exit 1
+                fi
+                matches=$((matches + 1))
+            done < "$REPO_ROOT/versions/runtime-channels"
+            ((matches == 1)) || {
+                echo "missing smoke command for $tool" >&2
+                exit 1
+            }
+            reported="$(mise exec "$pin" -- "$executable" "$version_argument")" || {
                 echo "failed: $pin executable" >&2
                 exit 1
             }
