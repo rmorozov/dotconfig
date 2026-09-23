@@ -29,4 +29,23 @@ if VIM_EXIT=1 bash "$REPO_ROOT/scripts/converge-vim.sh" >"$test_root/output" 2>&
     exit 1
 fi
 test "$(wc -l < "$test_root/log")" -eq 1
-echo 'Vim convergence failures are reported'
+# A fully pinned fixture should allow convergence to finish.
+mkdir -p "$test_root/plugins/demo" "$test_root/coc/coc-demo"
+git -C "$test_root/plugins/demo" init -q
+git -C "$test_root/plugins/demo" config user.name test
+git -C "$test_root/plugins/demo" config user.email test@example.com
+printf 'plugin\n' > "$test_root/plugins/demo/plugin.vim"
+git -C "$test_root/plugins/demo" add plugin.vim
+git -C "$test_root/plugins/demo" commit -qm test
+revision="$(git -C "$test_root/plugins/demo" rev-parse HEAD)"
+printf '# name repository ref commit\ndemo local HEAD %s\n' "$revision" > "$test_root/vim-plugins"
+printf '# npm package version\ncoc-demo 1.2.3\n' > "$test_root/coc-extensions"
+printf '%s\n' '{"name":"coc-demo","version":"1.2.3"}' > "$test_root/coc/coc-demo/package.json"
+printf 'manager\n' > "$test_root/plug.vim"
+printf '%s %s\n' "$revision" "$(git hash-object "$test_root/plug.vim")" > "$test_root/vim-plug"
+export VIM_PLUGIN_MANIFEST="$test_root/vim-plugins" VIM_PLUGIN_HOME="$test_root/plugins"
+export COC_EXTENSION_MANIFEST="$test_root/coc-extensions" COC_EXTENSION_HOME="$test_root/coc"
+export VIM_PLUG_MANIFEST="$test_root/vim-plug" VIM_PLUG_FILE="$test_root/plug.vim"
+bash "$REPO_ROOT/scripts/converge-vim.sh" >"$test_root/output"
+grep -q 'Editor dependencies match committed pins' "$test_root/output"
+echo 'Vim convergence verifies installed pins'
