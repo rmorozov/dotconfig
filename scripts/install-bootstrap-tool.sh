@@ -68,21 +68,12 @@ case "$tool" in
 
         archive="mise-v$version-$os-$arch.tar.gz"
         release_url="https://github.com/jdx/mise/releases/download/v$version"
+        expected="$(manifest_value "mise-$os-$arch-sha256")"
+        [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "Invalid pinned mise checksum for $os-$arch" >&2
+            exit 1
+        }
         download "$release_url/$archive" "$tmpdir/$archive"
-        download "$release_url/SHASUMS256.txt" "$tmpdir/SHASUMS256.txt"
-        expected="$(
-            awk -v archive="$archive" '
-                {
-                    filename = $2
-                    sub(/^\.\//, "", filename)
-                    if (filename == archive) {
-                        print $1
-                        found = 1
-                    }
-                }
-                END { exit !found }
-            ' "$tmpdir/SHASUMS256.txt"
-        )"
         if command -v sha256sum >/dev/null 2>&1; then
             printf '%s  %s\n' "$expected" "$tmpdir/$archive" | sha256sum -c -
         else
