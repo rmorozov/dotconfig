@@ -34,19 +34,21 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+ensure_homebrew() {
+    command_exists brew || bash "$BOOTSTRAP_INSTALLER" homebrew
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+    export PATH="$HOME/.local/bin:$PATH"
+}
+
 install_chezmoi() {
     command_exists chezmoi && return
 
     case "$(uname -s)" in
         Darwin)
-            if ! command_exists brew; then
-                bash "$BOOTSTRAP_INSTALLER" homebrew
-            fi
-            if [[ -x /opt/homebrew/bin/brew ]]; then
-                eval "$(/opt/homebrew/bin/brew shellenv)"
-            elif [[ -x /usr/local/bin/brew ]]; then
-                eval "$(/usr/local/bin/brew shellenv)"
-            fi
             bash "$BOOTSTRAP_INSTALLER" chezmoi
             export PATH="$HOME/.local/bin:$PATH"
             ;;
@@ -84,6 +86,9 @@ install_chezmoi
 install_mise
 
 if ! "$SKIP_PACKAGES"; then
+    if [[ "$(uname -s)" == Darwin ]]; then
+        ensure_homebrew
+    fi
     bash "$REPO_ROOT/packages/install.sh"
 fi
 
