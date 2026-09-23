@@ -21,6 +21,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Zsh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh
+
       - name: Refresh pinned revision
         run: bash scripts/update-oh-my-zsh.sh
 
