@@ -53,4 +53,32 @@ if bash "$REPO_ROOT/scripts/update-vim-plug.sh" >"$test_root/output" 2>&1; then
 fi
 test "$(awk '{ print $1 }' "$test_root/pin")" = "$revision"
 test "$(git hash-object "$test_root/plug.vim")" = "$blob"
-echo 'vim-plug refresh test passed'
+unset BAD_DOWNLOAD
+
+# A snapshot validation failure must leave all committed files untouched.
+printf 'invalid fallback\n' > "$test_root/vimrc"
+if bash "$REPO_ROOT/scripts/update-vim-plug.sh" >"$test_root/output" 2>&1; then
+    echo 'Invalid snapshot unexpectedly accepted' >&2
+    exit 1
+fi
+test "$(awk '{ print $1 }' "$test_root/pin")" = "$revision"
+test "$(git hash-object "$test_root/plug.vim")" = "$blob"
+
+printf 'https://raw.githubusercontent.com/junegunn/vim-plug/%s/plug.vim\n' "$revision" > "$test_root/vimrc"
+bash "$REPO_ROOT/scripts/update-vim-plug.sh" >/dev/null
+next_revision="$(git -C "$remote" rev-parse HEAD)"
+test "$(awk '{ print $1 }' "$test_root/pin")" = "$next_revision"
+grep -Fq "/$next_revision/plug.vim" "$test_root/vimrc"
+
+# Repair a stale URL even when the downloaded source has not changed.
+printf 'https://raw.githubusercontent.com/junegunn/vim-plug/%s/plug.vim\n' "$revision" > "$test_root/vimrc"
+bash "$REPO_ROOT/scripts/update-vim-plug.sh" >/dev/null
+grep -Fq "/$next_revision/plug.vim" "$test_root/vimrc"
+
+# Advancing upstream HEAD for an unrelated file must leave the pin stable.
+printf 'docs\n' > "$remote/README"
+git -C "$remote" add README
+git -C "$remote" commit -qm docs
+bash "$REPO_ROOT/scripts/update-vim-plug.sh" >/dev/null
+test "$(awk '{ print $1 }' "$test_root/pin")" = "$next_revision"
+echo 'vim-plug refresh staging and retry passed'
