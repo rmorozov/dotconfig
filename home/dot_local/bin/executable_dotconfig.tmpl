@@ -113,10 +113,7 @@ private_command() {
 }
 
 vim_install() {
-    vim -Nu "$HOME/.vimrc" -n -es \
-        +'silent! PlugInstall --sync' \
-        +'silent! CocInstall -sync' \
-        +qall
+    bash "$REPO_ROOT/scripts/converge-vim.sh"
 }
 
 bootstrap_install() {
