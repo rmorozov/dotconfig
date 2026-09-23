@@ -33,7 +33,7 @@ plugin_names="$(zsh -f -c '
 }
 
 while IFS= read -r plugin; do
-    [[ "$plugin" =~ ^[A-Za-z0-9._-]+$ && -f "$candidate/plugins/$plugin/$plugin.plugin.zsh" ]] || {
+    [[ "$plugin" =~ ^[A-Za-z0-9._-]+$ && -d "$candidate/plugins/$plugin" ]] || {
         echo "Oh My Zsh revision $revision is missing configured plugin: $plugin" >&2
         exit 1
     }
