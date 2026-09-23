@@ -8,6 +8,7 @@ PACKAGE_INSTALLER="$REPO_ROOT/packages/install.sh"
 OH_MY_ZSH_INSTALLER="$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 OH_MY_ZSH_REVISION_FILE="$REPO_ROOT/versions/oh-my-zsh"
 EDITOR_STATE_CHECKER="$REPO_ROOT/scripts/check-editor-state.sh"
+RUNTIME_MANAGER="$REPO_ROOT/scripts/manage-runtime-versions.sh"
 BOOTSTRAP_STATE_CHECKER="$REPO_ROOT/scripts/check-bootstrap-tools.sh"
 BOOTSTRAP_INSTALLER="$REPO_ROOT/scripts/install-bootstrap-tool.sh"
 MACHINE_ROLE={{ .machineRole | quote }}
@@ -65,7 +66,7 @@ runtime_status() {
         echo "missing: mise" >&2
         return 1
     fi
-    mise current
+    bash "$RUNTIME_MANAGER" status
 }
 
 private_files() {
@@ -130,7 +131,7 @@ runtime_install() {
         echo "missing: mise; rerun the repository installer" >&2
         return 1
     }
-    mise install
+    bash "$RUNTIME_MANAGER" install
 }
 
 status_command() {
@@ -230,7 +231,7 @@ doctor_command() {
     fi
 
     if runtime_status; then
-        echo "ok: runtime configuration is available"
+        echo "ok: pinned runtimes are installed"
     else
         failures=$((failures + 1))
     fi
