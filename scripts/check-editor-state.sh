@@ -7,7 +7,7 @@ COC_MANIFEST="${COC_EXTENSION_MANIFEST:-$REPO_ROOT/versions/coc-extensions}"
 VIM_ROOT="${VIM_PLUGIN_HOME:-$HOME/.vim/plugged}"
 COC_ROOT="${COC_EXTENSION_HOME:-${COC_DATA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/coc}/extensions/node_modules}"
 VIM_PLUG_PIN="${VIM_PLUG_MANIFEST:-$REPO_ROOT/versions/vim-plug}"
-VIM_PLUG_FILE="${VIM_PLUG_HOME:-$HOME/.vim/autoload/plug.vim}"
+VIM_PLUG_FILE="${VIM_PLUG_FILE:-$HOME/.vim/autoload/plug.vim}"
 failures=0
 
 read -r vim_plug_revision expected_vim_plug_blob < "$VIM_PLUG_PIN"
