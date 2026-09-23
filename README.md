@@ -57,7 +57,7 @@ The installer:
 
 Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
 
-Bootstrap trust is recorded in `versions/bootstrap-tools`. Ubuntu installs the exact mise release only after verifying its upstream SHA-256 checksum, and installs the exact chezmoi release through an installer fetched from an immutable commit. A missing Homebrew installation uses the same immutable-commit rule. Remote scripts are downloaded to temporary files rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
+Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. This is detection only: merging a bootstrap refresh does not replace an existing executable. Review the new pin, then update the appropriate package or rerun the pinned bootstrap helper explicitly. Homebrew may lag behind the upstream release, so macOS can report drift until that version is available or installed directly. Ubuntu installs the exact mise release only after verifying its upstream SHA-256 checksum, and installs the exact chezmoi release through an installer fetched from an immutable commit. A missing Homebrew installation uses the same immutable-commit rule. Remote scripts are downloaded to temporary files rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
 
 ## Normal update workflow
 
@@ -70,7 +70,7 @@ dotconfig status
 dotconfig doctor
 ```
 
-Both commands compare installed Vim plugin commits and CoC extension versions with the committed manifests. `status` reports every category before returning failure on drift, rather than stopping at the first missing package; `doctor` includes the same editor checks in its prerequisite diagnosis.
+Both commands compare installed chezmoi and mise versions with `versions/bootstrap-tools`, as well as installed Vim plugin commits and CoC extension versions with the committed manifests. `status` reports every category before returning failure on drift, rather than stopping at the first missing package; `doctor` includes the same editor checks in its prerequisite diagnosis.
 
 Safely fast-forward the repository, review the rendered diff, and confirm before applying it:
 
