@@ -202,7 +202,7 @@ GitHub Actions additionally runs:
 - ShellCheck and Bash/Zsh syntax checks;
 - package-manifest script validation;
 - structural checks for the Vim Bootstrap snapshot;
-- installation and presence checks for every committed mise runtime pin in an isolated home on both platforms;
+- installation and executable version checks for every committed mise runtime pin in an isolated home on both platforms;
 - a real chezmoi apply into an isolated temporary home;
 - ShellCheck of the rendered `dotconfig` command;
 - native jobs on Ubuntu 26.04 and Apple Silicon macOS 26.
