@@ -1,0 +1,2 @@
+# plugin home-relative-directory; default is ~/.vim/plugged/<plugin>
+fzf .fzf
