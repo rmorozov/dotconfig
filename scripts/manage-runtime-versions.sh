@@ -58,12 +58,14 @@ case "${1:-}" in
                     exit 1
                 fi
                 matches=$((matches + 1))
+                smoke_executable="$executable"
+                smoke_argument="$version_argument"
             done < "$REPO_ROOT/versions/runtime-channels"
             ((matches == 1)) || {
                 echo "missing smoke command for $tool" >&2
                 exit 1
             }
-            reported="$(mise exec "$pin" -- "$executable" "$version_argument")" || {
+            reported="$(mise exec "$pin" -- "$smoke_executable" "$smoke_argument")" || {
                 echo "failed: $pin executable" >&2
                 exit 1
             }
