@@ -57,7 +57,7 @@ The installer:
 
 Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
 
-Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. Merging a bootstrap refresh does not replace an existing executable. After reviewing the new pin, run `dotconfig bootstrap` to install the exact chezmoi and mise releases into `~/.local/bin` and verify the versions now selected on `PATH`. This is explicit and separate from `dotconfig sync`. On macOS the native Homebrew formulae remain installed for the package baseline, but the pinned user-local binaries take precedence in the managed Zsh configuration; Homebrew can lag upstream. On both target platforms, mise archives are checked against SHA-256 values committed in the manifest, and installs the exact chezmoi release through an installer fetched from an immutable commit. A missing Homebrew installation uses the same immutable-commit rule. Remote scripts are downloaded to temporary files rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
+Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. Merging a bootstrap refresh does not replace an existing executable. After reviewing the new pin, run `dotconfig bootstrap` to install the exact chezmoi and mise releases into `~/.local/bin` and verify the versions now selected on `PATH`. This is explicit and separate from `dotconfig sync`. On macOS the native Homebrew formulae remain installed for the package baseline, but the pinned user-local binaries take precedence in the managed Zsh configuration; Homebrew can lag upstream. On both target platforms, the exact mise and chezmoi release archives are checked against SHA-256 values committed in the manifest before extraction. A missing Homebrew installation still uses an installer fetched from an immutable commit. That script is downloaded to a temporary file rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
 
 ## Normal update workflow
 
@@ -221,7 +221,7 @@ The nightly advisory audit builds a temporary npm lock from the exact CoC extens
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
 - GitHub Actions are executed from immutable full commit SHAs; validator rejects mutable tag references;
 - Dependabot checks those pinned Actions daily and groups proposed SHA updates into a reviewable pull request;
-- the bootstrap refresh workflow proposes exact chezmoi/mise releases, immutable installer revisions, and the mise archive SHA-256 pins each night;
+- the bootstrap refresh workflow proposes exact chezmoi/mise releases, their archive SHA-256 pins, and the immutable Homebrew installer revision each night;
 - the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each night;
 - the Oh My Zsh refresh workflow proposes a new exact upstream revision each night;
 - the Vim plugin and CoC extension workflows propose exact reviewed editor dependency updates.
