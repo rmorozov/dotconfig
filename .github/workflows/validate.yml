@@ -41,9 +41,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl shellcheck zsh
-          curl --fail --silent --show-error --location https://mise.run | sh
-          mkdir -p "$HOME/.local/bin"
-          sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
+          bash scripts/install-bootstrap-tool.sh mise
+          bash scripts/install-bootstrap-tool.sh chezmoi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install macOS validators
