@@ -84,6 +84,20 @@ overlap="$(
     exit 1
 }
 
+awk '
+    NR == 1 { next }
+    NF != 2 || seen[$1]++ || $1 !~ /^[A-Za-z0-9_.-]+$/ ||
+        $2 !~ /^[A-Za-z0-9_.\/-]+$/ || $2 ~ /(^|\/)\.\.(\/|$)/ { invalid = 1 }
+    END { exit invalid }
+' versions/vim-plugin-locations
+while read -r mapped_name _home_relative_dir; do
+    [[ -n "${mapped_name:-}" && "$mapped_name" != "#" ]] || continue
+    awk -v name="$mapped_name" '$1 == name { found = 1 } END { exit !found }' versions/vim-plugins || {
+        echo "Unknown plugin location: $mapped_name" >&2
+        exit 1
+    }
+done < versions/vim-plugin-locations
+
 plugin_count="$(grep -vc '^#' versions/vim-plugins)"
 lock_count="$(grep -c '^call s:DotconfigPin' home/dot_vim/plugin-lock.vim)"
 test "$plugin_count" = "$lock_count"
