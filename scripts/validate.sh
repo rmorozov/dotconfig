@@ -27,6 +27,7 @@ done
 
 bash scripts/test-editor-state.sh
 bash scripts/test-add-vim-plugin.sh
+bash scripts/test-vim-plugin-declarations.sh
 bash scripts/test-converge-vim.sh
 bash scripts/test-bootstrap-tools.sh
 bash scripts/test-first-run-bootstrap.sh
@@ -50,6 +51,7 @@ done
 bash scripts/generate-coc-extensions.sh
 bash scripts/generate-native-packages.sh
 bash scripts/generate-vim-plugin-lock.sh
+python3 scripts/check-vim-plugin-declarations.py
 git diff --exit-code -- \
     home/dot_vim/coc-extensions.vim \
     home/dot_vim/plugin-lock.vim \
