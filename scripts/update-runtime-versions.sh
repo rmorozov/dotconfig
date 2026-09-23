@@ -15,10 +15,10 @@ pins_file="$(mktemp)"
 output="$(mktemp "${CONFIG_FILE}.XXXXXX")"
 trap 'rm -f "$pins_file" "$output"' EXIT
 
-while read -r tool selector extra; do
+while read -r tool selector executable version_argument extra; do
     [[ -n "$tool" && "$tool" != \#* ]] || continue
-    [[ "$tool" =~ ^[a-z][a-z0-9_-]*$ && "$selector" =~ ^[a-z][a-z0-9_-]*@[^[:space:]]+$ && -z "$extra" ]] || {
-        echo "invalid runtime channel: $tool $selector $extra" >&2
+    [[ "$tool" =~ ^[a-z][a-z0-9_-]*$ && "$selector" == "$tool@"* && "$executable" =~ ^[a-z][a-z0-9_-]*$ && "$version_argument" =~ ^-{0,2}[a-z][a-z0-9-]*$ && -z "$extra" ]] || {
+        echo "invalid runtime channel: $tool $selector $executable $version_argument $extra" >&2
         exit 1
     }
     version="$(mise latest "$selector")"
