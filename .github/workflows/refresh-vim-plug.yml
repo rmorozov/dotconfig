@@ -1,0 +1,35 @@
+name: Refresh vim-plug
+
+on:
+  schedule:
+    - cron: "11 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-vim-plug
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Refresh pinned vim-plug
+        run: bash scripts/update-vim-plug.sh
+      - name: Open or update refresh pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/open-refresh-pr.sh \
+            "automation/refresh-vim-plug" \
+            "Refresh pinned vim-plug" \
+            "Automated nightly refresh of the vendored vim-plug manager and its pinned first-run fallback." \
+            "versions/vim-plug" \
+            "home/dot_vim/autoload/plug.vim" \
+            "home/dot_vimrc"
