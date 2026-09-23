@@ -7,6 +7,7 @@ REPO_ROOT="$(git -C "$SOURCE_DIR" rev-parse --show-toplevel)"
 PACKAGE_INSTALLER="$REPO_ROOT/packages/install.sh"
 OH_MY_ZSH_INSTALLER="$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 OH_MY_ZSH_REVISION_FILE="$REPO_ROOT/versions/oh-my-zsh"
+EDITOR_STATE_CHECKER="$REPO_ROOT/scripts/check-editor-state.sh"
 MACHINE_ROLE={{ .machineRole | quote }}
 HOST_TYPE={{ .hostType | quote }}
 UPDATE_CAN_CONVERGE=false
@@ -123,6 +124,9 @@ runtime_install() {
 }
 
 status_command() {
+    local failures=0
+    local drift
+
     echo "Platform: $(uname -s) $(uname -m)"
     echo "Profile: $MACHINE_ROLE / $HOST_TYPE"
     echo "Repository: $REPO_ROOT"
@@ -130,21 +134,42 @@ status_command() {
 
     echo
     echo "Dotfile drift:"
-    local drift
     drift="$(dotfile_drift)"
     if [[ -n "$drift" ]]; then
         printf '%s\n' "$drift"
+        failures=$((failures + 1))
     else
         echo "none"
     fi
 
     echo
     echo "Package drift:"
-    package_check
+    if ! package_check; then
+        failures=$((failures + 1))
+    fi
 
     echo
     echo "Runtime versions:"
-    runtime_status
+    if ! runtime_status; then
+        failures=$((failures + 1))
+    fi
+
+    echo
+    echo "Oh My Zsh:"
+    if ! shell_status; then
+        failures=$((failures + 1))
+    fi
+
+    echo
+    echo "Editor dependencies:"
+    if ! bash "$EDITOR_STATE_CHECKER"; then
+        failures=$((failures + 1))
+    fi
+
+    if ((failures > 0)); then
+        echo "$failures state check(s) report drift" >&2
+        return 1
+    fi
 }
 
 doctor_command() {
@@ -191,6 +216,10 @@ doctor_command() {
     fi
 
     if ! shell_status; then
+        failures=$((failures + 1))
+    fi
+
+    if ! bash "$EDITOR_STATE_CHECKER"; then
         failures=$((failures + 1))
     fi
 
