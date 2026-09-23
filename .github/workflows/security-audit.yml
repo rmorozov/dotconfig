@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - versions/coc-extensions
+      - home/dot_config/mise/config.toml
+      - scripts/node-version.sh
       - scripts/audit-coc-extensions.sh
       - .github/workflows/security-audit.yml
   schedule:
@@ -24,9 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
 
+      - name: Read committed Node version
+        id: node_pin
+        run: echo "version=$(bash scripts/node-version.sh)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: ${{ steps.node_pin.outputs.version }}
 
       - name: Audit exact CoC extension versions
         run: bash scripts/audit-coc-extensions.sh
