@@ -30,16 +30,51 @@ download() {
     test -s "$2"
 }
 
+verify_checksum() {
+    local archive="$1"
+    local expected="$2"
+    local name="$3"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "Invalid pinned $name checksum" >&2
+        return 1
+    }
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -
+    else
+        local actual
+        actual="$(shasum -a 256 "$archive" | awk '{ print $1 }')"
+        [[ "$actual" == "$expected" ]] || {
+            echo "$name checksum mismatch" >&2
+            return 1
+        }
+    fi
+}
+
 case "$tool" in
     chezmoi)
         version="$(manifest_value chezmoi)"
-        installer_revision="$(manifest_value chezmoi-installer)"
-        installer="$tmpdir/chezmoi-install.sh"
-        download \
-            "https://raw.githubusercontent.com/twpayne/chezmoi/$installer_revision/assets/scripts/install.sh" \
-            "$installer"
+        case "$(uname -s)" in
+            Darwin) os=darwin ;;
+            Linux) os=linux ;;
+            *) echo "Unsupported chezmoi operating system: $(uname -s)" >&2; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+            arm64|aarch64) arch=arm64 ;;
+            x86_64) arch=amd64 ;;
+            *) echo "Unsupported chezmoi architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
+
+        archive="chezmoi_${version}_${os}_${arch}.tar.gz"
+        expected="$(manifest_value "chezmoi-$os-$arch-sha256")"
+        [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "Invalid pinned chezmoi checksum for $os-$arch" >&2
+            exit 1
+        }
+        download "https://github.com/twpayne/chezmoi/releases/download/v$version/$archive" "$tmpdir/$archive"
+        verify_checksum "$tmpdir/$archive" "$expected" "chezmoi $os-$arch"
+        tar -xzf "$tmpdir/$archive" -C "$tmpdir" chezmoi
         mkdir -p "$HOME/.local/bin"
-        sh "$installer" -b "$HOME/.local/bin" -t "v$version"
+        install -m 755 "$tmpdir/chezmoi" "$HOME/.local/bin/chezmoi"
         ;;
     homebrew)
         [[ "$(uname -s)" == Darwin ]] || {
@@ -69,20 +104,8 @@ case "$tool" in
         archive="mise-v$version-$os-$arch.tar.gz"
         release_url="https://github.com/jdx/mise/releases/download/v$version"
         expected="$(manifest_value "mise-$os-$arch-sha256")"
-        [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
-            echo "Invalid pinned mise checksum for $os-$arch" >&2
-            exit 1
-        }
         download "$release_url/$archive" "$tmpdir/$archive"
-        if command -v sha256sum >/dev/null 2>&1; then
-            printf '%s  %s\n' "$expected" "$tmpdir/$archive" | sha256sum -c -
-        else
-            actual="$(shasum -a 256 "$tmpdir/$archive" | awk '{ print $1 }')"
-            [[ "$actual" == "$expected" ]] || {
-                echo "mise checksum mismatch" >&2
-                exit 1
-            }
-        fi
+        verify_checksum "$tmpdir/$archive" "$expected" "mise $os-$arch"
 
         tar -xzf "$tmpdir/$archive" -C "$tmpdir"
         mkdir -p "$HOME/.local/bin"
