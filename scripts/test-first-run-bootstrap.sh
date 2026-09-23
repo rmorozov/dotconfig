@@ -6,8 +6,10 @@ set -Eeuo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
-mkdir -p "$tmpdir/repo/scripts" "$tmpdir/repo/packages" "$tmpdir/bin" "$tmpdir/home"
+mkdir -p "$tmpdir/repo/scripts" "$tmpdir/repo/packages" "$tmpdir/repo/home/dot_config/mise" "$tmpdir/bin" "$tmpdir/home"
 cp "$REPO_ROOT/install.sh" "$tmpdir/repo/install.sh"
+cp "$REPO_ROOT/scripts/manage-runtime-versions.sh" "$tmpdir/repo/scripts/"
+cp "$REPO_ROOT/home/dot_config/mise/config.toml" "$tmpdir/repo/home/dot_config/mise/"
 
 printf '%s\n' '#!/bin/sh' 'printf "Darwin\n"' > "$tmpdir/bin/uname"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$tmpdir/bin/brew"
