@@ -68,6 +68,8 @@ dotconfig status
 dotconfig doctor
 ```
 
+Both commands compare installed Vim plugin commits and CoC extension versions with the committed manifests. `status` reports every category before returning failure on drift, rather than stopping at the first missing package; `doctor` includes the same editor checks in its prerequisite diagnosis.
+
 Safely fast-forward the repository, review the rendered diff, and confirm before applying it:
 
 ```sh
