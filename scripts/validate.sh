@@ -29,6 +29,7 @@ bash scripts/test-editor-state.sh
 bash scripts/test-bootstrap-tools.sh
 bash scripts/test-first-run-bootstrap.sh
 bash scripts/test-runtime-versions.sh
+bash scripts/test-update-runtime-versions.sh
 bash scripts/test-update-bootstrap-tools.sh
 bash scripts/test-mise-archive-checksum.sh
 bash scripts/test-chezmoi-archive-checksum.sh
