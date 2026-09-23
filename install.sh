@@ -6,6 +6,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SKIP_PACKAGES=false
 SKIP_PLUGINS=false
 SKIP_SHELL_CHANGE=false
+BOOTSTRAP_INSTALLER="$REPO_ROOT/scripts/install-bootstrap-tool.sh"
 
 usage() {
     cat <<'EOF'
@@ -39,7 +40,7 @@ install_chezmoi() {
     case "$(uname -s)" in
         Darwin)
             if ! command_exists brew; then
-                NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+                bash "$BOOTSTRAP_INSTALLER" homebrew
             fi
             if [[ -x /opt/homebrew/bin/brew ]]; then
                 eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -53,8 +54,7 @@ install_chezmoi() {
                 sudo apt-get update
                 sudo apt-get install -y curl ca-certificates
             fi
-            mkdir -p "$HOME/.local/bin"
-            sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
+            bash "$BOOTSTRAP_INSTALLER" chezmoi
             export PATH="$HOME/.local/bin:$PATH"
             ;;
         *)
@@ -72,7 +72,7 @@ install_mise() {
             brew install mise
             ;;
         Linux)
-            curl --fail --silent --show-error --location https://mise.run | sh
+            bash "$BOOTSTRAP_INSTALLER" mise
             export PATH="$HOME/.local/bin:$PATH"
             ;;
     esac
