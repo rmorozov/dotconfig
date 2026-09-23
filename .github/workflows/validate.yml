@@ -48,7 +48,7 @@ jobs:
       - name: Install macOS validators
         if: runner.os == 'macOS'
         run: |
-          brew install chezmoi mise shellcheck
+          brew install shellcheck
           bash scripts/install-bootstrap-tool.sh mise
           bash scripts/install-bootstrap-tool.sh chezmoi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
