@@ -11,7 +11,7 @@ command -v mise >/dev/null 2>&1 || {
 
 pins=()
 in_tools=false
-seen=()
+seen=("")
 while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*\[tools\][[:space:]]*$ ]]; then
         in_tools=true
