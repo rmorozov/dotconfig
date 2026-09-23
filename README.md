@@ -169,7 +169,7 @@ The vim-plug manager itself is vendored at `home/dot_vim/autoload/plug.vim`, wit
 
 Every Git-backed Vim plugin is pinned in `versions/vim-plugins`. Chezmoi deploys the generated `~/.vim/plugin-lock.vim`, which applies exact commit constraints before vim-plug finishes initialization. Existing `do` hooks therefore run against the pinned revision.
 
-Run `dotconfig vim` to converge a machine. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin nightly and opens a reviewable PR containing both the manifest and generated lock.
+Run `dotconfig vim` to converge a machine. The installer, `dotconfig vim`, and `dotconfig sync` verify the installed vim-plug file, Vim plugin commits, and CoC extension versions before reporting success. The **Refresh Vim plugins** workflow resolves the configured upstream branch for each plugin nightly and opens a reviewable PR containing both the manifest and generated lock.
 
 ## Maintaining dependency lists
 
