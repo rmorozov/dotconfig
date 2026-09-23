@@ -58,4 +58,5 @@ grep -q 'call plug#end' "$download"
     printf '%s\n' '" vim-bootstrap snapshot; refreshed by .github/workflows/refresh-vim-bootstrap.yml'
     tail -n +2 "$download"
 } > "$normalized"
+bash "$REPO_ROOT/scripts/pin-vim-plug-url.sh" "$normalized"
 mv "$normalized" "$output"
