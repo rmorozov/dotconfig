@@ -82,7 +82,10 @@ grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 awk '
     BEGIN {
         required["chezmoi"] = "version"
-        required["chezmoi-installer"] = "revision"
+        required["chezmoi-linux-arm64-sha256"] = "digest"
+        required["chezmoi-linux-amd64-sha256"] = "digest"
+        required["chezmoi-darwin-arm64-sha256"] = "digest"
+        required["chezmoi-darwin-amd64-sha256"] = "digest"
         required["homebrew-installer"] = "revision"
         required["mise"] = "version"
         required["mise-linux-arm64-sha256"] = "digest"
