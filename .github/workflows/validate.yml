@@ -111,6 +111,7 @@ jobs:
             apply
           test -f "$test_home/.zshrc"
           test -f "$test_home/.vimrc"
+          test -f "$test_home/.vim/autoload/plug.vim"
           test -f "$test_home/.vim/coc-settings.json"
           test -x "$test_home/.local/bin/dotconfig"
           test -f "$test_home/.config/mise/config.toml"
