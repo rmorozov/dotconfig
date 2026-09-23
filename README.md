@@ -57,6 +57,8 @@ The installer:
 
 Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
 
+Bootstrap trust is recorded in `versions/bootstrap-tools`. Ubuntu installs the exact mise release only after verifying its upstream SHA-256 checksum, and installs the exact chezmoi release through an installer fetched from an immutable commit. A missing Homebrew installation uses the same immutable-commit rule. Remote scripts are downloaded to temporary files rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
+
 ## Normal update workflow
 
 The installer deploys a `dotconfig` maintenance command into `~/.local/bin`.
@@ -218,6 +220,7 @@ The nightly advisory audit builds a temporary npm lock from the exact CoC extens
 - the same target-platform validation runs every Monday even when the repository has not changed, exposing operating-system or upstream installer breakage;
 - GitHub Actions are executed from immutable full commit SHAs; validator rejects mutable tag references;
 - Dependabot checks those pinned Actions daily and groups proposed SHA updates into a reviewable pull request;
+- the bootstrap refresh workflow proposes exact chezmoi/mise releases and immutable installer revisions each night;
 - the runtime refresh workflow proposes new exact Node.js LTS, Go, and Python 3.14 pins each night;
 - the Oh My Zsh refresh workflow proposes a new exact upstream revision each night;
 - the Vim plugin and CoC extension workflows propose exact reviewed editor dependency updates.
