@@ -47,7 +47,8 @@ install_chezmoi() {
             elif [[ -x /usr/local/bin/brew ]]; then
                 eval "$(/usr/local/bin/brew shellenv)"
             fi
-            brew install chezmoi
+            bash "$BOOTSTRAP_INSTALLER" chezmoi
+            export PATH="$HOME/.local/bin:$PATH"
             ;;
         Linux)
             if ! command_exists curl; then
@@ -69,7 +70,8 @@ install_mise() {
 
     case "$(uname -s)" in
         Darwin)
-            brew install mise
+            bash "$BOOTSTRAP_INSTALLER" mise
+            export PATH="$HOME/.local/bin:$PATH"
             ;;
         Linux)
             bash "$BOOTSTRAP_INSTALLER" mise
@@ -79,6 +81,7 @@ install_mise() {
 }
 
 install_chezmoi
+install_mise
 
 if ! "$SKIP_PACKAGES"; then
     bash "$REPO_ROOT/packages/install.sh"
@@ -86,7 +89,6 @@ fi
 
 chezmoi --source "$REPO_ROOT" init --apply
 
-install_mise
 mise install
 
 bash "$REPO_ROOT/scripts/install-oh-my-zsh.sh"
