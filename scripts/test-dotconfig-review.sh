@@ -20,10 +20,7 @@ git -C "$test_dir/machine" config --local dotconfig.reviewedHead "$reviewed_head
 
 cat > "$test_dir/bin/chezmoi" <<'EOF'
 #!/usr/bin/env bash
-[[ "${*: -1}" == diff ]] || {
-    echo "Unexpected chezmoi apply during declined update" >&2
-    exit 1
-}
+[[ "${*: -1}" == diff || "$*" == *" apply --verbose" ]] || exit 1
 EOF
 chmod +x "$test_dir/bin/chezmoi"
 awk -v source="$test_dir/machine" '
@@ -102,7 +99,55 @@ PY
 
 new_head="$(git -C "$test_dir/machine" rev-parse HEAD)"
 [[ "$(git -C "$test_dir/machine" config --local --get dotconfig.reviewedHead)" == "$new_head" ]]
+[[ "$(git -C "$test_dir/machine" config --local --get dotconfig.previousReviewedHead)" == "$reviewed_head" ]]
 PATH="$test_dir/bin:$PATH" bash "$test_dir/dotconfig" update > "$test_dir/output" 2>&1
 grep -q 'Repository and managed dotfiles are already current' "$test_dir/output"
 
 echo "Repository review approval persists across updates"
+
+if PATH="$test_dir/bin:$PATH" bash "$test_dir/dotconfig" rollback > "$test_dir/output" 2>&1; then
+    echo "Rollback succeeded without confirmation" >&2
+    exit 1
+fi
+[[ "$(git -C "$test_dir/machine" rev-parse HEAD)" == "$new_head" ]]
+
+python3 - "$test_dir/dotconfig" "$test_dir/bin" <<'PY'
+import errno
+import os
+import pty
+import select
+import signal
+import sys
+
+command, fake_bin = sys.argv[1:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["PATH"] = fake_bin + os.pathsep + os.environ["PATH"]
+    os.execv("/bin/bash", ["bash", command, "rollback"])
+os.write(fd, b"y\n")
+output = bytearray()
+while True:
+    if not select.select([fd], [], [], 20)[0]:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        raise SystemExit("Interactive rollback timed out")
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError as error:
+        if error.errno == errno.EIO:
+            break
+        raise
+    if not chunk:
+        break
+    output.extend(chunk)
+_, status = os.waitpid(pid, 0)
+if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+    sys.stderr.write(output.decode(errors="replace"))
+    raise SystemExit("Interactive rollback failed")
+PY
+
+[[ "$(git -C "$test_dir/machine" rev-parse HEAD)" == "$reviewed_head" ]]
+[[ "$(git -C "$test_dir/machine" config --local --get dotconfig.reviewedHead)" == "$reviewed_head" ]]
+[[ "$(git -C "$test_dir/machine" config --local --get dotconfig.previousReviewedHead)" == "$new_head" ]]
+[[ "$(git -C "$test_dir/machine" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" == origin/master ]]
+echo "Rollback restores previous accepted commit without losing update path"
