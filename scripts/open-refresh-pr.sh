@@ -36,14 +36,37 @@ git add "${paths[@]}"
 git commit -m "$title"
 git push --force-with-lease origin "HEAD:$refresh_branch"
 
+body_file="$(mktemp)"
+trap 'rm -- "$body_file"' EXIT
+{
+    printf '%s\n\n' "$body"
+    echo "### Changed files"
+    echo '```text'
+    git diff --stat HEAD^ HEAD -- "${paths[@]}"
+    echo '```'
+
+    pin_diff="$(git diff --unified=0 HEAD^ HEAD -- \
+        versions/ home/dot_config/mise/config.toml packages/packages.tsv \
+        | awk '/^\+\+\+|^---/ { next } /^\+|^-/ { if (++count <= 80) print } END { if (count > 80) print "... additional pin changes omitted; inspect the PR diff" }')"
+    if [[ -n "$pin_diff" ]]; then
+        echo
+        echo "### Pin changes"
+        echo '```diff'
+        printf '%s\n' "$pin_diff"
+        echo '```'
+    fi
+    echo
+    echo "Review the full diff and platform validation before merging."
+} > "$body_file"
+
 if [[ -n "$open_pr" ]]; then
-    gh pr edit "$open_pr" --title "$title" --body "$body"
+    gh pr edit "$open_pr" --title "$title" --body-file "$body_file"
 else
     gh pr create \
         --base "$base_branch" \
         --head "$refresh_branch" \
         --title "$title" \
-        --body "$body"
+        --body-file "$body_file"
 fi
 
 # GITHUB_TOKEN-created PR events require manual approval. A workflow_dispatch
