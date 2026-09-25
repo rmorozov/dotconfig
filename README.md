@@ -84,7 +84,7 @@ dotconfig compare machine-a.json
 dotconfig compare machine-a.json machine-b.json
 ```
 
-With one file, `compare` measures this machine against the saved report; with two, it works offline. It shows profile and OS for context, then only differing repository, package, dotfile, and pinned dependency fields. Exit status is 0 when those states match, 1 when they differ, and 2 for invalid input. Platform and role differences are context, since they may be intentional. Package checks compare baseline satisfaction, not native package versions; use `dotconfig packages --plan` on each machine for those. Reports contain machine metadata, so copy and store them according to your local privacy policy.
+With one file, `compare` measures this machine against the saved report; with two, it works offline. It shows profile and OS for context, then only differing repository, package, dotfile, and pinned dependency fields. Exit status is 0 when those states match, 1 when they differ, and 2 for invalid input. Platform and role differences are context, since they may be intentional. Reports now record each native package baseline capability, its installed state, and its local version. Comparisons check shared capability presence across macOS and Ubuntu; they compare package versions only on the same OS. Refresh older saved reports to include this detail. `dotconfig packages --plan` shows available upgrades using the local package metadata. Reports contain machine metadata, so copy and store them according to your local privacy policy.
 
 Safely fast-forward the repository, review pulled repository changes and the rendered dotfile diff, and confirm before applying:
 
