@@ -26,7 +26,7 @@ def load(path):
     return data
 
 
-def fields(data):
+def fields(data, include_package_versions=False):
     """Select comparable state; omit profile and OS, which may differ intentionally."""
     result = {}
 
@@ -40,6 +40,12 @@ def fields(data):
         ("commit", "reviewed_commit", "working_tree_clean"))
     for name in ("dotfiles", "packages"):
         add(name, data.get(name), ("state",))
+    capabilities = data.get("packages", {}).get("capabilities", {})
+    if isinstance(capabilities, dict):
+        for name, entry in capabilities.items():
+            if isinstance(entry, dict) and entry.get("installed") is not None:
+                add(f"packages.capabilities.{name}", entry,
+                    ("installed", "version") if include_package_versions else ("installed",))
     for category, attributes in (("bootstrap", ("expected", "actual", "state")),
                                  ("runtimes", ("expected", "installed"))):
         group = data.get(category)
@@ -67,10 +73,15 @@ def display(value):
 def compare(first, second):
     for key in ("platform", "profile"):
         print(f"{key.title()}: {display(first.get(key))} | {display(second.get(key))}")
-    left, right = fields(first), fields(second)
+    same_platform = first.get("platform", {}).get("os") == second.get("platform", {}).get("os")
+    left, right = fields(first, same_platform), fields(second, same_platform)
+    if "capabilities" not in first["packages"] or "capabilities" not in second["packages"]:
+        print("Package capability details unavailable in an older report; recapture both snapshots.")
     missing = object()
     differences = [(key, left.get(key, missing), right.get(key, missing))
                    for key in sorted(left.keys() | right.keys())
+                   if same_platform or not key.startswith("packages.capabilities.")
+                   or (key in left and key in right)
                    if left.get(key, missing) != right.get(key, missing)]
     print(f"State differences: {len(differences)}")
     for key, a, b in differences:
