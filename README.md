@@ -88,6 +88,8 @@ To bring a machine fully onto the reviewed repository state in one pass, use:
 dotconfig sync
 ```
 
+Preview first with `dotconfig sync --dry-run`. It fetches upstream metadata and shows the incoming repository diff alongside the **current** machine's status, without pulling, applying, installing, or marking a commit reviewed. Rendered dotfile and dependency effects of incoming commits are checked during the normal review after the pull. The preview refuses dirty or diverged repositories.
+
 The accepted commit is recorded in the clone's local Git config. If confirmation is declined, a later `update` or `sync` still shows the unreviewed changes and asks again, including when only scripts or manifests changed. A successful first installation records its initial commit. `dotconfig status` reports a pending review.
 
 After the same pull, diff, and confirmation flow, `sync` installs the pinned mise runtimes, converges the exact Oh My Zsh revision, and installs the pinned Vim plugins and CoC extensions. If review is declined, the remaining convergence steps do not run. Native packages stay separate because Ubuntu may require `sudo` and package-manager changes deserve an explicit operation.
