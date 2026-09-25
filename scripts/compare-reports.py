@@ -70,6 +70,26 @@ def display(value):
     return json.dumps(value, ensure_ascii=True, sort_keys=True)
 
 
+def next_checks(differences):
+    keys = {key for key, _, _ in differences}
+    checks = []
+    if any(key.startswith("repository.") for key in keys):
+        checks.append("Repository: inspect dotconfig sync --dry-run on each machine, then update the one needing changes.")
+    if "dotfiles.state" in keys:
+        checks.append("Dotfiles: inspect dotconfig status and review the rendered diff with dotconfig update.")
+    if any(key.startswith("packages.") for key in keys):
+        checks.append("Packages: run dotconfig packages --plan on each affected machine before dotconfig packages.")
+    if any(key.startswith("bootstrap.") for key in keys):
+        checks.append("Bootstrap: after reviewing the pins, converge explicitly with dotconfig bootstrap.")
+    if any(key.startswith("runtimes.") for key in keys):
+        checks.append("Runtimes: after reviewing the pins, run dotconfig runtimes.")
+    if any(key.startswith("oh_my_zsh.") for key in keys):
+        checks.append("Oh My Zsh: after reviewing the pin, run dotconfig shell.")
+    if any(key.startswith("editor.") for key in keys):
+        checks.append("Editor: after reviewing the pins, run dotconfig vim.")
+    return checks
+
+
 def compare(first, second):
     for key in ("platform", "profile"):
         print(f"{key.title()}: {display(first.get(key))} | {display(second.get(key))}")
@@ -87,6 +107,10 @@ def compare(first, second):
     for key, a, b in differences:
         print(f"{display(key)}: {display(a) if a is not missing else '<absent>'} | "
               f"{display(b) if b is not missing else '<absent>'}")
+    if differences:
+        print("Next checks (on the affected machine after reviewing repository changes):")
+        for check in next_checks(differences):
+            print(f"- {check}")
     return bool(differences)
 
 
