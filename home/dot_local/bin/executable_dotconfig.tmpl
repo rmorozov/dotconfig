@@ -27,6 +27,7 @@ Commands:
   update    Fast-forward the repository, show the diff, and apply after confirmation.
   sync      Update, then converge runtimes, Oh My Zsh, Vim plugins, and CoC.
             Use sync --dry-run to preview incoming changes and current drift.
+  rollback  Restore the previous accepted commit and managed dotfiles.
   packages  Apply or inspect the native package baseline.
   bootstrap Install the reviewed chezmoi and mise versions.
   runtimes  Install the pinned language runtimes.
@@ -321,6 +322,10 @@ update_command() {
     if [[ -n "$drift" ]]; then
         chezmoi --source "$REPO_ROOT" apply --verbose
     fi
+    if [[ -n "$reviewed_head" && "$reviewed_head" != "$new_head" ]] &&
+        git -C "$REPO_ROOT" cat-file -e "$reviewed_head^{commit}"; then
+        git -C "$REPO_ROOT" config --local dotconfig.previousReviewedHead "$reviewed_head"
+    fi
     git -C "$REPO_ROOT" config --local dotconfig.reviewedHead "$new_head"
     UPDATE_CAN_CONVERGE=true
     package_check || true
@@ -391,6 +396,59 @@ sync_dry_run() {
     echo "Preview complete. Rendered dotfile and dependency changes from incoming commits require a reviewed update."
 }
 
+rollback_command() {
+    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+        echo "Refusing rollback with uncommitted repository changes: $REPO_ROOT" >&2
+        return 1
+    fi
+
+    local current previous reviewed upstream rollback_branch answer
+    current="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    reviewed="$(git -C "$REPO_ROOT" config --local --get dotconfig.reviewedHead || true)"
+    previous="$(git -C "$REPO_ROOT" config --local --get dotconfig.previousReviewedHead || true)"
+    if [[ "$reviewed" != "$current" || ! "$previous" =~ ^[0-9a-f]{40}$ ]] ||
+        ! git -C "$REPO_ROOT" merge-base --is-ancestor "$previous" "$current" ||
+        [[ "$previous" == "$current" ]]; then
+        echo "No previous accepted ancestor is available for rollback." >&2
+        return 1
+    fi
+    upstream="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" || {
+        echo "Rollback requires an upstream branch for future updates." >&2
+        return 1
+    }
+    rollback_branch="rollback/$(git -C "$REPO_ROOT" rev-parse --short "$current")-$(git -C "$REPO_ROOT" rev-parse --short "$previous")"
+    if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$rollback_branch"; then
+        echo "Rollback branch already exists: $rollback_branch" >&2
+        return 1
+    fi
+
+    echo "Restore previously accepted commit $previous from $current:"
+    git -C "$REPO_ROOT" --no-pager diff --stat "$previous" "$current"
+    echo "The current commit remains in Git history. Managed dotfiles will be applied from the older commit."
+    if [[ ! -t 0 ]]; then
+        echo "Rollback requires interactive confirmation." >&2
+        return 1
+    fi
+    printf 'Restore this commit and apply its managed dotfiles? [y/N] '
+    read -r answer
+    [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]] || {
+        echo "Not rolled back."
+        return
+    }
+
+    git -C "$REPO_ROOT" switch --create "$rollback_branch" "$previous"
+    git -C "$REPO_ROOT" branch --set-upstream-to="$upstream" "$rollback_branch"
+    echo "Managed dotfile changes:"
+    dotfile_drift
+    chezmoi --source "$REPO_ROOT" apply --verbose || {
+        echo "Apply failed. The repository remains on $rollback_branch; the reviewed marker was not changed." >&2
+        return 1
+    }
+    git -C "$REPO_ROOT" config --local dotconfig.reviewedHead "$previous"
+    git -C "$REPO_ROOT" config --local dotconfig.previousReviewedHead "$current"
+    echo "Restored $previous. Check runtimes, shell, editor dependencies, and native packages with: dotconfig status"
+}
+
 case "${1:-}" in
     status) status_command ;;
     report) shift; python3 "$REPO_ROOT/scripts/report.py" --role "$MACHINE_ROLE" --host-type "$HOST_TYPE" "$@" ;;
@@ -407,6 +465,7 @@ case "${1:-}" in
             exit 2
         fi
         ;;
+    rollback) [[ "$#" -eq 1 ]] || { echo "Usage: dotconfig rollback" >&2; exit 2; }; rollback_command ;;
     packages) shift; bash "$PACKAGE_INSTALLER" "$@" ;;
     bootstrap) bootstrap_install ;;
     runtimes) runtime_install ;;
