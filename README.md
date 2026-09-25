@@ -76,6 +76,16 @@ Both commands compare installed chezmoi and mise versions with `versions/bootstr
 
 `report` reads the local state without changing it. Its versioned JSON form includes the repository and reviewed commits, profile, expected and installed dependency revisions, and dotfile/package drift. It does not include hostnames, private file contents, or absolute paths. Keep exported reports local unless you explicitly decide to share their machine metadata. The report returns successfully when it finds drift; inspect the `state` fields to decide whether to sync.
 
+Save a report on each machine and compare them locally:
+
+```sh
+dotconfig report --json > machine-a.json
+dotconfig compare machine-a.json
+dotconfig compare machine-a.json machine-b.json
+```
+
+With one file, `compare` measures this machine against the saved report; with two, it works offline. It shows profile and OS for context, then only differing repository, package, dotfile, and pinned dependency fields. Exit status is 0 when those states match, 1 when they differ, and 2 for invalid input. Platform and role differences are context, since they may be intentional. Package checks compare baseline satisfaction, not native package versions; use `dotconfig packages --plan` on each machine for those. Reports contain machine metadata, so copy and store them according to your local privacy policy.
+
 Safely fast-forward the repository, review pulled repository changes and the rendered dotfile diff, and confirm before applying:
 
 ```sh
