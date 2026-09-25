@@ -18,6 +18,10 @@ EOF
 cat > "$test_dir/bin/apt-get" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$TEST_COMMAND_LOG"
+if [[ "$*" == '-s install '* ]]; then
+    printf '%s\n' 'Inst git [2.49] (2.50 Ubuntu:26.04 [amd64])' 'Inst dependency [1] (2 Ubuntu:26.04 [amd64])'
+    exit 0
+fi
 printf '%s\n' \
     'Inst git [2.49] (2.50 Ubuntu:26.04 [amd64])' \
     'Inst unrelated [1] (2 Ubuntu:26.04 [amd64])'
@@ -31,6 +35,10 @@ bash "$REPO_ROOT/packages/install.sh" --outdated > "$test_dir/output"
 grep -q '^outdated --verbose --formula ' "$TEST_COMMAND_LOG"
 grep -q ' git ' "$TEST_COMMAND_LOG"
 grep -q 'git (2.50) < 2.51' "$test_dir/output"
+bash "$REPO_ROOT/packages/install.sh" --plan > "$test_dir/output"
+grep -q 'Brewfile satisfaction' "$test_dir/output"
+grep -q 'git (2.50) < 2.51' "$test_dir/output"
+grep -q 'Metadata may be stale' "$test_dir/output"
 
 export TEST_OS=Linux
 bash "$REPO_ROOT/packages/install.sh" --outdated > "$test_dir/output"
@@ -40,6 +48,10 @@ if grep -q unrelated "$test_dir/output"; then
     echo "Unmanaged package included in baseline update report" >&2
     exit 1
 fi
+grep -q 'APT metadata may be stale' "$test_dir/output"
+bash "$REPO_ROOT/packages/install.sh" --plan > "$test_dir/output"
+grep -q '^-s install ' "$TEST_COMMAND_LOG"
+grep -q '^Inst dependency ' "$test_dir/output"
 grep -q 'APT metadata may be stale' "$test_dir/output"
 
 echo "Package freshness reports passed"
