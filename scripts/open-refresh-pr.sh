@@ -45,3 +45,7 @@ else
         --title "$title" \
         --body "$body"
 fi
+
+# GITHUB_TOKEN-created PR events require manual approval. A workflow_dispatch
+# explicitly runs the same platform validation on the proposed commit.
+gh workflow run validate.yml --ref "$refresh_branch"
