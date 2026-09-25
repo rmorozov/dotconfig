@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory() as root:
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert "State differences: 0" in result.stdout
+    assert "Next checks" not in result.stdout
 
     other["packages"]["capabilities"]["git"]["installed"] = False
     second.write_text(json.dumps(other))
@@ -53,6 +54,7 @@ with tempfile.TemporaryDirectory() as root:
                             capture_output=True, text=True)
     assert result.returncode == 1
     assert "packages.capabilities.git.installed" in result.stdout
+    assert "dotconfig packages --plan" in result.stdout
     other["packages"]["capabilities"]["git"]["installed"] = True
 
     other["platform"]["os"] = "Linux"
@@ -79,6 +81,9 @@ with tempfile.TemporaryDirectory() as root:
     for field in ("repository.commit", "runtimes.node.installed",
                   "editor.vim_plugins.example.actual", "editor.vim_plugins.example.state"):
         assert field in result.stdout
+    assert result.stdout.count("dotconfig vim") == 1
+    assert "dotconfig sync --dry-run" in result.stdout
+    assert "dotconfig runtimes" in result.stdout
 
     second.write_text('{"schema_version": 99}')
     result = subprocess.run([sys.executable, str(script), str(first), str(second)],
