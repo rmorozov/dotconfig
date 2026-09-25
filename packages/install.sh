@@ -9,7 +9,8 @@ case "${1:-}" in
     "") ;;
     --check|--dry-run) MODE=check ;;
     --outdated) MODE=outdated ;;
-    *) echo "Usage: $0 [--check|--outdated]" >&2; exit 2 ;;
+    --plan) MODE=plan ;;
+    *) echo "Usage: $0 [--check|--outdated|--plan]" >&2; exit 2 ;;
 esac
 
 case "$(uname -s)" in
@@ -18,16 +19,25 @@ case "$(uname -s)" in
             echo "missing: Homebrew" >&2
             exit 1
         fi
-        if [[ "$MODE" == outdated ]]; then
+        if [[ "$MODE" == outdated || "$MODE" == plan ]]; then
             formulae=()
             while IFS= read -r formula; do
                 formulae+=("$formula")
             done < <(awk 'NR > 1 && $2 != "-" { print $2 }' "$PACKAGE_DIR/packages.tsv")
+            if [[ "$MODE" == plan ]]; then
+                echo "Brewfile satisfaction (missing formulae):"
+                brew bundle check --verbose --file "$PACKAGE_DIR/Brewfile" || true
+                echo
+            fi
             updates="$(brew outdated --verbose --formula "${formulae[@]}")" || exit 1
             if [[ -n "$updates" ]]; then
                 printf 'Available baseline formula updates:\n%s\n' "$updates"
             else
                 echo "No baseline formula updates in current Homebrew metadata."
+            fi
+            if [[ "$MODE" == plan ]]; then
+                echo "Homebrew may also update dependencies; review its prompts when applying."
+                echo "Metadata may be stale; refresh it with: brew update"
             fi
         elif [[ "$MODE" == check ]]; then
             brew bundle check --file "$PACKAGE_DIR/Brewfile"
@@ -45,7 +55,11 @@ case "$(uname -s)" in
             [[ "$package_name" =~ ^[[:space:]]*(#|$) ]] && continue
             packages+=("$package_name")
         done < "$PACKAGE_DIR/ubuntu.txt"
-        if [[ "$MODE" == outdated ]]; then
+        if [[ "$MODE" == plan ]]; then
+            echo "Simulated install/upgrade of the baseline and its dependencies:"
+            LC_ALL=C apt-get -s install "${packages[@]}"
+            echo "APT metadata may be stale; refresh it with: sudo apt-get update"
+        elif [[ "$MODE" == outdated ]]; then
             simulation="$(LC_ALL=C apt-get -s upgrade)" || exit 1
             updates="$(awk '
                 NR == FNR { if (NR > 1 && $3 != "-") baseline[$3] = 1; next }

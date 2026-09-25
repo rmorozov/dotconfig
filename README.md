@@ -147,6 +147,10 @@ To see available updates for the native package baseline without changing instal
 dotconfig packages --outdated
 ```
 
+For a broader preview of missing packages and proposed changes, run `dotconfig packages --plan`. It uses Homebrew's bundle check and baseline formula list on macOS, and simulates installing the baseline plus required dependencies on Ubuntu. It does not install packages or refresh repository metadata.
+
+Review native package updates about once a week, and sooner when your OS vendor announces a relevant security fix: refresh the machine's package metadata with `brew update` or `sudo apt-get update`, run `dotconfig packages --plan`, then run `dotconfig packages` when you accept the changes. On Ubuntu, also use the operating system's regular security update mechanism for packages outside this small baseline. Homebrew's plan lists baseline formula updates but cannot predict every dependency change. Native repositories choose versions independently per machine; this check is a review routine, not an exact lock or a vulnerability assessment.
+
 On macOS this queries Homebrew for formulae in the shared manifest. On Ubuntu it filters a simulated apt upgrade to the manifest packages and uses the local apt cache; run `sudo apt-get update` separately if the cache is stale. This reports available versions, not confirmed vulnerabilities. Native upgrades remain an explicit machine operation.
 
 ## Configuration layers
