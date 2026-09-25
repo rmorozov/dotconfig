@@ -15,11 +15,14 @@ git -C "$work" config user.name test
 git -C "$work" config user.email test@example.com
 git -C "$work" branch -M master
 printf '%s\n' initial > "$work/tracked"
-git -C "$work" add tracked
+mkdir -p "$work/versions"
+printf '%s\n' 'tool 1.0.0' > "$work/versions/test-pin"
+git -C "$work" add tracked versions/test-pin
 git -C "$work" commit -m initial >/dev/null
 git -C "$work" remote add origin "$remote"
 git -C "$work" push origin master >/dev/null
 printf '%s\n' changed > "$work/tracked"
+printf '%s\n' 'tool 1.1.0' > "$work/versions/test-pin"
 
 mkdir -p "$fake_bin"
 # These variables belong to the generated fake gh script, not this test process.
@@ -28,6 +31,7 @@ printf '%s\n' \
     '#!/usr/bin/env bash' \
     'if [[ "$1 $2" == "pr list" ]]; then cat "$GH_OPEN_PR_FILE"; exit 0; fi' \
     'printf "%s\\n" "$*" >> "$GH_LOG"' \
+    'while (($#)); do if [[ "$1" == --body-file ]]; then cat "$2" > "$GH_BODY_FILE"; break; fi; shift; done' \
     > "$fake_bin/gh"
 chmod +x "$fake_bin/gh"
 : > "$test_root/open-pr"
@@ -37,34 +41,45 @@ chmod +x "$fake_bin/gh"
     PATH="$fake_bin:$PATH" \
     GH_LOG="$gh_log" \
     GH_OPEN_PR_FILE="$test_root/open-pr" \
+    GH_BODY_FILE="$test_root/body" \
     GITHUB_REF_NAME=master \
         bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
             automation/test-refresh \
             "Test refresh" \
             "Test body" \
-            tracked
+            tracked versions/test-pin
 )
 
 git --git-dir="$remote" rev-parse --verify refs/heads/automation/test-refresh >/dev/null
 grep -q '^pr create --base master --head automation/test-refresh' "$gh_log"
+grep -q '^Test body$' "$test_root/body"
+grep -q '^### Changed files$' "$test_root/body"
+grep -q '^### Pin changes$' "$test_root/body"
+grep -q '^+tool 1.1.0$' "$test_root/body"
+grep -Eq '^ tracked +\| ' "$test_root/body"
+grep -q '^Review the full diff and platform validation before merging\.$' "$test_root/body"
 test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 1
 
 git clone --branch master "$remote" "$test_root/next-work" >/dev/null 2>&1
 printf '%s\n' refreshed > "$test_root/next-work/tracked"
+printf '%s\n' 'tool 1.2.0' > "$test_root/next-work/versions/test-pin"
 printf '%s\n' 42 > "$test_root/open-pr"
 (
     cd "$test_root/next-work"
     PATH="$fake_bin:$PATH" \
     GH_LOG="$gh_log" \
     GH_OPEN_PR_FILE="$test_root/open-pr" \
+    GH_BODY_FILE="$test_root/body" \
     GITHUB_REF_NAME=master \
         bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
             automation/test-refresh \
             "Test refresh" \
             "Test body" \
-            tracked
+            tracked versions/test-pin
 )
-grep -q '^pr edit 42 --title Test refresh --body Test body' "$gh_log"
+grep -q '^pr edit 42 --title Test refresh --body-file ' "$gh_log"
+grep -q '^### Changed files$' "$test_root/body"
+grep -q '^+tool 1.2.0$' "$test_root/body"
 test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
 
 git -C "$work" switch master >/dev/null
@@ -73,12 +88,13 @@ git -C "$work" switch master >/dev/null
     PATH="$fake_bin:$PATH" \
     GH_LOG="$gh_log" \
     GH_OPEN_PR_FILE="$test_root/open-pr" \
+    GH_BODY_FILE="$test_root/body" \
     GITHUB_REF_NAME=master \
         bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
             automation/test-refresh \
             "Test refresh" \
             "Test body" \
-            tracked
+            tracked versions/test-pin
 )
 grep -q '^pr close 42 --delete-branch --comment ' "$gh_log"
 test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
@@ -90,12 +106,13 @@ before="$(wc -l < "$gh_log")"
     PATH="$fake_bin:$PATH" \
     GH_LOG="$gh_log" \
     GH_OPEN_PR_FILE="$test_root/open-pr" \
+    GH_BODY_FILE="$test_root/body" \
     GITHUB_REF_NAME=master \
         bash "$REPO_ROOT/scripts/open-refresh-pr.sh" \
             automation/test-refresh \
             "Test refresh" \
             "Test body" \
-            tracked
+            tracked versions/test-pin
 )
 [[ "$(wc -l < "$gh_log")" == "$before" ]]
 
