@@ -40,6 +40,15 @@ git -C "$test_dir/author" commit -am 'change maintenance script only' >/dev/null
 git -C "$test_dir/author" push >/dev/null 2>&1
 
 for attempt in 1 2; do
+    PATH="$test_dir/bin:$PATH" bash "$test_dir/dotconfig" sync --dry-run > "$test_dir/preview" 2>&1
+    grep -q 'Incoming repository changes' "$test_dir/preview"
+    grep -q 'changed implementation' "$test_dir/preview"
+    grep -q 'Current machine state (before incoming changes)' "$test_dir/preview"
+    [[ "$(git -C "$test_dir/machine" rev-parse HEAD)" == "$reviewed_head" ]]
+    [[ "$(git -C "$test_dir/machine" config --local --get dotconfig.reviewedHead)" == "$reviewed_head" ]]
+done
+
+for attempt in 1 2; do
     if PATH="$test_dir/bin:$PATH" bash "$test_dir/dotconfig" sync > "$test_dir/output" 2>&1; then
         echo "Sync ran without reviewing repository-only changes (attempt $attempt)" >&2
         exit 1
