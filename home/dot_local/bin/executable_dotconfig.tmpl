@@ -26,6 +26,7 @@ Commands:
   apply     Apply the currently checked-out configuration.
   update    Fast-forward the repository, show the diff, and apply after confirmation.
   sync      Update, then converge runtimes, Oh My Zsh, Vim plugins, and CoC.
+            Use sync --dry-run to preview incoming changes and current drift.
   packages  Apply or inspect the native package baseline.
   bootstrap Install the reviewed chezmoi and mise versions.
   runtimes  Install the pinned language runtimes.
@@ -351,13 +352,61 @@ sync_command() {
     }
 }
 
+sync_dry_run() {
+    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+        echo "Refusing to preview a repository with uncommitted changes: $REPO_ROOT" >&2
+        return 1
+    fi
+
+    local current upstream reviewed base
+    current="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    git -C "$REPO_ROOT" rev-parse --verify '@{upstream}' >/dev/null || {
+        echo "No upstream branch is configured for the dotconfig repository." >&2
+        return 1
+    }
+    git -C "$REPO_ROOT" fetch --quiet
+    upstream="$(git -C "$REPO_ROOT" rev-parse '@{upstream}')"
+    git -C "$REPO_ROOT" merge-base --is-ancestor "$current" "$upstream" || {
+        echo "Upstream cannot be fast-forwarded; resolve the repository divergence first." >&2
+        return 1
+    }
+
+    reviewed="$(git -C "$REPO_ROOT" config --local --get dotconfig.reviewedHead || true)"
+    base="$current"
+    if [[ "$reviewed" =~ ^[0-9a-f]{40}$ ]] &&
+        git -C "$REPO_ROOT" merge-base --is-ancestor "$reviewed" "$upstream"; then
+        base="$reviewed"
+    fi
+    echo "Incoming repository changes ($base..$upstream):"
+    if [[ "$base" == "$upstream" ]]; then
+        echo "none"
+    else
+        git -C "$REPO_ROOT" --no-pager diff "$base" "$upstream"
+    fi
+
+    echo
+    echo "Current machine state (before incoming changes):"
+    status_command || true
+    echo
+    echo "Preview complete. Rendered dotfile and dependency changes from incoming commits require a reviewed update."
+}
+
 case "${1:-}" in
     status) status_command ;;
     report) shift; python3 "$REPO_ROOT/scripts/report.py" --role "$MACHINE_ROLE" --host-type "$HOST_TYPE" "$@" ;;
     doctor) doctor_command ;;
     apply) apply_command ;;
     update) update_command ;;
-    sync) sync_command ;;
+    sync)
+        if [[ "${2:-}" == --dry-run && "$#" -eq 2 ]]; then
+            sync_dry_run
+        elif [[ "$#" -eq 1 ]]; then
+            sync_command
+        else
+            echo "Usage: dotconfig sync [--dry-run]" >&2
+            exit 2
+        fi
+        ;;
     packages) shift; bash "$PACKAGE_INSTALLER" "$@" ;;
     bootstrap) bootstrap_install ;;
     runtimes) runtime_install ;;
