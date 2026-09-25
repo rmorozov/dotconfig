@@ -33,7 +33,7 @@ call s:DotconfigPin('split-manpage.vim', 'e99c7a06e2f3f86218c8849bccf4bd1ec27364
 call s:DotconfigPin('vim-go', '47694979496d4bf2e90ce75d95f1dec3f41cbefb')
 call s:DotconfigPin('jedi-vim', 'a13c7bf64dbb4abcf676b4e41c5fedc2d4e7f6dd')
 call s:DotconfigPin('requirements.txt.vim', 'd55452136a162ac31b15876ab98c00bd1b6c312f')
-call s:DotconfigPin('coc.nvim', '93841afaba00209eadd72674f95c6ed398ef923d')
+call s:DotconfigPin('coc.nvim', 'f5910295483bfbe8b58e6f2002e9ae280e5b700e')
 call s:DotconfigPin('vim-trailing-whitespace', 'dc22ff46010e55d2c33edd21cdcd14f99e729b6f')
 
 delfunction s:DotconfigPin

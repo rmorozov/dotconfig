@@ -27,5 +27,5 @@ split-manpage.vim https://github.com/ludwig/split-manpage.vim.git HEAD e99c7a06e
 vim-go https://github.com/fatih/vim-go.git HEAD 47694979496d4bf2e90ce75d95f1dec3f41cbefb
 jedi-vim https://github.com/davidhalter/jedi-vim.git HEAD a13c7bf64dbb4abcf676b4e41c5fedc2d4e7f6dd
 requirements.txt.vim https://github.com/raimon49/requirements.txt.vim.git HEAD d55452136a162ac31b15876ab98c00bd1b6c312f
-coc.nvim https://github.com/neoclide/coc.nvim.git release 93841afaba00209eadd72674f95c6ed398ef923d
+coc.nvim https://github.com/neoclide/coc.nvim.git release f5910295483bfbe8b58e6f2002e9ae280e5b700e
 vim-trailing-whitespace https://github.com/bronson/vim-trailing-whitespace.git HEAD dc22ff46010e55d2c33edd21cdcd14f99e729b6f
