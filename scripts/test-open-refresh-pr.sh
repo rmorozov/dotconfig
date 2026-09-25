@@ -47,6 +47,7 @@ chmod +x "$fake_bin/gh"
 
 git --git-dir="$remote" rev-parse --verify refs/heads/automation/test-refresh >/dev/null
 grep -q '^pr create --base master --head automation/test-refresh' "$gh_log"
+test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 1
 
 git clone --branch master "$remote" "$test_root/next-work" >/dev/null 2>&1
 printf '%s\n' refreshed > "$test_root/next-work/tracked"
@@ -64,6 +65,7 @@ printf '%s\n' 42 > "$test_root/open-pr"
             tracked
 )
 grep -q '^pr edit 42 --title Test refresh --body Test body' "$gh_log"
+test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
 
 git -C "$work" switch master >/dev/null
 (
@@ -79,6 +81,7 @@ git -C "$work" switch master >/dev/null
             tracked
 )
 grep -q '^pr close 42 --delete-branch --comment ' "$gh_log"
+test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
 
 : > "$test_root/open-pr"
 before="$(wc -l < "$gh_log")"
