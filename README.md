@@ -107,6 +107,12 @@ dotconfig private
 dotconfig path
 ```
 
+### Recovering from an update
+
+After you accept a newer repository commit, `dotconfig` retains the preceding accepted commit in local Git configuration. If the update causes trouble, run `dotconfig rollback` from a clean checkout. It shows the commit change and requires interactive confirmation, then checks out the previous accepted commit on a local rollback branch and reapplies its managed dotfiles. Your newer commit remains available on the original branch; the rollback branch tracks the same upstream, so `dotconfig update` can later review the latest state again.
+
+Rollback does not downgrade native packages or automatically change installed runtimes, Oh My Zsh, or editor plugins. Inspect with `dotconfig status`, then run `dotconfig runtimes`, `dotconfig shell`, and `dotconfig vim` if you want those components to follow the restored pins. Bootstrap tools remain a separate explicit operation. A checkpoint becomes available after the first accepted update made with this version of `dotconfig`; earlier updates did not record one. If managed-dotfile application fails, the command leaves the repository on the rollback branch and keeps the reviewed marker unchanged for inspection.
+
 Package updates are intentionally separate during routine updates because they may require `sudo` on Ubuntu and can make larger system changes. The lower-level chezmoi commands remain usable when needed:
 
 ```sh
