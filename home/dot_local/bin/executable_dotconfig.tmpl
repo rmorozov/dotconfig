@@ -22,6 +22,7 @@ Usage: dotconfig <command>
 Commands:
   status    Show repository, dotfile, and package drift.
   report    Show a local state snapshot; use --json for machine-readable output.
+  compare   Compare one saved report with this machine, or compare two saved reports.
   doctor    Check configuration prerequisites and report problems.
   apply     Apply the currently checked-out configuration.
   update    Fast-forward the repository, show the diff, and apply after confirmation.
@@ -452,6 +453,7 @@ rollback_command() {
 case "${1:-}" in
     status) status_command ;;
     report) shift; python3 "$REPO_ROOT/scripts/report.py" --role "$MACHINE_ROLE" --host-type "$HOST_TYPE" "$@" ;;
+    compare) shift; python3 "$REPO_ROOT/scripts/compare-reports.py" --role "$MACHINE_ROLE" --host-type "$HOST_TYPE" "$@" ;;
     doctor) doctor_command ;;
     apply) apply_command ;;
     update) update_command ;;
