@@ -68,9 +68,13 @@ Inspect a machine without changing it:
 ```sh
 dotconfig status
 dotconfig doctor
+dotconfig report
+dotconfig report --json
 ```
 
 Both commands compare installed chezmoi and mise versions with `versions/bootstrap-tools`, as well as the installed vim-plug file, Vim plugin commits, and CoC extension versions with the committed manifests. `status` reports every category before returning failure on drift, rather than stopping at the first missing package; `doctor` includes the same editor checks in its prerequisite diagnosis.
+
+`report` reads the local state without changing it. Its versioned JSON form includes the repository and reviewed commits, profile, expected and installed dependency revisions, and dotfile/package drift. It does not include hostnames, private file contents, or absolute paths. Keep exported reports local unless you explicitly decide to share their machine metadata. The report returns successfully when it finds drift; inspect the `state` fields to decide whether to sync.
 
 Safely fast-forward the repository, review pulled repository changes and the rendered dotfile diff, and confirm before applying:
 
