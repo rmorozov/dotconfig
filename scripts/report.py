@@ -73,6 +73,29 @@ def runtimes():
     return pins
 
 
+def package_capabilities():
+    capabilities = {}
+    system = platform.system()
+    for name, brew_name, ubuntu_name in rows(ROOT / "packages/packages.tsv"):
+        package = brew_name if system == "Darwin" else ubuntu_name if system == "Linux" else "-"
+        if package == "-":
+            capabilities[name] = {"package": None, "installed": None, "version": None}
+        elif system == "Darwin" and shutil.which("brew"):
+            found = output("brew", "list", "--versions", "--formula", package)
+            versions = found.split()[1:] if found and found.split()[0] == package else []
+            capabilities[name] = {"package": package, "installed": bool(versions),
+                                  "version": versions[-1] if versions else None}
+        elif system == "Linux" and shutil.which("dpkg-query"):
+            found = output("dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${Version}", package)
+            status, _, version = (found or "").partition("\t")
+            installed = status.startswith("ii ")
+            capabilities[name] = {"package": package, "installed": installed,
+                                  "version": version if installed else None}
+        else:
+            capabilities[name] = {"package": package, "installed": None, "version": None}
+    return capabilities
+
+
 def editor():
     vim_plug_revision, vim_plug_blob = next(rows(ROOT / "versions/vim-plug"))
     vim_plug_file = HOME / ".vim/autoload/plug.vim"
@@ -120,7 +143,7 @@ def report(role, host_type):
                        "working_tree_clean": git_status == "" if git_status is not None else None},
         "dotfiles": {"state": "unknown" if diff is None or diff.returncode != 0 else
                      "ok" if not diff.stdout else "drift"},
-        "packages": {"state": package_state},
+        "packages": {"state": package_state, "capabilities": package_capabilities()},
         "bootstrap": bootstrap(),
         "runtimes": runtimes(),
         "oh_my_zsh": state(expected_shell, actual_shell),
@@ -144,6 +167,10 @@ def main():
         print(f"Repository: {repo['commit']} ({'reviewed' if repo['commit'] == repo['reviewed_commit'] else 'review pending'})")
         print(f"Working tree: {'clean' if repo['working_tree_clean'] else 'changed or unknown'}")
         print(f"Dotfiles: {data['dotfiles']['state']}; packages: {data['packages']['state']}")
+        missing_packages = [name for name, item in data["packages"]["capabilities"].items()
+                            if item["installed"] is False]
+        if missing_packages:
+            print(f"Missing baseline capabilities: {', '.join(missing_packages)}")
         for section in ("bootstrap", "runtimes"):
             items = data[section]
             print(f"{section.title()}: " + ", ".join(f"{name}={item['state'] if 'state' in item else ('installed' if item['installed'] else 'missing')}"
