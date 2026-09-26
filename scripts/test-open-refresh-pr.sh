@@ -62,10 +62,7 @@ grep -q '^+tool 1.1.0$' "$test_root/body"
 grep -Eq '^ tracked +\| ' "$test_root/body"
 grep -q '^Review the full diff and platform validation before merging\.$' "$test_root/body"
 test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 1
-if grep -q '^workflow run security-audit.yml' "$gh_log"; then
-    echo "Unrelated refresh unexpectedly dispatched the advisory audit" >&2
-    exit 1
-fi
+test "$(grep -c '^workflow run security-audit.yml --ref automation/test-refresh$' "$gh_log")" -eq 1
 
 git clone --branch master "$remote" "$test_root/next-work" >/dev/null 2>&1
 printf '%s\n' refreshed > "$test_root/next-work/tracked"
@@ -88,10 +85,7 @@ grep -q '^pr edit 42 --title Test refresh --body-file ' "$gh_log"
 grep -q '^### Changed files$' "$test_root/body"
 grep -q '^+tool 1.2.0$' "$test_root/body"
 test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
-if grep -q '^workflow run security-audit.yml' "$gh_log"; then
-    echo "Unrelated refresh update unexpectedly dispatched the advisory audit" >&2
-    exit 1
-fi
+test "$(grep -c '^workflow run security-audit.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
 
 git -C "$work" switch master >/dev/null
 (
@@ -109,6 +103,7 @@ git -C "$work" switch master >/dev/null
 )
 grep -q '^pr close 42 --delete-branch --comment ' "$gh_log"
 test "$(grep -c '^workflow run validate.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
+test "$(grep -c '^workflow run security-audit.yml --ref automation/test-refresh$' "$gh_log")" -eq 2
 
 : > "$test_root/open-pr"
 before="$(wc -l < "$gh_log")"
@@ -154,12 +149,9 @@ go = "1.1.0"' ;;
     )
     grep -q "^workflow run validate.yml --ref automation/test-$refresh_case$" "$gh_log"
 done
-test "$(grep -c '^workflow run security-audit.yml --ref automation/test-' "$gh_log")" -eq 2
+test "$(grep -c '^workflow run security-audit.yml --ref automation/test-' "$gh_log")" -eq 5
 grep -q '^workflow run security-audit.yml --ref automation/test-coc$' "$gh_log"
 grep -q '^workflow run security-audit.yml --ref automation/test-node$' "$gh_log"
-if grep -q '^workflow run security-audit.yml --ref automation/test-go$' "$gh_log"; then
-    echo "Go-only refresh unexpectedly dispatched the advisory audit" >&2
-    exit 1
-fi
+grep -q '^workflow run security-audit.yml --ref automation/test-go$' "$gh_log"
 
 echo "Refresh PR cleanup passed"
