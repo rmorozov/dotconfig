@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
 SKIP_PACKAGES=false
 SKIP_PLUGINS=false
 SKIP_SHELL_CHANGE=false
@@ -54,8 +55,8 @@ install_chezmoi() {
             ;;
         Linux)
             if ! command_exists curl; then
-                sudo apt-get update
-                sudo apt-get install -y curl ca-certificates
+                bash "$REPO_ROOT/scripts/apt-get.sh" update
+                bash "$REPO_ROOT/scripts/apt-get.sh" install -y curl ca-certificates
             fi
             bash "$BOOTSTRAP_INSTALLER" chezmoi
             export PATH="$HOME/.local/bin:$PATH"

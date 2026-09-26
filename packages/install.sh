@@ -3,6 +3,8 @@
 set -Eeuo pipefail
 
 PACKAGE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$PACKAGE_DIR/../home/dot_config/zsh/proxy.zsh"
+
 MODE=install
 
 case "${1:-}" in
@@ -83,8 +85,8 @@ case "$(uname -s)" in
             fi
             echo "Ubuntu package baseline is satisfied."
         else
-            sudo apt-get update
-            sudo apt-get install -y "${packages[@]}"
+            bash "$PACKAGE_DIR/../scripts/apt-get.sh" update
+            bash "$PACKAGE_DIR/../scripts/apt-get.sh" install -y "${packages[@]}"
         fi
         ;;
     *)
