@@ -15,6 +15,7 @@ MACHINE_ROLE={{ .machineRole | quote }}
 HOST_TYPE={{ .hostType | quote }}
 UPDATE_CAN_CONVERGE=false
 PROXY_LOADER="$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
+# shellcheck source=/dev/null
 source "$PROXY_LOADER"
 
 usage() {
