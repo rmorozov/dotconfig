@@ -259,7 +259,7 @@ Nightly discovery does not mean nightly installation. Each stream force-updates 
 
 All refresh workflows use `scripts/open-refresh-pr.sh` for the shared commit, force-push, and PR-upsert behavior. The local validator exercises that helper against an isolated bare Git repository and a fake `gh` client.
 
-The helper explicitly dispatches platform validation for bot-authored PRs. If a proposal changes CoC extension versions or the committed Node runtime pin, it also dispatches the advisory audit against that same proposal branch. The normal nightly audit still checks the committed pins independently.
+The helper explicitly dispatches platform validation and the advisory audit for every bot-authored PR. Human-authored PRs also run both checks. Keeping the advisory check present on every proposal lets branch protection require it without blocking unrelated refreshes. The audit runs against the proposed commit; the independent nightly audit still checks committed pins. Per-ref concurrency prevents different nightly proposals from canceling one another's audit.
 
 Refresh PR descriptions include the changed-file summary and a bounded diff of version manifests and runtime pins. Each nightly replacement refreshes that summary, so it reflects the current proposed commit. Review the full diff for generated configuration and executable code changes before merging.
 

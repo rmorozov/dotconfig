@@ -73,11 +73,6 @@ fi
 # explicitly runs the same platform validation on the proposed commit.
 gh workflow run validate.yml --ref "$refresh_branch"
 
-# A bot-authored PR's pull_request audit can await approval. Audit the exact
-# proposed CoC/Node pins through the same explicit dispatch used for validation.
-node_pin_changed="$(git diff --unified=0 HEAD^ HEAD -- home/dot_config/mise/config.toml |
-    awk '/^[+-][[:space:]]*node[[:space:]]*=/ { changed = 1 } END { print changed + 0 }')"
-if ! git diff --quiet HEAD^ HEAD -- versions/coc-extensions ||
-    [[ "$node_pin_changed" == 1 ]]; then
-    gh workflow run security-audit.yml --ref "$refresh_branch"
-fi
+# The advisory check exists for every PR, so branch protection can require it.
+# GITHUB_TOKEN-authored PR events may await approval; dispatch it on this branch.
+gh workflow run security-audit.yml --ref "$refresh_branch"
