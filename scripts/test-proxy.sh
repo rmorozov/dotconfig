@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Intentional independent subshells test proxy mode transitions.
+# shellcheck disable=SC2030,SC2031
 set -Eeuo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
