@@ -259,6 +259,8 @@ Nightly discovery does not mean nightly installation. Each stream force-updates 
 
 All refresh workflows use `scripts/open-refresh-pr.sh` for the shared commit, force-push, and PR-upsert behavior. The local validator exercises that helper against an isolated bare Git repository and a fake `gh` client.
 
+The helper explicitly dispatches platform validation for bot-authored PRs. If a proposal changes CoC extension versions or the committed Node runtime pin, it also dispatches the advisory audit against that same proposal branch. The normal nightly audit still checks the committed pins independently.
+
 Refresh PR descriptions include the changed-file summary and a bounded diff of version manifests and runtime pins. Each nightly replacement refreshes that summary, so it reflects the current proposed commit. Review the full diff for generated configuration and executable code changes before merging.
 
 The CoC refresh, advisory audit, and quarantine review workflows use the exact Node version in `home/dot_config/mise/config.toml` rather than the runner's preinstalled Node or a moving major alias.
