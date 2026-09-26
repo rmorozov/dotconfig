@@ -7,7 +7,9 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 mkdir -p "$tmpdir/repo/scripts" "$tmpdir/repo/packages" "$tmpdir/repo/home/dot_config/mise" "$tmpdir/bin" "$tmpdir/home"
+mkdir -p "$tmpdir/repo/home/dot_config/zsh"
 cp "$REPO_ROOT/install.sh" "$tmpdir/repo/install.sh"
+cp "$REPO_ROOT/home/dot_config/zsh/proxy.zsh" "$tmpdir/repo/home/dot_config/zsh/"
 cp "$REPO_ROOT/scripts/manage-runtime-versions.sh" "$tmpdir/repo/scripts/"
 cp "$REPO_ROOT/home/dot_config/mise/config.toml" "$tmpdir/repo/home/dot_config/mise/"
 
