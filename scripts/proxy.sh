@@ -14,6 +14,8 @@ configure_files() {
     chmod 600 "$payload"
     trap 'rm -f "$payload"' RETURN
     if [[ "$action" == on ]]; then
+        # Read by the sourced proxy loader.
+        # shellcheck disable=SC2034
         DOTCONFIG_PROXY_MODE_OVERRIDE=on
         # shellcheck source=/dev/null
         source "$repo_root/home/dot_config/zsh/proxy.zsh"
@@ -24,6 +26,8 @@ configure_files() {
     if [[ -n "${DOTCONFIG_PROXY_TEST_ROOT:-}" ]]; then
         python3 "$file_manager" system "$action" "$DOTCONFIG_PROXY_TEST_ROOT" < "$payload"
     elif [[ "$(uname -s)" == Linux ]]; then
+        # The unprivileged shell reads its own temporary payload into sudo's stdin.
+        # shellcheck disable=SC2024
         sudo python3 "$file_manager" system "$action" < "$payload"
     fi
 }
