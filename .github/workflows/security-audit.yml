@@ -2,12 +2,6 @@ name: Audit dependency advisories
 
 on:
   pull_request:
-    paths:
-      - versions/coc-extensions
-      - home/dot_config/mise/config.toml
-      - scripts/node-version.sh
-      - scripts/audit-coc-extensions.sh
-      - .github/workflows/security-audit.yml
   schedule:
     - cron: "23 4 * * *"
   workflow_dispatch:
@@ -16,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: audit-dependency-advisories
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
