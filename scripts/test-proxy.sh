@@ -7,6 +7,17 @@ trap 'rm -rf "$test_home"' EXIT
 export HOME="$test_home"
 mkdir -p "$HOME/.config/dotconfig" "$HOME/bin"
 chmod 700 "$HOME/.config/dotconfig"
+bash "$repo_root/scripts/proxy.sh" on > "$test_home/output"
+(
+    http_proxy='' https_proxy='' no_proxy=''
+    # shellcheck source=/dev/null
+    source "$repo_root/home/dot_config/zsh/proxy.zsh"
+    [[ "$http_proxy" == 'http://127.0.0.1:3128' ]]
+    [[ "$https_proxy" == "$http_proxy" ]]
+    [[ "$no_proxy" == *'localhost'* ]]
+)
+[[ "$(bash "$repo_root/scripts/proxy.sh" status)" == *'listener not checked'* ]]
+
 cat > "$HOME/.config/dotconfig/proxy.local" <<'EOF'
 export http_proxy='http://secret@proxy.example:8080'
 export https_proxy="$http_proxy"

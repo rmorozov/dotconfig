@@ -36,26 +36,32 @@ Run `dotconfig status` or `dotconfig doctor` to see the active profile. To chang
 
 ### Machine-local proxy switch
 
-Create `~/.config/dotconfig/proxy.local` as a private shell file, for example:
+For a local Kerberos-aware proxy such as Px, cntlm-gss, or proxy-detox listening on `127.0.0.1:3128`, start that service with your usual machine-specific setup, then run:
+
+```sh
+dotconfig proxy on
+dotconfig proxy status
+dotconfig proxy off
+```
+
+The built-in endpoint is `http://127.0.0.1:3128` for HTTP and HTTPS requests, with localhost bypassed. Dotconfig does not start the service, acquire Kerberos tickets, or probe connectivity. If the proxy stops or its ticket expires, requests through it fail until you restore the service or turn the switch off. For a new machine before `dotconfig` is installed, run `bash scripts/proxy.sh on` before `bash install.sh`.
+
+To override the endpoint or bypass list, optionally create `~/.config/dotconfig/proxy.local` as a private shell file:
 
 ```sh
 mkdir -p ~/.config/dotconfig
 chmod 700 ~/.config/dotconfig
 cat > ~/.config/dotconfig/proxy.local <<'EOF'
-export http_proxy='http://proxy.example:8080'
-export https_proxy="$http_proxy"
-export no_proxy='localhost,127.0.0.1,.internal.example'
-export HTTP_PROXY="$http_proxy"
-export HTTPS_PROXY="$https_proxy"
+export no_proxy='localhost,127.0.0.1,::1,.internal.example'
 export NO_PROXY="$no_proxy"
+# For a different local port, also set http_proxy, https_proxy, HTTP_PROXY and HTTPS_PROXY.
 EOF
 chmod 600 ~/.config/dotconfig/proxy.local
-dotconfig proxy on
 ```
 
-Run `dotconfig proxy off` to disable it or `dotconfig proxy status` to check the saved mode. In a managed Zsh shell, on/off refresh the current shell immediately. Other shells should be restarted. The profile is local shell code: only use a file you control. Its contents and proxy URLs are never committed or displayed by `status`. To bootstrap on a new machine before `dotconfig` is installed, create this file and run `bash scripts/proxy.sh on` before `bash install.sh`.
+In a managed Zsh shell, on/off refresh the current shell immediately. Other shells should be restarted. The optional profile is local shell code: only use a file you control. Its contents and proxy URLs are never committed or displayed by `status`.
 
-The loader exports the profile's variables to curl, Git, Homebrew, mise, npm and other tools that honor proxy environment variables. It also supplies them to the repository's APT operations using `sudo --preserve-env`; a restrictive local sudo policy may require a separate APT setup. Existing proxy settings inside Git, npm, APT or other tools can take precedence and are not edited by this switch. Before the first on/off command, existing environment settings remain untouched. An explicit `off` removes inherited proxy environment variables from managed shells and dotconfig operations, including `ALL_PROXY`; it does not reconfigure the operating system or other applications. Keep any certificate paths and credentials in this local profile, and check your machine's trust settings when using an intercepting proxy.
+The loader exports the local endpoint and optional profile overrides to curl, Git, Homebrew, mise, npm and other tools that honor proxy environment variables. It supplies them to the repository's APT operations using `sudo --preserve-env`; a restrictive local sudo policy may require a separate APT setup. Existing proxy settings inside Git, npm, APT or other tools can take precedence and are not edited by this switch. Before the first on/off command, existing environment settings remain untouched. An explicit `off` removes inherited proxy environment variables from managed shells and dotconfig operations, including `ALL_PROXY`; it does not reconfigure the operating system or other applications.
 
 The repository never reads private override contents into Git. Keep ordinary machine-specific values in `~/.zshrc.local` and role-specific or sensitive values in `~/.zshrc.personal.local` or `~/.zshrc.work.local`.
 
