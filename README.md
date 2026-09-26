@@ -34,6 +34,37 @@ Run `dotconfig status` or `dotconfig doctor` to see the active profile. To chang
 
 ## Private configuration
 
+### Machine-local proxy switch
+
+For a local Kerberos-aware proxy such as Px, cntlm-gss, or proxy-detox listening on `127.0.0.1:3128`, start that service with your usual machine-specific setup, then run:
+
+```sh
+dotconfig proxy on
+dotconfig proxy status
+dotconfig proxy off
+```
+
+The built-in endpoint is `http://127.0.0.1:3128` for HTTP and HTTPS requests, with localhost bypassed. Dotconfig does not start the service, acquire Kerberos tickets, or probe connectivity. If the proxy stops or its ticket expires, requests through it fail until you restore the service or turn the switch off. For a new machine before `dotconfig` is installed, run `bash scripts/proxy.sh on` before `bash install.sh`.
+
+To override the endpoint or bypass list, optionally create `~/.config/dotconfig/proxy.local` as a private shell file:
+
+```sh
+mkdir -p ~/.config/dotconfig
+chmod 700 ~/.config/dotconfig
+cat > ~/.config/dotconfig/proxy.local <<'EOF'
+export no_proxy='localhost,127.0.0.1,::1,.internal.example'
+export NO_PROXY="$no_proxy"
+# For a different local port, also set http_proxy, https_proxy, HTTP_PROXY and HTTPS_PROXY.
+EOF
+chmod 600 ~/.config/dotconfig/proxy.local
+```
+
+In a managed Zsh shell, on/off refresh the current shell immediately. Other shells should be restarted. The optional profile is local shell code: only use a file you control. Its contents and proxy URLs are never committed or displayed by `status`.
+
+On Ubuntu, `on` also adds a marked block to `/etc/environment` if it has no existing proxy assignments, and creates `/etc/apt/apt.conf.d/10-proxy.conf` if the APT configuration directory has no proxy settings. Both operations require `sudo`. It adds a marked block to the current user's `~/.npmrc` if that file has no proxy keys; this applies on both platforms. `off` removes only dotconfig's blocks and deletes a file only when that block was its sole content. Existing settings are preserved and can remain effective after `off`. The system environment takes effect for new login sessions; APT and npm read their configuration on the next invocation. This does not configure system services already running, nor does it change macOS system-wide proxy settings.
+
+The loader exports the local endpoint and optional profile overrides to curl, Git, Homebrew, mise, npm and other tools that honor proxy environment variables. For APT without persistent proxy settings, dotconfig passes them through `sudo --preserve-env`; a restrictive local sudo policy may require a separate APT setup. Only credential-free loopback proxy URLs are allowed in the persisted files. Existing proxy settings inside Git, npm, APT or other tools can take precedence and are not edited by this switch. Before the first on/off command, existing environment settings remain untouched. An explicit `off` removes inherited proxy environment variables from managed shells and dotconfig operations, including `ALL_PROXY`.
+
 The repository never reads private override contents into Git. Keep ordinary machine-specific values in `~/.zshrc.local` and role-specific or sensitive values in `~/.zshrc.personal.local` or `~/.zshrc.work.local`.
 
 This is local secret hygiene, not secret synchronization. Do not commit passwords, tokens, private keys, or corporate configuration. Cross-machine encrypted synchronization requires a separately backed-up encryption identity and is intentionally deferred until that key-storage policy is chosen.

@@ -14,6 +14,9 @@ BOOTSTRAP_INSTALLER="$REPO_ROOT/scripts/install-bootstrap-tool.sh"
 MACHINE_ROLE={{ .machineRole | quote }}
 HOST_TYPE={{ .hostType | quote }}
 UPDATE_CAN_CONVERGE=false
+PROXY_LOADER="$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
+# shellcheck source=/dev/null
+source "$PROXY_LOADER"
 
 usage() {
     cat <<'EOF'
@@ -35,6 +38,7 @@ Commands:
   shell     Install the pinned Oh My Zsh revision.
   vim        Install the pinned Vim plugins and CoC extensions.
   private   Create or edit the active role's private shell file.
+  proxy     Enable, disable, or inspect the machine-local network proxy.
   path      Print the source repository path.
 EOF
 }
@@ -474,6 +478,7 @@ case "${1:-}" in
     shell) bash "$OH_MY_ZSH_INSTALLER" ;;
     vim) vim_install ;;
     private) private_command ;;
+    proxy) shift; bash "$REPO_ROOT/scripts/proxy.sh" "$@" ;;
     path) printf '%s\n' "$REPO_ROOT" ;;
     -h|--help|"") usage ;;
     *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;

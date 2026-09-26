@@ -10,6 +10,8 @@ git clone "$test_dir/remote" "$test_dir/author" >/dev/null 2>&1
 git -C "$test_dir/author" config user.name test
 git -C "$test_dir/author" config user.email test@example.com
 mkdir -p "$test_dir/author/scripts"
+mkdir -p "$test_dir/author/home/dot_config/zsh"
+cp "$REPO_ROOT/home/dot_config/zsh/proxy.zsh" "$test_dir/author/home/dot_config/zsh/"
 printf '%s\n' 'initial' > "$test_dir/author/scripts/maintenance.sh"
 git -C "$test_dir/author" add .
 git -C "$test_dir/author" commit -m initial >/dev/null

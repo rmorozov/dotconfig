@@ -34,4 +34,14 @@ fi
 role_config="${HOME}/.zshrc.${DOTCONFIG_ROLE}.local"
 [[ -r "$role_config" ]] && source "$role_config"
 
+source "${dotconfig_zsh_dir}/proxy.zsh"
+
+# Persist the proxy mode and refresh this shell without restarting it.
+dotconfig() {
+    command dotconfig "$@" || return $?
+    if [[ "${1:-}" == proxy && ( "${2:-}" == on || "${2:-}" == off ) ]]; then
+        source "${HOME}/.config/zsh/proxy.zsh"
+    fi
+}
+
 unset dotconfig_zsh_dir role_config
