@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 PACKAGE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
 source "$PACKAGE_DIR/../home/dot_config/zsh/proxy.zsh"
 
 MODE=install

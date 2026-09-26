@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
 source "$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
 SKIP_PACKAGES=false
 SKIP_PLUGINS=false
