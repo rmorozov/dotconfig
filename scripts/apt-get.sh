@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# shellcheck source=/dev/null
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/home/dot_config/zsh/proxy.zsh"
 
 if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&

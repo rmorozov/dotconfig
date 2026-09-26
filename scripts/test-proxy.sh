@@ -15,8 +15,10 @@ EOF
 chmod 600 "$HOME/.config/dotconfig/proxy.local"
 
 bash "$repo_root/scripts/proxy.sh" on > "$test_home/output"
-! grep -q secret "$test_home/output"
+if grep -q secret "$test_home/output"; then exit 1; fi
 (
+    https_proxy='' no_proxy=''
+    # shellcheck source=/dev/null
     source "$repo_root/home/dot_config/zsh/proxy.zsh"
     [[ "$https_proxy" == 'http://secret@proxy.example:8080' ]]
     [[ "$no_proxy" == 'localhost,.internal.example' ]]
@@ -31,11 +33,12 @@ EOF
 chmod +x "$HOME/bin/sudo"
 PATH="$HOME/bin:$PATH" bash "$repo_root/scripts/apt-get.sh" update
 grep -q 'apt-get update' "$HOME/sudo-args"
-! grep -q secret "$HOME/sudo-args"
+if grep -q secret "$HOME/sudo-args"; then exit 1; fi
 
 bash "$repo_root/scripts/proxy.sh" off > "$test_home/output"
 (
     export http_proxy='http://inherited.example' HTTPS_PROXY='http://inherited.example'
+    # shellcheck source=/dev/null
     source "$repo_root/home/dot_config/zsh/proxy.zsh"
     [[ -z "${http_proxy+x}" && -z "${HTTPS_PROXY+x}" ]]
 )
