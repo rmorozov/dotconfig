@@ -15,7 +15,7 @@ indentLine https://github.com/Yggdroot/indentLine.git HEAD b96a75985736da969ac38
 vim-bootstrap-updater https://github.com/editor-bootstrap/vim-bootstrap-updater.git HEAD 55d9d5794a391cd23f9c0d76336a30aeac0e9c70
 vim-rhubarb https://github.com/tpope/vim-rhubarb.git HEAD 5496d7c94581c4c9ad7430357449bb57fc59f501
 molokai https://github.com/tomasr/molokai.git HEAD c67bdfcdb31415aa0ade7f8c003261700a885476
-fzf.vim https://github.com/junegunn/fzf.vim.git HEAD 8a0068127ac9ee23d71dab2944ce995726bef462
+fzf.vim https://github.com/junegunn/fzf.vim.git HEAD a630ef91e1e050574e703f506cd0812b18d26939
 fzf https://github.com/junegunn/fzf.git HEAD b1be3a8be1b833ce5b92fbbac11637643d60a046
 vimproc.vim https://github.com/Shougo/vimproc.vim.git HEAD 63a4ce0768c7af434ac53d37bdc1e7ff7fd2bece
 vim-misc https://github.com/xolox/vim-misc.git HEAD 3e6b8fb6f03f13434543ce1f5d24f6a5d3f34f0b
