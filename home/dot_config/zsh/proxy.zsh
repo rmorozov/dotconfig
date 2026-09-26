@@ -4,6 +4,9 @@ dotconfig_proxy_mode=unmanaged
 if [[ -f "${dotconfig_proxy_dir}/proxy.mode" ]]; then
     IFS= read -r dotconfig_proxy_mode < "${dotconfig_proxy_dir}/proxy.mode" || :
 fi
+if [[ "${DOTCONFIG_PROXY_MODE_OVERRIDE:-}" == on ]]; then
+    dotconfig_proxy_mode=on
+fi
 
 if [[ "$dotconfig_proxy_mode" == on ]]; then
     # Local Kerberos-aware proxy (Px, cntlm-gss, proxy-detox, etc.).
