@@ -46,20 +46,21 @@ dotconfig proxy off
 
 The built-in endpoint is `http://127.0.0.1:3128` for HTTP and HTTPS requests, with localhost bypassed. Dotconfig does not start the service, acquire Kerberos tickets, or probe connectivity. If the proxy stops or its ticket expires, requests through it fail until you restore the service or turn the switch off. For a new machine before `dotconfig` is installed, run `bash scripts/proxy.sh on` before `bash install.sh`.
 
-To override the endpoint or bypass list, optionally create `~/.config/dotconfig/proxy.local` as a private shell file:
+Extend the bypass list in `~/.config/dotconfig/no-proxy.local`, one entry per line. Blank lines and `#` comments are ignored, duplicate entries are removed, and `localhost,127.0.0.1,::1` remain in the list:
 
 ```sh
 mkdir -p ~/.config/dotconfig
 chmod 700 ~/.config/dotconfig
-cat > ~/.config/dotconfig/proxy.local <<'EOF'
-export no_proxy='localhost,127.0.0.1,::1,.internal.example'
-export NO_PROXY="$no_proxy"
-# For a different local port, also set http_proxy, https_proxy, HTTP_PROXY and HTTPS_PROXY.
+cat > ~/.config/dotconfig/no-proxy.local <<'EOF'
+# Internal services that should bypass the local proxy
+.internal.example
+git.internal.example
 EOF
-chmod 600 ~/.config/dotconfig/proxy.local
+chmod 600 ~/.config/dotconfig/no-proxy.local
+dotconfig proxy on
 ```
 
-In a managed Zsh shell, on/off refresh the current shell immediately. Other shells should be restarted. The optional profile is local shell code: only use a file you control. Its contents and proxy URLs are never committed or displayed by `status`.
+Run `dotconfig proxy on` again after editing the list to update the persistent files and current managed Zsh shell. Other shells should be restarted. Different clients interpret bypass patterns differently; verify domain suffixes or CIDR entries against the tools you use. To change the local proxy port or set additional environment variables, optionally use `~/.config/dotconfig/proxy.local` as private shell code. Both optional files should have mode `0600`; their contents are never committed or displayed by `status`.
 
 On Ubuntu, `on` also adds a marked block to `/etc/environment` if it has no existing proxy assignments, and creates `/etc/apt/apt.conf.d/10-proxy.conf` if the APT configuration directory has no proxy settings. Both operations require `sudo`. It adds a marked block to the current user's `~/.npmrc` if that file has no proxy keys; this applies on both platforms. `off` removes only dotconfig's blocks and deletes a file only when that block was its sole content. Existing settings are preserved and can remain effective after `off`. The system environment takes effect for new login sessions; APT and npm read their configuration on the next invocation. This does not configure system services already running, nor does it change macOS system-wide proxy settings.
 

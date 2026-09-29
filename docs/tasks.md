@@ -7,7 +7,7 @@
 
 ## Toggle network proxies per machine
 
-- [x] Define `dotconfig proxy on|off|status` semantics and an unmanaged, per-machine configuration source. Preserve proxy URLs, credentials, internal certificate paths, and `NO_PROXY` outside Git. `off` persists for new sessions and takes effect in the current managed Zsh shell.
+- [x] Define `dotconfig proxy on|off|status` semantics and an unmanaged, per-machine configuration source. Preserve proxy URLs, credentials, internal certificate paths, and an extensible `no-proxy.local` bypass list outside Git. `off` persists for new sessions and takes effect in the current managed Zsh shell.
 - [ ] Inventory network clients used by bootstrap, maintenance, and interactive development: curl, Git (including Oh My Zsh and Vim plugins), Homebrew, APT, mise, npm/CoC, and language installers or package managers such as pip and Go modules. Check which clients honor `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`, including lowercase variants, and which need their own configuration. Test the local Kerberos-aware proxies (cntlm-gss, proxy-detox, Px) when the listener or Kerberos ticket is missing.
 - [x] Use a single loader for child processes and newly started shells. Cover `bash install.sh` before chezmoi has applied files, and preserve the selected mode when `dotconfig` launches Bash scripts. Avoid writing a public or machine-wide proxy URL into committed files.
 - [ ] Verify Ubuntu APT under `sudo` on a real machine: dotconfig now creates `/etc/apt/apt.conf.d/10-proxy.conf` only when no APT proxy exists. Where existing APT proxy settings are absent, it passes proxy environment through `sudo --preserve-env`; local sudo policy may reject this. Keep existing system package manager settings intact.

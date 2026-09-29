@@ -32,6 +32,13 @@ export https_proxy="$http_proxy"
 export no_proxy='localhost,.internal.example'
 EOF
 chmod 600 "$HOME/.config/dotconfig/proxy.local"
+cat > "$HOME/.config/dotconfig/no-proxy.local" <<'EOF'
+# Company services, one entry per line.
+.corp.example
+10.0.0.0/8
+.internal.example
+EOF
+chmod 600 "$HOME/.config/dotconfig/no-proxy.local"
 
 bash "$repo_root/scripts/proxy.sh" on > "$test_home/output"
 if grep -q '127.0.0.1:3129' "$test_home/output"; then exit 1; fi
@@ -40,8 +47,11 @@ if grep -q '127.0.0.1:3129' "$test_home/output"; then exit 1; fi
     # shellcheck source=/dev/null
     source "$repo_root/home/dot_config/zsh/proxy.zsh"
     [[ "$https_proxy" == 'http://127.0.0.1:3129' ]]
-    [[ "$no_proxy" == 'localhost,.internal.example' ]]
+    [[ "$no_proxy" == 'localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8' ]]
+    [[ "$NO_PROXY" == "$no_proxy" ]]
 )
+grep -Fq 'no_proxy="localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8"' "$DOTCONFIG_PROXY_TEST_ROOT/etc/environment"
+grep -Fxq 'noproxy=localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8' "$HOME/.npmrc"
 
 cat > "$HOME/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
