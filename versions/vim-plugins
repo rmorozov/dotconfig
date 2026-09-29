@@ -15,7 +15,7 @@ indentLine https://github.com/Yggdroot/indentLine.git HEAD b96a75985736da969ac38
 vim-bootstrap-updater https://github.com/editor-bootstrap/vim-bootstrap-updater.git HEAD 55d9d5794a391cd23f9c0d76336a30aeac0e9c70
 vim-rhubarb https://github.com/tpope/vim-rhubarb.git HEAD 5496d7c94581c4c9ad7430357449bb57fc59f501
 molokai https://github.com/tomasr/molokai.git HEAD c67bdfcdb31415aa0ade7f8c003261700a885476
-fzf.vim https://github.com/junegunn/fzf.vim.git HEAD 8a0068127ac9ee23d71dab2944ce995726bef462
+fzf.vim https://github.com/junegunn/fzf.vim.git HEAD a630ef91e1e050574e703f506cd0812b18d26939
 fzf https://github.com/junegunn/fzf.git HEAD b1be3a8be1b833ce5b92fbbac11637643d60a046
 vimproc.vim https://github.com/Shougo/vimproc.vim.git HEAD 63a4ce0768c7af434ac53d37bdc1e7ff7fd2bece
 vim-misc https://github.com/xolox/vim-misc.git HEAD 3e6b8fb6f03f13434543ce1f5d24f6a5d3f34f0b
@@ -27,5 +27,5 @@ split-manpage.vim https://github.com/ludwig/split-manpage.vim.git HEAD e99c7a06e
 vim-go https://github.com/fatih/vim-go.git HEAD 47694979496d4bf2e90ce75d95f1dec3f41cbefb
 jedi-vim https://github.com/davidhalter/jedi-vim.git HEAD a13c7bf64dbb4abcf676b4e41c5fedc2d4e7f6dd
 requirements.txt.vim https://github.com/raimon49/requirements.txt.vim.git HEAD d55452136a162ac31b15876ab98c00bd1b6c312f
-coc.nvim https://github.com/neoclide/coc.nvim.git release f5910295483bfbe8b58e6f2002e9ae280e5b700e
+coc.nvim https://github.com/neoclide/coc.nvim.git release eda4d09170fd9bd08dd9abbe300f1f5bcaae0a20
 vim-trailing-whitespace https://github.com/bronson/vim-trailing-whitespace.git HEAD dc22ff46010e55d2c33edd21cdcd14f99e729b6f
