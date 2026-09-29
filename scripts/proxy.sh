@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 state_dir="$HOME/.config/dotconfig"
 profile="$state_dir/proxy.local"
+no_proxy_list="$state_dir/no-proxy.local"
 mode_file="$state_dir/proxy.mode"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 file_manager="$repo_root/scripts/proxy-files.py"
@@ -35,16 +36,18 @@ configure_files() {
 case "${1:-}" in
     on)
         [[ $# -eq 1 ]] || exit 2
-        if [[ -e "$profile" || -L "$profile" ]]; then
-            [[ -f "$profile" && -r "$profile" && ! -L "$profile" ]] || {
-                echo "Optional proxy profile must be a readable regular file: $profile" >&2
-                exit 1
-            }
-            [[ -z "$(find "$profile" -perm -077 -print)" ]] || {
-                echo "Proxy profile must not be accessible to other users: chmod 600 $profile" >&2
-                exit 1
-            }
-        fi
+        for local_file in "$profile" "$no_proxy_list"; do
+            if [[ -e "$local_file" || -L "$local_file" ]]; then
+                [[ -f "$local_file" && -r "$local_file" && ! -L "$local_file" ]] || {
+                    echo "Optional proxy configuration must be a readable regular file: $local_file" >&2
+                    exit 1
+                }
+                [[ -z "$(find "$local_file" -perm -077 -print)" ]] || {
+                    echo "Proxy configuration must not be accessible to other users: chmod 600 $local_file" >&2
+                    exit 1
+                }
+            fi
+        done
         mkdir -p "$state_dir"
         chmod 700 "$state_dir"
         configure_files on
