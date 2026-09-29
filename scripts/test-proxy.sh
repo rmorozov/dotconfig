@@ -43,7 +43,7 @@ chmod 600 "$HOME/.config/dotconfig/no-proxy.local"
 bash "$repo_root/scripts/proxy.sh" on > "$test_home/output"
 if grep -q '127.0.0.1:3129' "$test_home/output"; then exit 1; fi
 (
-    https_proxy='' no_proxy=''
+    https_proxy='' no_proxy='' NO_PROXY=''
     # shellcheck source=/dev/null
     source "$repo_root/home/dot_config/zsh/proxy.zsh"
     [[ "$https_proxy" == 'http://127.0.0.1:3129' ]]
