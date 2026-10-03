@@ -138,11 +138,19 @@ def manage_user(home, action, values):
 
 
 def main():
-    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("system", "user", "payload") or sys.argv[2] not in ("on", "off"):
-        raise ValueError("Usage: proxy-files.py {system|user|payload} {on|off} [test-root]")
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("system", "user", "payload", "environment") or sys.argv[2] not in ("on", "off"):
+        raise ValueError("Usage: proxy-files.py {system|user|payload|environment} {on|off} [test-root]")
     scope, action = sys.argv[1:3]
     if scope == "payload":
         print(json.dumps({k: os.environ.get(k, "") for k in ENV_KEYS}))
+        return
+    if scope == "environment":
+        # Canonicalize both cases from the loader's effective lowercase settings.
+        data = {k: os.environ.get(k.lower(), "") for k in ENV_KEYS}
+        values = validated_values(data)
+        for key in ENV_KEYS:
+            print(f"{key}={values[key]}")
+        print("NODE_USE_ENV_PROXY=1")
         return
     values = validated_values(json.load(sys.stdin)) if action == "on" else {}
     root = Path(sys.argv[3]) if len(sys.argv) == 4 else Path("/")
