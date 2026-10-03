@@ -62,13 +62,27 @@ dotconfig proxy on
 
 Run `dotconfig proxy on` again after editing the list to update the persistent files and current managed Zsh shell. Other shells should be restarted. Different clients interpret bypass patterns differently; verify domain suffixes or CIDR entries against the tools you use. To change the local proxy port or set additional environment variables, optionally use `~/.config/dotconfig/proxy.local` as private shell code. Both optional files should have mode `0600`; their contents are never committed or displayed by `status`.
 
-On Ubuntu, `on` also adds a marked block to `/etc/environment` if it has no existing proxy assignments, and creates `/etc/apt/apt.conf.d/10-proxy.conf` if the APT configuration directory has no proxy settings. Both operations require `sudo`. It adds a marked block to the current user's `~/.npmrc` if that file has no proxy keys; this applies on both platforms. `off` removes only dotconfig's blocks and deletes a file only when that block was its sole content. Existing settings are preserved and can remain effective after `off`. The system environment takes effect for new login sessions; APT and npm read their configuration on the next invocation. This does not configure system services already running, nor does it change macOS system-wide proxy settings.
+On Ubuntu, `on` also adds a marked block to `/etc/environment` if it has no existing proxy assignments, and creates `/etc/apt/apt.conf.d/10-proxy.conf` if the APT configuration directory has no proxy settings. Both operations require `sudo`. APT ignores `no_proxy` once a proxy is configured, so exact host names from the bypass list are written as `DIRECT` entries; domain suffixes and CIDR ranges cannot be expressed there. It adds a marked block to the current user's `~/.npmrc` if that file has no proxy keys; this applies on both platforms. `off` removes only dotconfig's blocks and deletes a file only when that block was its sole content. Existing settings are preserved and can remain effective after `off`. The system environment takes effect for new login sessions; APT and npm read their configuration on the next invocation. This does not configure system services already running, nor does it change macOS system-wide proxy settings.
 
-The loader exports the local endpoint and optional profile overrides to curl, Git, Homebrew, mise, npm and other tools that honor proxy environment variables. For APT without persistent proxy settings, dotconfig passes them through `sudo --preserve-env`; a restrictive local sudo policy may require a separate APT setup. Only credential-free loopback proxy URLs are allowed in the persisted files. Existing proxy settings inside Git, npm, APT or other tools can take precedence and are not edited by this switch. Before the first on/off command, existing environment settings remain untouched. An explicit `off` removes inherited proxy environment variables from managed shells and dotconfig operations, including `ALL_PROXY`.
+The loader exports the local endpoint and optional profile overrides to curl, Git, Homebrew, mise, npm and other tools that honor proxy environment variables. It also sets `NODE_USE_ENV_PROXY=1` so the built-in `fetch` of Node.js 24 uses the proxy. [docs/proxy-clients.md](docs/proxy-clients.md) lists how each client reads these settings and the known gaps. For APT without persistent proxy settings, dotconfig passes them through `sudo --preserve-env`; a restrictive local sudo policy may require a separate APT setup. Only credential-free loopback proxy URLs are allowed in the persisted files. Existing proxy settings inside Git, npm, APT or other tools can take precedence and are not edited by this switch. Before the first on/off command, existing environment settings remain untouched. An explicit `off` removes inherited proxy environment variables from managed shells and dotconfig operations, including `ALL_PROXY`.
 
 The repository never reads private override contents into Git. Keep ordinary machine-specific values in `~/.zshrc.local` and role-specific or sensitive values in `~/.zshrc.personal.local` or `~/.zshrc.work.local`.
 
 This is local secret hygiene, not secret synchronization. Do not commit passwords, tokens, private keys, or corporate configuration. Cross-machine encrypted synchronization requires a separately backed-up encryption identity and is intentionally deferred until that key-storage policy is chosen.
+
+### Domain login caches on Ubuntu
+
+On Ubuntu machines that log in with a domain account through SSSD, `dotconfig creds` inspects and clears what SSSD and Kerberos cached:
+
+```sh
+dotconfig creds status          # settings, PAM order, cached passwords, tickets; never secrets
+dotconfig creds clear           # kdestroy -A and sss_cache -E; cached passwords stay
+dotconfig creds clear --purge   # also stop SSSD and move its whole cache aside
+```
+
+`status` reads `/etc/sssd` and `/var/lib/sss` through `sudo`. It shows only the settings that decide offline login and flags the two usual reasons a domain password is never cached: `cache_credentials` left at its default of `False`, and `pam_krb5` authenticating before `pam_sss`, which skips SSSD entirely. Installing `ldb-tools` lets it name the users with a cached password.
+
+`--purge` asks for confirmation, then moves the SSSD cache to `/var/lib/sss/dotconfig-backup/<timestamp>/` instead of deleting it. After a purge, the next domain login must reach a domain controller, so connect the VPN first. To undo, stop SSSD, move the files back into `/var/lib/sss/db` and `/var/lib/sss/mc`, and start it again.
 
 ## Bootstrap
 
