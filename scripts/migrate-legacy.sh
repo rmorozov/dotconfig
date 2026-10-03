@@ -81,7 +81,8 @@ echo "Backup saved at $backup; readable symlink contents are in contents/."
 for relative in "${files[@]}"; do
     rm -f "$HOME/$relative"
 done
-if bash "$REPO_ROOT/install.sh" "${install_args[@]}"; then
+# macOS Bash 3.2 treats an empty array expansion as unset under nounset.
+if bash "$REPO_ROOT/install.sh" ${install_args[@]+"${install_args[@]}"}; then
     touch "$backup/complete"
     echo 'Migration complete. Open a new Zsh session and run dotconfig doctor.'
     echo 'Review backed-up customizations before copying selected settings into private overrides.'
