@@ -14,6 +14,7 @@ usage() {
 Usage: ./install.sh [options]
 
 Options:
+  --resume            Reuse a verified existing checkout with --user after a failed installation.
   -v, --verbose       Show platform, tool paths, skip choices, and stage timings.
   --skip-packages      Do not apply the package baseline.
   --skip-plugins       Do not install or update Vim plugins.
@@ -24,6 +25,7 @@ EOF
 }
 
 original_args=("$@")
+RESUME=false
 TARGET_USER=
 while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -33,6 +35,7 @@ while [[ $# -gt 0 ]]; do
             TARGET_USER="$2"
             shift
             ;;
+        --resume) RESUME=true ;;
         -v|--verbose) install_verbose=true ;;
         --skip-packages) SKIP_PACKAGES=true ;;
         --skip-plugins) SKIP_PLUGINS=true ;;
@@ -42,6 +45,10 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+if "$RESUME" && [[ -z "$TARGET_USER" ]]; then
+    echo '--resume requires --user USER.' >&2; exit 2
+fi
 
 if [[ -n "$TARGET_USER" ]]; then
     exec bash "$REPO_ROOT/scripts/install-for-user.sh" "${original_args[@]}"
