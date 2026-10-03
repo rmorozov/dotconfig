@@ -70,6 +70,20 @@ The repository never reads private override contents into Git. Keep ordinary mac
 
 This is local secret hygiene, not secret synchronization. Do not commit passwords, tokens, private keys, or corporate configuration. Cross-machine encrypted synchronization requires a separately backed-up encryption identity and is intentionally deferred until that key-storage policy is chosen.
 
+### Domain login caches on Ubuntu
+
+On Ubuntu machines that log in with a domain account through SSSD, `dotconfig creds` inspects and clears what SSSD and Kerberos cached:
+
+```sh
+dotconfig creds status          # settings, PAM order, cached passwords, tickets; never secrets
+dotconfig creds clear           # kdestroy -A and sss_cache -E; cached passwords stay
+dotconfig creds clear --purge   # also stop SSSD and move its whole cache aside
+```
+
+`status` reads `/etc/sssd` and `/var/lib/sss` through `sudo`. It shows only the settings that decide offline login and flags the two usual reasons a domain password is never cached: `cache_credentials` left at its default of `False`, and `pam_krb5` authenticating before `pam_sss`, which skips SSSD entirely. Installing `ldb-tools` lets it name the users with a cached password.
+
+`--purge` asks for confirmation, then moves the SSSD cache to `/var/lib/sss/dotconfig-backup/<timestamp>/` instead of deleting it. After a purge, the next domain login must reach a domain controller, so connect the VPN first. To undo, stop SSSD, move the files back into `/var/lib/sss/db` and `/var/lib/sss/mc`, and start it again.
+
 ## Bootstrap
 
 Clone the repository, then run:

@@ -34,6 +34,7 @@ bash scripts/test-bootstrap-tools.sh
 bash scripts/test-first-run-bootstrap.sh
 bash scripts/test-proxy.sh
 bash scripts/test-proxy-secrets.sh
+bash scripts/test-credentials.sh
 bash scripts/test-runtime-versions.sh
 bash scripts/test-node-version.sh
 bash scripts/test-dotconfig-review.sh
