@@ -70,7 +70,7 @@ for relative in "${files[@]}"; do
     path="$HOME/$relative"
     if [[ -e "$path" || -L "$path" ]]; then
         mkdir -p "$backup/original/$(dirname "$relative")" "$backup/contents/$(dirname "$relative")"
-        cp -Pp "$path" "$backup/original/$relative"
+        cp -a "$path" "$backup/original/$relative"
         if [[ -f "$path" ]]; then
             cp -Lp "$path" "$backup/contents/$relative"
         fi

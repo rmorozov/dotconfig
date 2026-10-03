@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'echo "Legacy migration test failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
