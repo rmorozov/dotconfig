@@ -58,6 +58,7 @@ pam_case() {
     grep -q "$2" "$test_dir/status" || { cat "$test_dir/status" >&2; return 1; }
 }
 pam_case 'auth required pam_krb5.so' '^info: pam_krb5 runs before pam_sss but does not skip it'
+pam_case $'auth\tsufficient\tpam_krb5.so' '^warning: pam_krb5 runs before pam_sss and a success skips'
 pam_case 'auth sufficient pam_krb5.so' '^warning: pam_krb5 runs before pam_sss and a success skips'
 pam_case 'auth [success=ok default=ignore] pam_krb5.so' '^info: pam_krb5 runs before pam_sss but does not skip it'
 pam_case 'auth [success=1 default=ignore] pam_krb5.so' '^warning: pam_krb5 runs before pam_sss and a success skips'

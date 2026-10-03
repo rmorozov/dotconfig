@@ -117,7 +117,9 @@ def parse_pam_line(line):
     if rest.startswith("["):
         control, _, rest = rest[1:].partition("]")
     else:
-        control, _, rest = rest.partition(" ")
+        parts = rest.split(None, 1)
+        control = parts[0] if parts else ""
+        rest = parts[1] if len(parts) > 1 else ""
     module = re.search(r"\b(pam_\w+)\.so\b", rest)
     return control.strip(), module.group(1) if module else ""
 
