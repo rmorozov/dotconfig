@@ -32,6 +32,7 @@ bash scripts/test-reconsider-coc-extensions.sh
 bash scripts/test-converge-vim.sh
 bash scripts/test-bootstrap-tools.sh
 bash scripts/test-first-run-bootstrap.sh
+bash scripts/test-install-for-user.sh
 bash scripts/test-proxy.sh
 bash scripts/test-proxy-secrets.sh
 bash scripts/test-credentials.sh

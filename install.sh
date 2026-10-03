@@ -3,8 +3,6 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=/dev/null
-source "$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
 SKIP_PACKAGES=false
 SKIP_PLUGINS=false
 SKIP_SHELL_CHANGE=false
@@ -18,19 +16,36 @@ Options:
   --skip-packages      Do not apply the package baseline.
   --skip-plugins       Do not install or update Vim plugins.
   --skip-shell-change  Do not change the login shell.
+  --user USER         Install for another existing Ubuntu/Debian account using your sudo access.
   -h, --help           Show this help.
 EOF
 }
 
-for arg in "$@"; do
+original_args=("$@")
+TARGET_USER=
+while [[ $# -gt 0 ]]; do
+    arg="$1"
     case "$arg" in
+        --user)
+            [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$TARGET_USER" ]] || { usage >&2; exit 2; }
+            TARGET_USER="$2"
+            shift
+            ;;
         --skip-packages) SKIP_PACKAGES=true ;;
         --skip-plugins) SKIP_PLUGINS=true ;;
         --skip-shell-change) SKIP_SHELL_CHANGE=true ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
     esac
+    shift
 done
+
+if [[ -n "$TARGET_USER" ]]; then
+    exec bash "$REPO_ROOT/scripts/install-for-user.sh" "${original_args[@]}"
+fi
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
