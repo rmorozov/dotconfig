@@ -27,7 +27,17 @@ done
 backup="$HOME/.local/state/dotconfig/migrations/b967ec9"
 if [[ -e "$backup" || -L "$backup" ]]; then
     echo "Migration already prepared: $backup" >&2
-    echo "Inspect that backup; resume an interrupted installation with bash $REPO_ROOT/install.sh and the same skip options." >&2
+    if [[ -f "$backup/complete" ]]; then
+        echo 'Migration completed; use dotconfig doctor or dotconfig sync.' >&2
+    elif [[ -f "$backup/files-removed" ]]; then
+        echo "Legacy files were removed; resume with bash $REPO_ROOT/install.sh and the same skip options." >&2
+    elif [[ -f "$backup/removal-started" ]]; then
+        echo 'Legacy file removal was interrupted. Inspect the backup and recover the listed files before retrying; see docs/legacy-migration.md.' >&2
+    elif [[ -f "$backup/backup-ready" ]]; then
+        echo 'Backup is complete and legacy files are unchanged. Keep or move this backup aside before retrying migration.' >&2
+    else
+        echo 'Backup is incomplete or its state is unknown. Do not run install.sh; inspect it and the legacy files before retrying migration.' >&2
+    fi
     exit 1
 fi
 if [[ -e "$HOME/.local/bin/dotconfig" || -L "$HOME/.local/bin/dotconfig" ]]; then
@@ -63,24 +73,34 @@ if ! "$apply"; then
     echo 'Preview only. Add --apply to migrate.'
     exit 0
 fi
-umask 077
-mkdir -p "$backup/original" "$backup/contents"
-# Complete every backup before removing anything. Preserve broken links too.
-for relative in "${files[@]}"; do
-    path="$HOME/$relative"
-    if [[ -e "$path" || -L "$path" ]]; then
-        mkdir -p "$backup/original/$(dirname "$relative")" "$backup/contents/$(dirname "$relative")"
-        cp -a "$path" "$backup/original/$relative"
-        if [[ -f "$path" ]]; then
-            cp -Lp "$path" "$backup/contents/$relative"
+# Publish only a complete snapshot. The private umask applies to backup work
+# alone; package managers and their children inherit the caller's original mask.
+(
+    umask 077
+    mkdir -p "$(dirname "$backup")"
+    staging="$(mktemp -d "${backup}.tmp.XXXXXX")"
+    trap 'rm -rf "$staging"' EXIT
+    mkdir -p "$staging/original" "$staging/contents"
+    for relative in "${files[@]}"; do
+        path="$HOME/$relative"
+        if [[ -e "$path" || -L "$path" ]]; then
+            mkdir -p "$staging/original/$(dirname "$relative")" "$staging/contents/$(dirname "$relative")"
+            cp -a "$path" "$staging/original/$relative"
+            if [[ -f "$path" ]]; then
+                cp -Lp "$path" "$staging/contents/$relative"
+            fi
         fi
-    fi
-done
-printf '%s\n' "$REPO_ROOT" > "$backup/new-checkout"
+    done
+    printf '%s\n' "$REPO_ROOT" > "$staging/new-checkout"
+    touch "$staging/backup-ready"
+    mv "$staging" "$backup"
+)
 echo "Backup saved at $backup; readable symlink contents are in contents/."
+touch "$backup/removal-started"
 for relative in "${files[@]}"; do
     rm -f "$HOME/$relative"
 done
+touch "$backup/files-removed"
 # macOS Bash 3.2 treats an empty array expansion as unset under nounset.
 if bash "$REPO_ROOT/install.sh" ${install_args[@]+"${install_args[@]}"}; then
     touch "$backup/complete"
