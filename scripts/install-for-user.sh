@@ -37,10 +37,29 @@ source_status="$(git -C "$repo_root" status --porcelain)"
 remote_url="$(git -C "$repo_root" remote get-url origin)"
 default_branch="$(git -C "$repo_root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || printf 'origin/master')"
 default_branch="${default_branch#origin/}"
+git -C "$repo_root" merge-base --is-ancestor HEAD "refs/remotes/origin/$default_branch" || {
+    echo 'Source HEAD must be an ancestor of the fetched origin default branch; fetch it and use a reviewed default-branch checkout.' >&2
+    exit 1
+}
+
+proxy_env=()
+if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
+    [[ "$(cat "$HOME/.config/dotconfig/proxy.mode")" == on ]]; then
+    # Only allow-listed, validated network settings cross the account boundary.
+    # The administrator's private shell profile runs only in this subshell.
+    proxy_assignments="$(
+        # shellcheck source=/dev/null
+        source "$repo_root/home/dot_config/zsh/proxy.zsh" >/dev/null || exit
+        python3 "$repo_root/scripts/proxy-files.py" environment on
+    )"
+    while IFS= read -r assignment; do
+        proxy_env+=("$assignment")
+    done <<< "$proxy_assignments"
+fi
 
 as_target() {
     sudo -u "$target_user" -- env -i HOME="$target_home" USER="$target_user" LOGNAME="$target_user" \
-        PATH="$target_home/.local/bin:/usr/local/bin:/usr/bin:/bin" "$@"
+        PATH="$target_home/.local/bin:/usr/local/bin:/usr/bin:/bin" "${proxy_env[@]}" "$@"
 }
 
 sudo -v
@@ -51,6 +70,13 @@ as_target /bin/bash -c '[[ -d "$HOME" && -w "$HOME" ]] && [[ ! -e "$1" && ! -L "
 }
 if ! "$skip_packages"; then
     bash "$repo_root/packages/install.sh"
+fi
+if ! "$skip_shell"; then
+    zsh_path="$(PATH=/usr/bin:/bin command -v zsh)"
+    [[ "$zsh_path" == /* && -x "$zsh_path" ]] && grep -Fxq -- "$zsh_path" /etc/shells || {
+        echo 'System zsh must be executable and listed in /etc/shells; login shell unchanged.' >&2
+        exit 1
+    }
 fi
 # The target must never try to bootstrap curl via its own sudo access.
 as_target /bin/bash -c 'command -v curl >/dev/null && command -v git >/dev/null' || {
@@ -77,7 +103,6 @@ as_target /bin/bash -c '
 # Separate invocation retains terminal stdin for chezmoi profile prompts.
 as_target /bin/bash -c 'cd "$HOME"; exec /bin/bash "$1/install.sh" "${@:2}"' bash "$target_repo" "${user_args[@]}"
 if ! "$skip_shell"; then
-    zsh_path="$(as_target /bin/bash -c 'command -v zsh')"
     sudo chsh -s "$zsh_path" "$target_user"
 fi
 echo "dotconfig installed for $target_user. Future maintenance runs as that account."
