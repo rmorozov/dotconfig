@@ -84,10 +84,10 @@ if "$resume"; then
     install_step 'Verifying existing target checkout for resume'
     target_head="$(as_target /bin/bash -c '
         set -Eeuo pipefail
-        [[ -d "$1/.git" && ! -L "$1" && ! -L "$1/.git" && -f "$1/install.sh" ]]
-        [[ "$(cd "$(git -C "$1" rev-parse --show-toplevel)" && pwd -P)" == "$(cd "$1" && pwd -P)" ]]
-        [[ "$(git -C "$1" remote get-url origin)" == "$2" ]]
-        [[ -z "$(git -C "$1" status --porcelain)" ]]
+        [[ -d "$1/.git" && ! -L "$1" && ! -L "$1/.git" && -f "$1/install.sh" ]] || exit 1
+        [[ "$(cd "$(git -C "$1" rev-parse --show-toplevel)" && pwd -P)" == "$(cd "$1" && pwd -P)" ]] || exit 1
+        [[ "$(git -C "$1" remote get-url origin)" == "$2" ]] || exit 1
+        [[ -z "$(git -C "$1" status --porcelain)" ]] || exit 1
         git -C "$1" rev-parse HEAD
     ' bash "$target_repo" "$remote_url")" || {
         echo 'Resume requires an existing clean dotconfig checkout with the same origin; nothing installed.' >&2; exit 1;
