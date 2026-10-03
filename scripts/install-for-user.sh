@@ -85,7 +85,7 @@ if "$resume"; then
     target_head="$(as_target /bin/bash -c '
         set -Eeuo pipefail
         [[ -d "$1/.git" && ! -L "$1" && ! -L "$1/.git" && -f "$1/install.sh" ]]
-        [[ "$(git -C "$1" rev-parse --show-toplevel)" == "$1" ]]
+        [[ "$(cd "$(git -C "$1" rev-parse --show-toplevel)" && pwd -P)" == "$(cd "$1" && pwd -P)" ]]
         [[ "$(git -C "$1" remote get-url origin)" == "$2" ]]
         [[ -z "$(git -C "$1" status --porcelain)" ]]
         git -C "$1" rev-parse HEAD
