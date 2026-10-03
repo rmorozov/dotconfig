@@ -73,10 +73,10 @@ if ! "$skip_packages"; then
 fi
 if ! "$skip_shell"; then
     zsh_path="$(PATH=/usr/bin:/bin command -v zsh)"
-    [[ "$zsh_path" == /* && -x "$zsh_path" ]] && grep -Fxq -- "$zsh_path" /etc/shells || {
+    if [[ "$zsh_path" != /* || ! -x "$zsh_path" ]] || ! grep -Fxq -- "$zsh_path" /etc/shells; then
         echo 'System zsh must be executable and listed in /etc/shells; login shell unchanged.' >&2
         exit 1
-    }
+    fi
 fi
 # The target must never try to bootstrap curl via its own sudo access.
 as_target /bin/bash -c 'command -v curl >/dev/null && command -v git >/dev/null' || {
