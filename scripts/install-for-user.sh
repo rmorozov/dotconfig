@@ -42,7 +42,8 @@ git -C "$repo_root" merge-base --is-ancestor HEAD "refs/remotes/origin/$default_
     exit 1
 }
 
-proxy_env=()
+target_env=("HOME=$target_home" "USER=$target_user" "LOGNAME=$target_user"
+    "PATH=$target_home/.local/bin:/usr/local/bin:/usr/bin:/bin")
 if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
     [[ "$(cat "$HOME/.config/dotconfig/proxy.mode")" == on ]]; then
     # Only allow-listed, validated network settings cross the account boundary.
@@ -53,13 +54,12 @@ if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
         python3 "$repo_root/scripts/proxy-files.py" environment on
     )"
     while IFS= read -r assignment; do
-        proxy_env+=("$assignment")
+        target_env+=("$assignment")
     done <<< "$proxy_assignments"
 fi
 
 as_target() {
-    sudo -u "$target_user" -- env -i HOME="$target_home" USER="$target_user" LOGNAME="$target_user" \
-        PATH="$target_home/.local/bin:/usr/local/bin:/usr/bin:/bin" "${proxy_env[@]}" "$@"
+    sudo -u "$target_user" -- env -i "${target_env[@]}" "$@"
 }
 
 sudo -v
