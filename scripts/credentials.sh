@@ -64,6 +64,11 @@ case "${1:-}" in
             shift
         done
         [[ "$confirmed" == false || "$purge" == true ]] || { usage >&2; exit 2; }
+        if [[ "$purge" == true && "$confirmed" == false ]]; then
+            echo 'Purging removes cached passwords: domain login will need the VPN until the next online login.'
+            read -r -p 'Type "purge" to continue: ' answer
+            [[ "$answer" == purge ]] || { echo 'Purge cancelled; nothing changed.'; exit 1; }
+        fi
         if command -v kdestroy >/dev/null 2>&1; then
             kdestroy -A 2>/dev/null || :
             echo 'Kerberos: destroyed your ticket caches'
@@ -75,11 +80,6 @@ case "${1:-}" in
             echo 'SSSD: sss_cache not installed; skipping'
         fi
         if [[ "$purge" == true ]]; then
-            if [[ "$confirmed" == false ]]; then
-                echo 'Purging removes cached passwords: domain login will need the VPN until the next online login.'
-                read -r -p 'Type "purge" to continue: ' answer
-                [[ "$answer" == purge ]] || { echo 'Purge cancelled.'; exit 1; }
-            fi
             as_root purge
         fi
         ;;

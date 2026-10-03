@@ -95,14 +95,44 @@ def inspect_pam(root):
     lines = pam_auth_lines(root, "gdm-password") or pam_auth_lines(root, "common-auth")
     for line in lines:
         print(f"  {line}")
-    modules = [m.group(1) for line in lines if (m := re.search(r"\b(pam_\w+)\.so", line))]
+    stack = [parse_pam_line(line) for line in lines]
+    modules = [module for _control, module in stack]
     if "pam_sss" not in modules:
         say("warning", "pam_sss is not in the authentication stack; SSSD cannot cache domain passwords")
-    elif "pam_krb5" in modules and modules.index("pam_krb5") < modules.index("pam_sss"):
-        say("warning", "pam_krb5 runs before pam_sss; when it succeeds the stack skips pam_sss, so SSSD never sees "
-            "the password and caches nothing. Remove libpam-krb5 and let SSSD obtain tickets")
-    else:
+        return
+    sss_index = modules.index("pam_sss")
+    krb5_index = modules.index("pam_krb5") if "pam_krb5" in modules[:sss_index] else None
+    if krb5_index is None:
         say("ok", "pam_sss handles domain passwords")
+    elif success_skips(stack[krb5_index][0], krb5_index, sss_index):
+        say("warning", "pam_krb5 runs before pam_sss and a success skips pam_sss, so SSSD never sees the password "
+            "and caches nothing. Remove libpam-krb5 and let SSSD obtain tickets")
+    else:
+        say("info", "pam_krb5 runs before pam_sss but does not skip it on success; pam_sss still sees the password")
+
+
+def parse_pam_line(line):
+    """Split an auth line into its control field and module name."""
+    rest = re.sub(r"^-?auth\s+", "", line)
+    if rest.startswith("["):
+        control, _, rest = rest[1:].partition("]")
+    else:
+        control, _, rest = rest.partition(" ")
+    module = re.search(r"\b(pam_\w+)\.so\b", rest)
+    return control.strip(), module.group(1) if module else ""
+
+
+def success_skips(control, index, target):
+    """Whether a successful module at index ends the stack or jumps past target."""
+    if control == "sufficient":
+        return True
+    if control in ("required", "requisite", "optional", "include", "substack"):
+        return False
+    actions = dict(item.split("=", 1) for item in control.split() if "=" in item)
+    action = actions.get("success", actions.get("default", "ignore"))
+    if action == "done":
+        return True
+    return action.isdigit() and index + int(action) >= target
 
 
 def cached_passwords(db_dir):
@@ -119,6 +149,9 @@ def cached_passwords(db_dir):
             # Presence filter only: the hash attribute itself is never requested.
             result = subprocess.run([ldbsearch, "-H", str(cache), "(cachedPassword=*)", "name", "lastCachedPasswordChange"],
                                     capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                say("info", f"cache query failed (ldbsearch exit {result.returncode}); cached password state unknown")
+                continue
             users = {}
             current = None
             for line in result.stdout.splitlines():
@@ -193,6 +226,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError, configparser.Error, subprocess.CalledProcessError) as exc:
+    except configparser.Error as exc:
+        # Parser messages quote the offending line, which may hold a private value.
+        print(f"credentials: could not parse SSSD configuration ({type(exc).__name__})", file=sys.stderr)
+        sys.exit(1)
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         print(f"credentials: {exc}", file=sys.stderr)
         sys.exit(1)

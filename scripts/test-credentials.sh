@@ -42,12 +42,40 @@ command -v ldbsearch >/dev/null 2>&1 && fallback_only=false
 
 bash "$repo_root/scripts/credentials.sh" status > "$test_dir/status" 2>&1
 grep -q 'cache_credentials is off' "$test_dir/status"
-grep -q 'pam_krb5 runs before pam_sss' "$test_dir/status"
+grep -q '^warning: pam_krb5 runs before pam_sss and a success skips pam_sss' "$test_dir/status"
 grep -q 'id_provider = ad' "$test_dir/status"
 if grep -Eq 'NeverPrint|ldap_default_authtok' "$test_dir/status"; then
     echo 'Credential inspection printed a secret' >&2
     exit 1
 fi
+
+# PAM control flags decide whether pam_krb5 bypasses pam_sss.
+cp "$root/etc/pam.d/common-auth" "$test_dir/common-auth"
+pam_case() {
+    printf '%s\n' "$1" 'auth [success=1 default=ignore] pam_sss.so use_first_pass' 'auth requisite pam_deny.so' \
+        > "$root/etc/pam.d/common-auth"
+    bash "$repo_root/scripts/credentials.sh" status > "$test_dir/status" 2>&1
+    grep -q "$2" "$test_dir/status" || { cat "$test_dir/status" >&2; return 1; }
+}
+pam_case 'auth required pam_krb5.so' '^info: pam_krb5 runs before pam_sss but does not skip it'
+pam_case 'auth sufficient pam_krb5.so' '^warning: pam_krb5 runs before pam_sss and a success skips'
+pam_case 'auth [success=ok default=ignore] pam_krb5.so' '^info: pam_krb5 runs before pam_sss but does not skip it'
+pam_case 'auth [success=1 default=ignore] pam_krb5.so' '^warning: pam_krb5 runs before pam_sss and a success skips'
+cp "$test_dir/common-auth" "$root/etc/pam.d/common-auth"
+
+# Parser errors never quote the malformed line, which may hold a private value.
+cp "$root/etc/sssd/sssd.conf" "$test_dir/sssd.conf"
+printf 'ldap_default_authtok MalformedSecretMustNeverPrint\n' >> "$root/etc/sssd/sssd.conf"
+if bash "$repo_root/scripts/credentials.sh" status > "$test_dir/status" 2>&1; then
+    echo 'Malformed SSSD configuration was accepted' >&2
+    exit 1
+fi
+grep -q 'could not parse SSSD configuration' "$test_dir/status"
+if grep -q 'MalformedSecret' "$test_dir/status"; then
+    echo 'Parser error printed a private value' >&2
+    exit 1
+fi
+cp "$test_dir/sssd.conf" "$root/etc/sssd/sssd.conf"
 
 # A healthy setup reports cached passwords and no warnings.
 cat >> "$root/etc/sssd/sssd.conf" <<'EOF'
@@ -74,6 +102,12 @@ EOF
 chmod +x "$stubs/ldbsearch"
 bash "$repo_root/scripts/credentials.sh" status > "$test_dir/status" 2>&1
 grep -q 'cached password for alice@corp.example (stored 2023-11-' "$test_dir/status"
+
+# A failed query is reported as unknown, not as a missing password.
+printf '#!/usr/bin/env bash\nexit 1\n' > "$stubs/ldbsearch"
+bash "$repo_root/scripts/credentials.sh" status > "$test_dir/status" 2>&1
+grep -q 'cached password state unknown' "$test_dir/status"
+if grep -q 'no user in this cache has a stored password' "$test_dir/status"; then exit 1; fi
 rm "$stubs/ldbsearch"
 
 bash "$repo_root/scripts/credentials.sh" clear > "$test_dir/clear"
@@ -81,11 +115,14 @@ grep -qx 'kdestroy -A' "$calls"
 grep -qx 'sss_cache -E' "$calls"
 test -f "$root/var/lib/sss/db/cache_corp.example.ldb"
 
+# Declining the purge changes nothing, including tickets and SSSD entries.
+: > "$calls"
 if bash "$repo_root/scripts/credentials.sh" clear --purge <<< 'no' > "$test_dir/clear" 2>&1; then
     echo 'Purge ran without confirmation' >&2
     exit 1
 fi
 test -f "$root/var/lib/sss/db/cache_corp.example.ldb"
+[[ ! -s "$calls" ]]
 
 bash "$repo_root/scripts/credentials.sh" clear --purge --yes > "$test_dir/clear"
 [[ -z "$(find "$root/var/lib/sss/db" "$root/var/lib/sss/mc" -type f)" ]]
