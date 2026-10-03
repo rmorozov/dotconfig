@@ -4,6 +4,7 @@
 set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 target_user=
+install_verbose=false
 skip_packages=false
 skip_shell=false
 user_args=(--skip-packages --skip-shell-change)
@@ -12,6 +13,7 @@ while [[ $# -gt 0 ]]; do
         --user)
             [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$target_user" ]] || { echo 'Expected --user USER.' >&2; exit 2; }
             target_user="$2"; shift ;;
+        -v|--verbose) install_verbose=true; user_args+=(--verbose) ;;
         --skip-packages) skip_packages=true ;;
         --skip-shell-change) skip_shell=true ;;
         --skip-plugins) user_args+=(--skip-plugins) ;;
@@ -19,6 +21,10 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+# shellcheck source=scripts/install-progress.sh
+source "$repo_root/scripts/install-progress.sh"
+install_details "$repo_root"
+install_step 'Checking target account and source checkout'
 [[ "$(uname -s)" == Linux ]] || { echo '--user currently supports Ubuntu/Debian only.' >&2; exit 1; }
 command -v apt-get >/dev/null || { echo '--user requires Ubuntu/Debian with APT.' >&2; exit 1; }
 [[ -n "$target_user" && "$target_user" != -* ]] || { echo 'An existing target user is required.' >&2; exit 2; }
@@ -42,6 +48,7 @@ git -C "$repo_root" merge-base --is-ancestor HEAD "refs/remotes/origin/$default_
     exit 1
 }
 
+install_step 'Preparing target network environment'
 target_env=("HOME=$target_home" "USER=$target_user" "LOGNAME=$target_user"
     "PATH=$target_home/.local/bin:/usr/local/bin:/usr/bin:/bin")
 if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
@@ -63,6 +70,7 @@ as_target() {
 }
 
 echo "Sudo is needed to run setup as $target_user using your administrator account." >&2
+install_step 'Checking administrator access and target home'
 sudo -v
 # Start outside the administrator's potentially private working directory.
 cd /
@@ -70,6 +78,7 @@ echo "Using sudo to check $target_user's home directory before installation." >&
 as_target /bin/bash -c '[[ -d "$HOME" && -w "$HOME" ]] && [[ ! -e "$1" && ! -L "$1" ]]' bash "$target_repo" || {
     echo 'Target home is not writable or its dotconfig checkout already exists; nothing installed.' >&2; exit 1;
 }
+install_step 'Installing shared native packages'
 if ! "$skip_packages"; then
     bash "$repo_root/packages/install.sh"
 fi
@@ -80,11 +89,13 @@ if ! "$skip_shell"; then
         exit 1
     fi
 fi
+install_step 'Checking target system tools and login shell'
 # The target must never try to bootstrap curl via its own sudo access.
 echo "Using sudo to check the tools available to $target_user." >&2
 as_target /bin/bash -c 'command -v curl >/dev/null && command -v git >/dev/null' || {
     echo 'curl and git must be installed before user setup; omit --skip-packages.' >&2; exit 1;
 }
+install_step 'Transferring committed checkout to target account'
 bundle_dir="$(mktemp -d)"
 trap 'rm -rf "$bundle_dir"' EXIT
 git -C "$repo_root" bundle create "$bundle_dir/repo.bundle" HEAD
@@ -104,11 +115,14 @@ as_target /bin/bash -c '
     git -C "$1" config "branch.$3.remote" origin
     git -C "$1" config "branch.$3.merge" "refs/heads/$3"
 ' bash "$target_repo" "$remote_url" "$default_branch" < "$bundle_dir/repo.bundle"
+install_step 'Installing target configuration and runtimes'
 # Separate invocation retains terminal stdin for chezmoi profile prompts.
 echo "Using sudo to install dotfiles, runtimes, and plugins as $target_user." >&2
 as_target /bin/bash -c 'cd "$HOME"; exec /bin/bash "$1/install.sh" "${@:2}"' bash "$target_repo" "${user_args[@]}"
+install_step 'Selecting target login shell'
 if ! "$skip_shell"; then
     echo "Using sudo to change $target_user's login shell to $zsh_path." >&2
     sudo chsh -s "$zsh_path" "$target_user"
 fi
-echo "dotconfig installed for $target_user. Future maintenance runs as that account."
+install_success "dotconfig installation completed successfully for $target_user"
+echo "Future maintenance runs as $target_user."

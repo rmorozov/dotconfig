@@ -10,12 +10,13 @@ Usage: bash scripts/migrate-legacy.sh [--apply] [installer skip options]
 
 Preview migration from the b967ec9 installer; --apply backs up and installs.
 Run as the account being migrated, from a separate current checkout.
-Options: --skip-packages, --skip-plugins, --skip-shell-change, --help.
+Options: --verbose, --skip-packages, --skip-plugins, --skip-shell-change, --help.
 HELP
 }
 for arg in "$@"; do
     case "$arg" in
         --apply) apply=true ;;
+        -v|--verbose) install_args+=(--verbose) ;;
         --skip-packages|--skip-plugins|--skip-shell-change) install_args+=("$arg") ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
