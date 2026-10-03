@@ -38,7 +38,7 @@ exit "$TEST_AUDIT_STATUS"
 STUB
 chmod +x "$root/bin/"*
 export PATH="$root/bin:$PATH" HOME="$root/home" TEST_APT_LOG="$root/apt.log"
-export TEST_UPDATE_STATUS=0 TEST_INSTALL_STATUS=0 TEST_MISSING=no TEST_AUDIT_STATUS=0 TEST_AUDIT_OUTPUT=
+export TEST_UPDATE_STATUS=0 TEST_INSTALL_STATUS=0 TEST_MISSING=no TEST_AUDIT_STATUS=0 TEST_AUDIT_OUTPUT=''
 run_install() { bash "$repo_root/packages/install.sh" > "$root/output" 2>&1; }
 run_install
 export TEST_UPDATE_STATUS=100
@@ -59,7 +59,7 @@ status=0
 run_install || status=$?
 [[ "$status" == 100 ]]
 grep -q 'dpkg state needs attention' "$root/output"
-export TEST_AUDIT_OUTPUT= TEST_AUDIT_STATUS=2
+export TEST_AUDIT_OUTPUT='' TEST_AUDIT_STATUS=2
 status=0
 run_install || status=$?
 [[ "$status" == 100 ]]
