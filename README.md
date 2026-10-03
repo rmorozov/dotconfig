@@ -92,16 +92,26 @@ Clone the repository, then run:
 bash install.sh
 ```
 
-The installer:
+The installation flow is:
 
-1. installs missing chezmoi and mise from the exact, checksum-verified release archives;
-2. applies `packages/Brewfile` on macOS or `packages/ubuntu.txt` on Ubuntu;
-3. asks for the machine profile on first use and deploys the home-directory files;
-4. installs the mise-managed Node.js, Go, and Python versions;
-5. installs Oh My Zsh and Vim plugins;
-6. optionally changes the login shell.
+1. **Prepare downloads and tools.** If your network needs the local proxy, enable it first. The installer adds missing checksum-verified chezmoi and mise binaries to your account.
+2. **Install system packages.** APT on Ubuntu or Homebrew on macOS supplies the shared command-line tools. This is where system setup may request sudo.
+3. **Choose your profile and deploy configuration.** Select `personal` or `work`, then `laptop`, `desktop`, or `server`. Chezmoi installs the managed Zsh and Vim files; review any overwrite prompts for existing files.
+4. **Set up languages and editor plugins.** Mise installs pinned Node.js, Go, and Python versions. Oh My Zsh, Vim plugins, and CoC extensions converge to the repository pins. Downloads can take a while.
+5. **Select Zsh and verify.** The installer optionally changes your login shell, which may request your account password. Open a new terminal and run `dotconfig doctor`. Put machine-specific settings in `~/.zshrc.local` or use `dotconfig private` for role-specific settings.
 
-Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
+Use `bash install.sh --help` to skip system packages, Vim plugins, or the login-shell change. Existing private overrides and previous backups, such as `.zshrc.pre-dotconfig`, remain unmanaged.
+
+### Migrate an older installation
+
+For a machine configured by the installer at `b967ec9`, use a separate current checkout and run:
+
+```sh
+bash scripts/migrate-legacy.sh          # preview files and backup location
+bash scripts/migrate-legacy.sh --apply # back up old files, then install
+```
+
+The migration saves old files, symlinks, and their readable contents before replacing the legacy configuration. It preserves private overrides and existing plugin directories. See [the migration guide](docs/legacy-migration.md) for preparation, skip options, customization review, and recovery.
 
 ### Install for an account without sudo
 
