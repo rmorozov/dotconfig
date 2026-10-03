@@ -36,6 +36,7 @@ cat > "$test_dir/bin/uname" <<'EOF'
 #!/usr/bin/env bash
 printf 'Linux\n'
 EOF
+printf '#!/bin/sh\nexit 0\n' > "$test_dir/bin/apt-get"
 cat > "$test_dir/bin/sudo" <<EOF
 #!/usr/bin/env bash
 printf 'sudo:%s\\n' "\$*" >> '$test_dir/log'
