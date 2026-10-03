@@ -72,6 +72,27 @@ target_repo="$test_dir/target/.local/share/dotconfig"
 [[ "$(git -C "$target_repo" symbolic-ref --short HEAD)" == master ]]
 [[ "$(git -C "$target_repo" config branch.master.merge)" == refs/heads/master ]]
 [[ "$(git -C "$target_repo" rev-parse HEAD)" == "$(git -C "$test_dir/repo" rev-parse HEAD)" ]]
+# Resume reuses the checkout and retains target-local state.
+printf 'keep private settings\n' > "$test_dir/target/.zshrc.local"
+: > "$test_dir/log"
+bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1
+grep -q 'Reusing the existing target checkout' "$test_dir/output"
+grep -Fxq "user-install:$test_dir/target" "$test_dir/log"
+grep -q 'keep private settings' "$test_dir/target/.zshrc.local"
+[[ "$(git -C "$target_repo" rev-parse HEAD)" == "$(git -C "$test_dir/repo" rev-parse HEAD)" ]]
+# Refuse dirty and wrong-origin targets before packages or setup.
+printf '# local edit\n' >> "$target_repo/install.sh"
+: > "$test_dir/log"
+if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-plugins > "$test_dir/output" 2>&1; then exit 1; fi
+if grep -Eq '^(packages|user-install):' "$test_dir/log"; then exit 1; fi
+git -C "$target_repo" checkout -- install.sh
+git -C "$target_repo" remote set-url origin https://github.com/example/other.git
+if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-plugins > "$test_dir/output" 2>&1; then exit 1; fi
+git -C "$target_repo" remote set-url origin https://github.com/example/dotconfig.git
+# A clean feature-only target revision is also refused.
+git -C "$target_repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm unreviewed
+if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-plugins > "$test_dir/output" 2>&1; then exit 1; fi
+git -C "$target_repo" reset --hard "$(git -C "$test_dir/repo" rev-parse HEAD)" >/dev/null
 # Existing checkout is refused before installing packages or touching its files.
 : > "$test_dir/log"
 if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --skip-plugins > "$test_dir/output" 2>&1; then exit 1; fi
@@ -149,3 +170,6 @@ if grep -q 'SecretMustNotPrint' "$test_dir/output"; then exit 1; fi
 # Public option parsing fails cleanly before entering the privileged path.
 if bash "$repo_root/install.sh" --user > "$test_dir/output" 2>&1; then exit 1; fi
 echo 'Install-for-user orchestration tests passed.'
+
+if bash "$repo_root/install.sh" --resume > "$test_dir/output" 2>&1; then exit 1; fi
+grep -q -- '--resume requires --user' "$test_dir/output"

@@ -5,6 +5,7 @@ set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 target_user=
 install_verbose=false
+resume=false
 skip_packages=false
 skip_shell=false
 user_args=(--skip-packages --skip-shell-change)
@@ -13,6 +14,7 @@ while [[ $# -gt 0 ]]; do
         --user)
             [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$target_user" ]] || { echo 'Expected --user USER.' >&2; exit 2; }
             target_user="$2"; shift ;;
+        --resume) resume=true ;;
         -v|--verbose) install_verbose=true; user_args+=(--verbose) ;;
         --skip-packages) skip_packages=true ;;
         --skip-shell-change) skip_shell=true ;;
@@ -75,9 +77,30 @@ sudo -v
 # Start outside the administrator's potentially private working directory.
 cd /
 echo "Using sudo to check $target_user's home directory before installation." >&2
-as_target /bin/bash -c '[[ -d "$HOME" && -w "$HOME" ]] && [[ ! -e "$1" && ! -L "$1" ]]' bash "$target_repo" || {
-    echo 'Target home is not writable or its dotconfig checkout already exists; nothing installed.' >&2; exit 1;
+as_target /bin/bash -c '[[ -d "$HOME" && -w "$HOME" ]]' || {
+    echo 'Target home is not writable; nothing installed.' >&2; exit 1;
 }
+if "$resume"; then
+    install_step 'Verifying existing target checkout for resume'
+    target_head="$(as_target /bin/bash -c '
+        set -Eeuo pipefail
+        [[ -d "$1/.git" && ! -L "$1" && ! -L "$1/.git" && -f "$1/install.sh" ]]
+        [[ "$(git -C "$1" rev-parse --show-toplevel)" == "$1" ]]
+        [[ "$(git -C "$1" remote get-url origin)" == "$2" ]]
+        [[ -z "$(git -C "$1" status --porcelain)" ]]
+        git -C "$1" rev-parse HEAD
+    ' bash "$target_repo" "$remote_url")" || {
+        echo 'Resume requires an existing clean dotconfig checkout with the same origin; nothing installed.' >&2; exit 1;
+    }
+    git -C "$repo_root" merge-base --is-ancestor "$target_head" "refs/remotes/origin/$default_branch" || {
+        echo 'Target revision is not in the fetched reviewed default branch; fetch origin and inspect the checkout before resuming.' >&2; exit 1;
+    }
+    echo 'Reusing the existing target checkout without resetting or updating it.' >&2
+else
+    as_target /bin/bash -c '[[ ! -e "$1" && ! -L "$1" ]]' bash "$target_repo" || {
+        echo 'Target dotconfig checkout already exists; use --user USER --resume to retry a failed installation.' >&2; exit 1;
+    }
+fi
 install_step 'Installing shared native packages'
 if ! "$skip_packages"; then
     bash "$repo_root/packages/install.sh"
@@ -95,6 +118,7 @@ echo "Using sudo to check the tools available to $target_user." >&2
 as_target /bin/bash -c 'command -v curl >/dev/null && command -v git >/dev/null' || {
     echo 'curl and git must be installed before user setup; omit --skip-packages.' >&2; exit 1;
 }
+if ! "$resume"; then
 install_step 'Transferring committed checkout to target account'
 bundle_dir="$(mktemp -d)"
 trap 'rm -rf "$bundle_dir"' EXIT
@@ -115,6 +139,7 @@ as_target /bin/bash -c '
     git -C "$1" config "branch.$3.remote" origin
     git -C "$1" config "branch.$3.merge" "refs/heads/$3"
 ' bash "$target_repo" "$remote_url" "$default_branch" < "$bundle_dir/repo.bundle"
+fi
 install_step 'Installing target configuration and runtimes'
 # Separate invocation retains terminal stdin for chezmoi profile prompts.
 echo "Using sudo to install dotfiles, runtimes, and plugins as $target_user." >&2

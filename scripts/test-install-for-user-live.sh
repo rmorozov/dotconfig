@@ -38,6 +38,9 @@ git -C "$test_dir/repo" remote add origin https://github.com/example/dotconfig.g
 git -C "$test_dir/repo" update-ref refs/remotes/origin/master HEAD
 ADMIN_PRIVATE_TOKEN=must-not-reach-target bash "$test_dir/repo/scripts/install-for-user.sh" \
     --user "$target_user" --skip-packages --skip-shell-change --skip-plugins
+# A second administrator invocation must reuse the target-owned checkout.
+ADMIN_PRIVATE_TOKEN=must-not-reach-target bash "$test_dir/repo/scripts/install-for-user.sh" \
+    --user "$target_user" --resume --skip-packages --skip-shell-change --skip-plugins
 [[ "$(sudo cat "$target_home/setup-uid")" == "$(id -u "$target_user")" ]]
 [[ -z "$(sudo find "$target_home" ! -user "$target_user" -print)" ]]
 sudo -u "$target_user" -- git -C "$target_home/.local/share/dotconfig" status --porcelain
