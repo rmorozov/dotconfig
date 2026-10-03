@@ -62,9 +62,11 @@ as_target() {
     sudo -u "$target_user" -- env -i "${target_env[@]}" "$@"
 }
 
+echo "Sudo is needed to run setup as $target_user using your administrator account." >&2
 sudo -v
 # Start outside the administrator's potentially private working directory.
 cd /
+echo "Using sudo to check $target_user's home directory before installation." >&2
 as_target /bin/bash -c '[[ -d "$HOME" && -w "$HOME" ]] && [[ ! -e "$1" && ! -L "$1" ]]' bash "$target_repo" || {
     echo 'Target home is not writable or its dotconfig checkout already exists; nothing installed.' >&2; exit 1;
 }
@@ -79,6 +81,7 @@ if ! "$skip_shell"; then
     fi
 fi
 # The target must never try to bootstrap curl via its own sudo access.
+echo "Using sudo to check the tools available to $target_user." >&2
 as_target /bin/bash -c 'command -v curl >/dev/null && command -v git >/dev/null' || {
     echo 'curl and git must be installed before user setup; omit --skip-packages.' >&2; exit 1;
 }
@@ -86,6 +89,7 @@ bundle_dir="$(mktemp -d)"
 trap 'rm -rf "$bundle_dir"' EXIT
 git -C "$repo_root" bundle create "$bundle_dir/repo.bundle" HEAD
 # Transfer only committed Git data over stdin, even when the admin checkout is private.
+echo "Using sudo to create the dotconfig checkout owned by $target_user." >&2
 as_target /bin/bash -c '
     set -Eeuo pipefail
     umask 077
@@ -101,8 +105,10 @@ as_target /bin/bash -c '
     git -C "$1" config "branch.$3.merge" "refs/heads/$3"
 ' bash "$target_repo" "$remote_url" "$default_branch" < "$bundle_dir/repo.bundle"
 # Separate invocation retains terminal stdin for chezmoi profile prompts.
+echo "Using sudo to install dotfiles, runtimes, and plugins as $target_user." >&2
 as_target /bin/bash -c 'cd "$HOME"; exec /bin/bash "$1/install.sh" "${@:2}"' bash "$target_repo" "${user_args[@]}"
 if ! "$skip_shell"; then
+    echo "Using sudo to change $target_user's login shell to $zsh_path." >&2
     sudo chsh -s "$zsh_path" "$target_user"
 fi
 echo "dotconfig installed for $target_user. Future maintenance runs as that account."

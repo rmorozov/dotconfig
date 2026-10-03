@@ -52,7 +52,10 @@ command_exists() {
 }
 
 ensure_homebrew() {
-    command_exists brew || bash "$BOOTSTRAP_INSTALLER" homebrew
+    if ! command_exists brew; then
+        echo 'Installing Homebrew; its installer may request sudo to prepare the system installation directory.' >&2
+        bash "$BOOTSTRAP_INSTALLER" homebrew
+    fi
     if [[ -x /opt/homebrew/bin/brew ]]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
     elif [[ -x /usr/local/bin/brew ]]; then
@@ -122,6 +125,7 @@ fi
 if ! "$SKIP_SHELL_CHANGE"; then
     zsh_path="$(command -v zsh)"
     if [[ "${SHELL:-}" != "$zsh_path" ]]; then
+        echo "Changing your login shell to $zsh_path; chsh may ask for your account password." >&2
         chsh -s "$zsh_path"
     fi
 fi
