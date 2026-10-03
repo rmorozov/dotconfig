@@ -72,7 +72,7 @@ if ! "$skip_packages"; then
     bash "$repo_root/packages/install.sh"
 fi
 if ! "$skip_shell"; then
-    zsh_path="$(PATH=/usr/bin:/bin command -v zsh)"
+    zsh_path="$(PATH=/usr/bin:/bin command -v zsh || true)"
     if [[ "$zsh_path" != /* || ! -x "$zsh_path" ]] || ! grep -Fxq -- "$zsh_path" /etc/shells; then
         echo 'System zsh must be executable and listed in /etc/shells; login shell unchanged.' >&2
         exit 1
