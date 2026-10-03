@@ -17,6 +17,8 @@ if [[ "$dotconfig_proxy_mode" == on ]]; then
     export no_proxy='localhost,127.0.0.1,::1'
     export NO_PROXY="$no_proxy"
     unset all_proxy ALL_PROXY
+    # Node.js 24 built-in fetch ignores proxy variables unless asked to honor them.
+    export NODE_USE_ENV_PROXY=1
     if [[ -f "${dotconfig_proxy_dir}/proxy.local" ]]; then
         # The optional owner-controlled file can override the endpoint and bypass list.
         source "${dotconfig_proxy_dir}/proxy.local"
@@ -53,6 +55,6 @@ if [[ "$dotconfig_proxy_mode" == on ]]; then
     export NO_PROXY="$dotconfig_proxy_bypass"
     unset dotconfig_proxy_bypass dotconfig_proxy_pending dotconfig_proxy_item
 elif [[ "$dotconfig_proxy_mode" == off ]]; then
-    unset http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+    unset http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY NODE_USE_ENV_PROXY
 fi
 unset dotconfig_proxy_dir dotconfig_proxy_mode

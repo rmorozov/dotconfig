@@ -1,2 +1,4 @@
 # npm-package advisory reason
 coc-svg GHSA-rp65-9cf3-cjxr no-compatible-fix
+coc-graphql GHSA-vfj7-8cjw-p6xm no-compatible-fix
+coc-sh GHSA-vfj7-8cjw-p6xm no-compatible-fix
