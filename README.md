@@ -102,6 +102,20 @@ The installation flow is:
 
 Use `bash install.sh --help` to skip system packages, Vim plugins, or the login-shell change. Existing private overrides and previous backups, such as `.zshrc.pre-dotconfig`, remain unmanaged.
 
+### Installation progress and diagnostics
+
+Every installation prints the current stage. For platform details, selected chezmoi/mise paths, skip choices, and stage timings, use:
+
+```sh
+bash install.sh --verbose
+bash install.sh --user alice --verbose
+bash scripts/migrate-legacy.sh --apply --verbose
+```
+
+Verbose mode adds installer diagnostics without shell tracing or environment dumps. Tools retain their usual output and interactive prompts. A final `SUCCESS` message appears only when all requested installation steps finish; skipped steps are reported separately. It does not mean skipped components were installed or that every existing tool matches the current pins. Open a new Zsh session and run `dotconfig doctor` to check the resulting machine.
+
+On failure, the installer reports the stage, exit code, and elapsed time, then exits with that same code. Review the preceding tool error for the cause. For migration, follow the backup markers and recovery instructions in the migration guide. For `--user`, a failure after checkout creation leaves the target checkout in place: resume user setup as described below instead of repeating first installation; any failed system package or login-shell step still needs administrator attention.
+
 ### Migrate an older installation
 
 For a machine configured by the installer at `b967ec9`, use a separate current checkout and run:

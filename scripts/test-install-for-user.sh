@@ -6,6 +6,7 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/repo/scripts" "$test_dir/repo/packages" "$test_dir/bin" "$test_dir/admin" "$test_dir/target"
 cp "$repo_root/scripts/install-for-user.sh" "$repo_root/scripts/proxy-files.py" "$test_dir/repo/scripts/"
+cp "${repo_root}/scripts/install-progress.sh" "${test_dir}/repo/scripts/"
 mkdir -p "$test_dir/repo/home/dot_config/zsh"
 cp "$repo_root/home/dot_config/zsh/proxy.zsh" "$test_dir/repo/home/dot_config/zsh/"
 export DOTCONFIG_TEST_LOG="$test_dir/log"
@@ -23,7 +24,8 @@ set -Eeuo pipefail
 [[ -z \${ADMIN_PRIVATE_TOKEN+x} && -z \${DOTCONFIG_TEST_LOG+x} && -z \${PROXY_PRIVATE_TOKEN+x} ]]
 # shellcheck source=/dev/null
 source "\$(dirname -- "\$0")/home/dot_config/zsh/proxy.zsh"
-[[ \$* == '--skip-packages --skip-shell-change --skip-plugins' ]]
+[[ \$* == '--skip-packages --skip-shell-change --skip-plugins' || \$* == '--skip-packages --skip-shell-change --skip-plugins --verbose' ]]
+printf 'user-args:%s\\n' "\$*" >> '$test_dir/log'
 printf 'proxy:%s|%s|%s|%s|%s|%s|%s\\n' \
     "\${http_proxy:-none}" "\${https_proxy:-none}" "\${HTTP_PROXY:-none}" "\${HTTPS_PROXY:-none}" \
     "\${no_proxy:-none}" "\${NO_PROXY:-none}" "\${NODE_USE_ENV_PROXY:-none}" >> '$test_dir/log'
@@ -60,7 +62,9 @@ git -C "$test_dir/repo" add .
 git -C "$test_dir/repo" -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
 git -C "$test_dir/repo" remote add origin https://github.com/example/dotconfig.git
 git -C "$test_dir/repo" update-ref refs/remotes/origin/master HEAD
-bash "$test_dir/repo/scripts/install-for-user.sh" --user target --skip-plugins --skip-shell-change > "$test_dir/output"
+bash "$test_dir/repo/scripts/install-for-user.sh" --user target --skip-plugins --skip-shell-change --verbose > "$test_dir/output"
+grep -Fxq 'user-args:--skip-packages --skip-shell-change --skip-plugins --verbose' "$test_dir/log"
+grep -q 'SUCCESS: dotconfig installation completed successfully for target' "$test_dir/output"
 grep -Fxq "packages:$test_dir/admin" "$test_dir/log"
 grep -Fxq "user-install:$test_dir/target" "$test_dir/log"
 target_repo="$test_dir/target/.local/share/dotconfig"
