@@ -39,6 +39,7 @@ Commands:
   vim        Install the pinned Vim plugins and CoC extensions.
   private   Create or edit the active role's private shell file.
   proxy     Enable, disable, or inspect the machine-local network proxy.
+  creds     Inspect or clear SSSD and Kerberos login caches on Linux.
   path      Print the source repository path.
 EOF
 }
@@ -479,6 +480,7 @@ case "${1:-}" in
     vim) vim_install ;;
     private) private_command ;;
     proxy) shift; bash "$REPO_ROOT/scripts/proxy.sh" "$@" ;;
+    creds) shift; bash "$REPO_ROOT/scripts/credentials.sh" "$@" ;;
     path) printf '%s\n' "$REPO_ROOT" ;;
     -h|--help|"") usage ;;
     *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;

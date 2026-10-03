@@ -14,6 +14,7 @@ END = "# dotconfig proxy end"
 ENV_KEYS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY")
 ENV_PATTERN = re.compile(r"^\s*(?:export\s+)?(?:http|https|ftp|all|no)_proxy\s*=", re.I | re.M)
 APT_PATTERN = re.compile(r"Acquire\s*::\s*(?:http|https|ftp)\s*::\s*Proxy(?:-Auto-Detect)?\b|\bProxy-Auto-Detect\b", re.I)
+APT_DIRECT_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$")
 NPM_PATTERN = re.compile(r"^\s*(?:proxy|https-proxy|noproxy)\s*=", re.I | re.M)
 
 
@@ -86,6 +87,18 @@ def validated_values(data):
     return values
 
 
+def apt_direct_hosts(no_proxy):
+    """APT ignores no_proxy once a configured proxy is set; it only accepts exact hosts."""
+    hosts = []
+    for entry in no_proxy.split(","):
+        entry = entry.strip()
+        if entry in ("", "localhost", "127.0.0.1", "::1") or entry in hosts:
+            continue
+        if APT_DIRECT_HOST.match(entry):
+            hosts.append(entry)
+    return hosts
+
+
 def manage_system(root, action, values):
     environment = root / "etc/environment"
     env_lines = "".join(f"{k}={json.dumps(values[k])}\n" for k in ENV_KEYS if values.get(k))
@@ -109,7 +122,10 @@ def manage_system(root, action, values):
             if APT_PATTERN.search(contents):
                 print("APT: existing proxy settings found; leaving directory unchanged")
                 return
-    lines = "".join(f'Acquire::{proto}::Proxy "{values[proto + "_proxy"]}";\n' for proto in ("http", "https")) if action == "on" else ""
+    lines = ""
+    if action == "on":
+        lines = "".join(f'Acquire::{proto}::Proxy "{values[proto + "_proxy"]}";\n' for proto in ("http", "https"))
+        lines += "".join(f'Acquire::{proto}::Proxy::{host} "DIRECT";\n' for host in apt_direct_hosts(values["no_proxy"]) for proto in ("http", "https"))
     update(target, action, f"{START}\n{lines}{END}\n", APT_PATTERN, "APT", delete_owned=True)
 
 
