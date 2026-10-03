@@ -4,6 +4,7 @@ set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
+trap 'echo "Account installer test failed at line $LINENO: $BASH_COMMAND" >&2; cat "$test_dir/output" >&2' ERR
 mkdir -p "$test_dir/repo/scripts" "$test_dir/repo/packages" "$test_dir/bin" "$test_dir/admin" "$test_dir/target"
 cp "$repo_root/scripts/install-for-user.sh" "$repo_root/scripts/proxy-files.py" "$test_dir/repo/scripts/"
 cp "${repo_root}/scripts/install-progress.sh" "${test_dir}/repo/scripts/"
