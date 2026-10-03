@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 test_dir="$(mktemp -d)"
-trap 'rm -rf "$test_dir"' EXIT
+trap 'status=$?; if ((status != 0)); then echo "Account installer test failed: ${test_stage:-initial setup}" >&2; cat "$test_dir/output" >&2; fi; rm -rf "$test_dir"' EXIT
 trap 'echo "Account installer test failed at line $LINENO: $BASH_COMMAND" >&2; cat "$test_dir/output" >&2' ERR
 mkdir -p "$test_dir/repo/scripts" "$test_dir/repo/packages" "$test_dir/bin" "$test_dir/admin" "$test_dir/target"
 cp "$repo_root/scripts/install-for-user.sh" "$repo_root/scripts/proxy-files.py" "$test_dir/repo/scripts/"
@@ -73,6 +73,7 @@ target_repo="$test_dir/target/.local/share/dotconfig"
 [[ "$(git -C "$target_repo" symbolic-ref --short HEAD)" == master ]]
 [[ "$(git -C "$target_repo" config branch.master.merge)" == refs/heads/master ]]
 [[ "$(git -C "$target_repo" rev-parse HEAD)" == "$(git -C "$test_dir/repo" rev-parse HEAD)" ]]
+test_stage='resume clean checkout'
 # Resume reuses the checkout and retains target-local state.
 printf 'keep private settings\n' > "$test_dir/target/.zshrc.local"
 : > "$test_dir/log"
@@ -81,15 +82,18 @@ grep -q 'Reusing the existing target checkout' "$test_dir/output"
 grep -Fxq "user-install:$test_dir/target" "$test_dir/log"
 grep -q 'keep private settings' "$test_dir/target/.zshrc.local"
 [[ "$(git -C "$target_repo" rev-parse HEAD)" == "$(git -C "$test_dir/repo" rev-parse HEAD)" ]]
+test_stage='refuse dirty target'
 # Refuse dirty and wrong-origin targets before packages or setup.
 printf '# local edit\n' >> "$target_repo/install.sh"
 : > "$test_dir/log"
 if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-plugins > "$test_dir/output" 2>&1; then exit 1; fi
 if grep -Eq '^(packages|user-install):' "$test_dir/log"; then exit 1; fi
 git -C "$target_repo" checkout -- install.sh
+test_stage='refuse wrong origin'
 git -C "$target_repo" remote set-url origin https://github.com/example/other.git
 if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-plugins > "$test_dir/output" 2>&1; then exit 1; fi
 git -C "$target_repo" remote set-url origin https://github.com/example/dotconfig.git
+test_stage='refuse unreviewed revision'
 # A clean feature-only target revision is also refused.
 git -C "$target_repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm unreviewed
 if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-plugins > "$test_dir/output" 2>&1; then exit 1; fi
