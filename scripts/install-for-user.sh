@@ -20,6 +20,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 [[ "$(uname -s)" == Linux ]] || { echo '--user currently supports Ubuntu/Debian only.' >&2; exit 1; }
+command -v apt-get >/dev/null || { echo '--user requires Ubuntu/Debian with APT.' >&2; exit 1; }
 [[ -n "$target_user" && "$target_user" != -* ]] || { echo 'An existing target user is required.' >&2; exit 2; }
 target_uid="$(id -u -- "$target_user")"
 [[ "$target_uid" != 0 ]] || { echo 'Refusing to install user configuration for root.' >&2; exit 1; }
@@ -29,7 +30,8 @@ IFS=: read -r account_name _password _uid _gid _gecos target_home _shell <<< "$a
     echo 'Cannot resolve a usable target home directory.' >&2; exit 1;
 }
 target_repo="$target_home/.local/share/dotconfig"
-[[ -z "$(git -C "$repo_root" status --porcelain)" ]] || {
+source_status="$(git -C "$repo_root" status --porcelain)"
+[[ -z "$source_status" ]] || {
     echo 'Commit or stash repository changes before installing for another user.' >&2; exit 1;
 }
 remote_url="$(git -C "$repo_root" remote get-url origin)"
