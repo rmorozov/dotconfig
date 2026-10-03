@@ -92,16 +92,64 @@ Clone the repository, then run:
 bash install.sh
 ```
 
-The installer:
+The installation flow is:
 
-1. installs missing chezmoi and mise from the exact, checksum-verified release archives;
-2. applies `packages/Brewfile` on macOS or `packages/ubuntu.txt` on Ubuntu;
-3. asks for the machine profile on first use and deploys the home-directory files;
-4. installs the mise-managed Node.js, Go, and Python versions;
-5. installs Oh My Zsh and Vim plugins;
-6. optionally changes the login shell.
+1. **Prepare downloads and tools.** If your network needs the local proxy, enable it first. The installer adds missing checksum-verified chezmoi and mise binaries to your account.
+2. **Install system packages.** APT on Ubuntu or Homebrew on macOS supplies the shared command-line tools. This is where system setup may request sudo.
+3. **Choose your profile and deploy configuration.** Select `personal` or `work`, then `laptop`, `desktop`, or `server`. Chezmoi installs the managed Zsh and Vim files; review any overwrite prompts for existing files.
+4. **Set up languages and editor plugins.** Mise installs pinned Node.js, Go, and Python versions. Oh My Zsh, Vim plugins, and CoC extensions converge to the repository pins. Downloads can take a while.
+5. **Select Zsh and verify.** The installer optionally changes your login shell, which may request your account password. Open a new terminal and run `dotconfig doctor`. Put machine-specific settings in `~/.zshrc.local` or use `dotconfig private` for role-specific settings.
 
-Existing backups created by the previous installer, such as `.zshrc.pre-dotconfig`, are retained. Use `bash install.sh --help` for options that skip packages, plugins, or the login-shell change.
+Use `bash install.sh --help` to skip system packages, Vim plugins, or the login-shell change. Existing private overrides and previous backups, such as `.zshrc.pre-dotconfig`, remain unmanaged.
+
+### Installation progress and diagnostics
+
+Every installation prints the current stage. For platform details, selected chezmoi/mise paths, skip choices, and stage timings, use:
+
+```sh
+bash install.sh --verbose
+bash install.sh --user alice --verbose
+bash scripts/migrate-legacy.sh --apply --verbose
+```
+
+Verbose mode adds installer diagnostics without shell tracing or environment dumps. Tools retain their usual output and interactive prompts. A final `SUCCESS` message appears only when all requested installation steps finish; skipped steps are reported separately. It does not mean skipped components were installed or that every existing tool matches the current pins. Open a new Zsh session and run `dotconfig doctor` to check the resulting machine.
+
+On Ubuntu/Debian, a failed APT refresh produces a warning and installation is attempted using cached package lists. If APT installation itself returns an error, dotconfig verifies that every baseline package is fully installed and that `dpkg --audit` is clean before continuing. Missing or partially configured packages, an audit error, or audit findings still stop installation. A successful dotconfig installation after these warnings means the required packages are available; it does not guarantee fresh package lists or completed upgrades. Review the original APT errors and repair failing repositories or hooks separately. Run `bash packages/install.sh --check` to check baseline presence and `dpkg --audit` to inspect incomplete package state.
+
+On failure, the installer reports the stage, exit code, and elapsed time, then exits with that same code. Review the preceding tool error for the cause. For migration, follow the backup markers and recovery instructions in the migration guide. For `--user`, a failure after checkout creation leaves the target checkout in place: use `--user USER --resume` as described below; any failed system package or login-shell step still needs administrator attention.
+
+### Migrate an older installation
+
+For a machine configured by the installer at `b967ec9`, use a separate current checkout and run:
+
+```sh
+bash scripts/migrate-legacy.sh          # preview files and backup location
+bash scripts/migrate-legacy.sh --apply # back up old files, then install
+```
+
+The migration saves old files, symlinks, and their readable contents before replacing the legacy configuration. It preserves private overrides and existing plugin directories. See [the migration guide](docs/legacy-migration.md) for preparation, skip options, customization review, and recovery.
+
+### Install for an account without sudo
+
+On Ubuntu/Debian, run this from an administrator account with sudo access:
+
+```sh
+bash install.sh --user alice
+```
+
+The target account must already exist and have a writable home directory. Use a clean, committed checkout whose HEAD is an ancestor of the fetched default branch (`git fetch origin` first); feature-only commits are refused so the target can fast-forward future updates. The administrator installs the shared APT baseline and changes Alice's login shell to a system zsh listed in `/etc/shells`; Alice does not need sudo. The installer transfers the committed checkout to `~alice/.local/share/dotconfig` and runs all home-directory setup as Alice: chezmoi profile prompts, dotfiles, pinned bootstrap tools, runtimes, Oh My Zsh, and Vim plugins. The checkout retains the original Git remote for later updates.
+
+User setup uses Alice's HOME and a clean environment. If the administrator's dotconfig proxy mode is `on`, only validated credential-free loopback HTTP/HTTPS proxy settings, the bypass list in both cases, and `NODE_USE_ENV_PROXY=1` are passed for the installation session. Other administrator variables and private profile files stay private. Alice's own proxy profile, if present, takes precedence; explicit `off` clears these inherited settings. This does not persist a new proxy profile for Alice. Downloads through an inherited Kerberos-authenticated listener use the administrator's corporate identity, including when installing for someone else's account.
+
+The same skip options apply. With `--skip-packages`, curl, Git, and the other required system tools must already be installed. An existing target checkout is refused on first installation. To retry after a failure, run from the administrator account:
+
+```sh
+bash install.sh --user alice --resume --verbose
+```
+
+Resume verifies a clean target checkout, the same origin remote, and a target revision contained in the administrator's fetched default branch before changing anything. It reuses that checkout without resetting, deleting, or updating it, and retries package setup, user setup, and the login-shell change. Already installed tools/runtimes are reused by their installers. Add the same skip options if desired; `--resume` requires `--user`. A missing, dirty, mismatched, or unreviewed checkout is refused. Proxy settings pass through the same restricted mechanism as first installation, so a target proxy mode of `off` still clears inherited settings.
+
+For subsequent user-only setup, you can also run `sudo -H -u alice bash ~alice/.local/share/dotconfig/install.sh --skip-packages --skip-shell-change`. System package maintenance still belongs to the administrator. Cross-account installation currently rejects macOS, whose Homebrew ownership needs a separate setup.
 
 Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor commands flag installed chezmoi or mise versions that differ from those pins, including binaries supplied by a native package manager. Merging a bootstrap refresh does not replace an existing executable. After reviewing the new pin, run `dotconfig bootstrap` to install the exact chezmoi and mise releases into `~/.local/bin` and verify the versions now selected on `PATH`. This is explicit and separate from `dotconfig sync`. On macOS the package baseline no longer installs duplicate chezmoi or mise formulae. The pinned user-local binaries take precedence in the managed Zsh configuration. Existing Homebrew copies are not removed automatically. Fresh installs select verified binaries before the package step. An existing chezmoi or mise is left in place by `install.sh`; use `dotconfig bootstrap` to converge it explicitly. Homebrew is installed only when the native package baseline is requested. On both target platforms, the exact mise and chezmoi release archives are checked against SHA-256 values committed in the manifest before extraction. A missing Homebrew installation still uses an installer fetched from an immutable commit. That script is downloaded to a temporary file rather than streamed into a shell, and repository validation rejects new `curl | sh` patterns.
 

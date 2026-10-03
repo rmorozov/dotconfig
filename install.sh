@@ -3,8 +3,7 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=/dev/null
-source "$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
+install_verbose=false
 SKIP_PACKAGES=false
 SKIP_PLUGINS=false
 SKIP_SHELL_CHANGE=false
@@ -15,29 +14,62 @@ usage() {
 Usage: ./install.sh [options]
 
 Options:
+  --resume            Reuse a verified existing checkout with --user after a failed installation.
+  -v, --verbose       Show platform, tool paths, skip choices, and stage timings.
   --skip-packages      Do not apply the package baseline.
   --skip-plugins       Do not install or update Vim plugins.
   --skip-shell-change  Do not change the login shell.
+  --user USER         Install for another existing Ubuntu/Debian account using your sudo access.
   -h, --help           Show this help.
 EOF
 }
 
-for arg in "$@"; do
+original_args=("$@")
+RESUME=false
+TARGET_USER=
+while [[ $# -gt 0 ]]; do
+    arg="$1"
     case "$arg" in
+        --user)
+            [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$TARGET_USER" ]] || { usage >&2; exit 2; }
+            TARGET_USER="$2"
+            shift
+            ;;
+        --resume) RESUME=true ;;
+        -v|--verbose) install_verbose=true ;;
         --skip-packages) SKIP_PACKAGES=true ;;
         --skip-plugins) SKIP_PLUGINS=true ;;
         --skip-shell-change) SKIP_SHELL_CHANGE=true ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
     esac
+    shift
 done
+
+if "$RESUME" && [[ -z "$TARGET_USER" ]]; then
+    echo '--resume requires --user USER.' >&2; exit 2
+fi
+
+if [[ -n "$TARGET_USER" ]]; then
+    exec bash "$REPO_ROOT/scripts/install-for-user.sh" "${original_args[@]}"
+fi
+
+# shellcheck source=scripts/install-progress.sh
+source "$REPO_ROOT/scripts/install-progress.sh"
+install_details "$REPO_ROOT"
+install_step 'Loading network configuration'
+# shellcheck source=/dev/null
+source "$REPO_ROOT/home/dot_config/zsh/proxy.zsh"
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
 ensure_homebrew() {
-    command_exists brew || bash "$BOOTSTRAP_INSTALLER" homebrew
+    if ! command_exists brew; then
+        echo 'Installing Homebrew; its installer may request sudo to prepare the system installation directory.' >&2
+        bash "$BOOTSTRAP_INSTALLER" homebrew
+    fi
     if [[ -x /opt/homebrew/bin/brew ]]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
     elif [[ -x /usr/local/bin/brew ]]; then
@@ -84,36 +116,55 @@ install_mise() {
     esac
 }
 
+install_step 'Preparing chezmoi and mise'
 install_chezmoi
 install_mise
+if "$install_verbose"; then
+    printf '[dotconfig] chezmoi: %s; mise: %s\n' "$(command -v chezmoi)" "$(command -v mise)" >&2
+    printf '[dotconfig] Skip packages=%s, Vim plugins=%s, login shell=%s\n' "$SKIP_PACKAGES" "$SKIP_PLUGINS" "$SKIP_SHELL_CHANGE" >&2
+fi
 
+install_step 'Installing native packages'
 if ! "$SKIP_PACKAGES"; then
     if [[ "$(uname -s)" == Darwin ]]; then
         ensure_homebrew
     fi
     bash "$REPO_ROOT/packages/install.sh"
+else
+    echo '[dotconfig] Native packages skipped by request.' >&2
 fi
 
+install_step 'Choosing profile and deploying configuration'
 chezmoi --source "$REPO_ROOT" init --apply
 
+install_step 'Installing pinned language runtimes'
 bash "$REPO_ROOT/scripts/manage-runtime-versions.sh" install
 
+install_step 'Installing pinned Oh My Zsh'
 bash "$REPO_ROOT/scripts/install-oh-my-zsh.sh"
 
+install_step 'Installing and verifying Vim plugins'
 if ! "$SKIP_PLUGINS"; then
     bash "$REPO_ROOT/scripts/converge-vim.sh"
+else
+    echo '[dotconfig] Vim plugins skipped by request.' >&2
 fi
 
+install_step 'Selecting login shell'
 if ! "$SKIP_SHELL_CHANGE"; then
     zsh_path="$(command -v zsh)"
     if [[ "${SHELL:-}" != "$zsh_path" ]]; then
+        echo "Changing your login shell to $zsh_path; chsh may ask for your account password." >&2
         chsh -s "$zsh_path"
     fi
+else
+    echo '[dotconfig] Login-shell change skipped by request.' >&2
 fi
 
+install_step 'Recording successful installation'
 if git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
     git -C "$REPO_ROOT" config --local dotconfig.reviewedHead "$(git -C "$REPO_ROOT" rev-parse HEAD)"
 fi
 
-echo "dotconfig installation complete"
+install_success 'dotconfig installation completed successfully'
 echo "Review future changes with: chezmoi --source \"$REPO_ROOT\" diff"

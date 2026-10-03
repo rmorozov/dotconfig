@@ -7,6 +7,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 mkdir -p "$tmpdir/repo/scripts" "$tmpdir/repo/packages" "$tmpdir/repo/home/dot_config/mise" "$tmpdir/bin" "$tmpdir/home"
+cp "${REPO_ROOT}/scripts/install-progress.sh" "${tmpdir}/repo/scripts/"
 mkdir -p "$tmpdir/repo/home/dot_config/zsh"
 cp "$REPO_ROOT/install.sh" "$tmpdir/repo/install.sh"
 cp "$REPO_ROOT/home/dot_config/zsh/proxy.zsh" "$tmpdir/repo/home/dot_config/zsh/"
@@ -47,3 +48,23 @@ printf '%s\n' \
 diff -u "$tmpdir/expected" "$tmpdir/log"
 
 echo "First-run bootstrap order passed"
+
+# Verbose diagnostics describe stages without tracing private environment values.
+: > "$tmpdir/log"
+DOTCONFIG_TEST_LOG="$tmpdir/log" HOME="$tmpdir/home" \
+    PATH="$tmpdir/bin:/usr/bin:/bin" PRIVATE_INSTALL_SENTINEL=never-print-this \
+    bash "$tmpdir/repo/install.sh" --verbose --skip-plugins --skip-shell-change > "$tmpdir/output" 2>&1
+grep -q 'SUCCESS: dotconfig installation completed successfully' "$tmpdir/output"
+grep -q 'Platform:' "$tmpdir/output"
+grep -q 'Finished.*in.*s' "$tmpdir/output"
+if grep -q 'never-print-this' "$tmpdir/output"; then exit 1; fi
+# A failed package stage keeps its exit code and never emits success.
+printf '%s\n' '#!/bin/sh' 'exit 17' > "$tmpdir/repo/packages/install.sh"
+status=0
+DOTCONFIG_TEST_LOG="$tmpdir/log" HOME="$tmpdir/home" \
+    PATH="$tmpdir/bin:/usr/bin:/bin" \
+    bash "$tmpdir/repo/install.sh" --verbose --skip-plugins --skip-shell-change > "$tmpdir/output" 2>&1 || status=$?
+[[ "$status" == 17 ]]
+grep -q 'FAILED: Installing native packages (exit 17' "$tmpdir/output"
+if grep -q 'SUCCESS:' "$tmpdir/output"; then exit 1; fi
+echo 'Installer progress and failure diagnostics passed'

@@ -58,6 +58,10 @@ jobs:
           bash scripts/validate.sh
           bash scripts/check-bootstrap-tools.sh
 
+      - name: Verify installation for a real non-sudo account
+        if: runner.os == 'Linux'
+        run: bash scripts/test-install-for-user-live.sh
+
       - name: Install and check pinned runtimes
         shell: bash
         run: |
