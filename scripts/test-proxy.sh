@@ -20,6 +20,7 @@ bash "$repo_root/scripts/proxy.sh" on > "$test_home/output"
     [[ "$http_proxy" == 'http://127.0.0.1:3128' ]]
     [[ "$https_proxy" == "$http_proxy" ]]
     [[ "$no_proxy" == *'localhost'* ]]
+    [[ "$NODE_USE_ENV_PROXY" == 1 ]]
 )
 [[ "$(bash "$repo_root/scripts/proxy.sh" status)" == *'listener not checked'* ]]
 grep -q 'http_proxy="http://127.0.0.1:3128"' "$DOTCONFIG_PROXY_TEST_ROOT/etc/environment"
@@ -37,6 +38,7 @@ cat > "$HOME/.config/dotconfig/no-proxy.local" <<'EOF'
 .corp.example
 10.0.0.0/8
 .internal.example
+git.internal.example
 EOF
 chmod 600 "$HOME/.config/dotconfig/no-proxy.local"
 
@@ -47,11 +49,15 @@ if grep -q '127.0.0.1:3129' "$test_home/output"; then exit 1; fi
     # shellcheck source=/dev/null
     source "$repo_root/home/dot_config/zsh/proxy.zsh"
     [[ "$https_proxy" == 'http://127.0.0.1:3129' ]]
-    [[ "$no_proxy" == 'localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8' ]]
+    [[ "$no_proxy" == 'localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8,git.internal.example' ]]
     [[ "$NO_PROXY" == "$no_proxy" ]]
 )
-grep -Fq 'no_proxy="localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8"' "$DOTCONFIG_PROXY_TEST_ROOT/etc/environment"
-grep -Fxq 'noproxy=localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8' "$HOME/.npmrc"
+grep -Fq 'no_proxy="localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8,git.internal.example"' "$DOTCONFIG_PROXY_TEST_ROOT/etc/environment"
+apt_proxy_file="$DOTCONFIG_PROXY_TEST_ROOT/etc/apt/apt.conf.d/10-proxy.conf"
+grep -Fxq 'Acquire::https::Proxy::git.internal.example "DIRECT";' "$apt_proxy_file"
+grep -Fxq 'Acquire::http::Proxy::git.internal.example "DIRECT";' "$apt_proxy_file"
+if grep -Eq 'Proxy::(\.corp|10\.0\.0\.0|localhost)' "$apt_proxy_file"; then exit 1; fi
+grep -Fxq 'noproxy=localhost,127.0.0.1,::1,.internal.example,.corp.example,10.0.0.0/8,git.internal.example' "$HOME/.npmrc"
 
 cat > "$HOME/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
@@ -70,10 +76,10 @@ bash "$repo_root/scripts/proxy.sh" off > "$test_home/output"
 grep -Fxq 'custom-registry=https://registry.example' "$HOME/.npmrc"
 if grep -q '^https-proxy=' "$HOME/.npmrc"; then exit 1; fi
 (
-    export http_proxy='http://inherited.example' HTTPS_PROXY='http://inherited.example'
+    export http_proxy='http://inherited.example' HTTPS_PROXY='http://inherited.example' NODE_USE_ENV_PROXY=1
     # shellcheck source=/dev/null
     source "$repo_root/home/dot_config/zsh/proxy.zsh"
-    [[ -z "${http_proxy+x}" && -z "${HTTPS_PROXY+x}" ]]
+    [[ -z "${http_proxy+x}" && -z "${HTTPS_PROXY+x}" && -z "${NODE_USE_ENV_PROXY+x}" ]]
 )
 cat > "$HOME/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
