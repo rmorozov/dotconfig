@@ -20,7 +20,7 @@ if sudo -u "$target_user" -- sudo -n true 2>/dev/null; then
     echo 'Disposable target unexpectedly has sudo access.' >&2; exit 1;
 fi
 mkdir -p "$test_dir/repo/scripts"
-cp "$repo_root/scripts/install-for-user.sh" "$repo_root/scripts/proxy-files.py" "$test_dir/repo/scripts/"
+cp "$repo_root/scripts/install-progress.sh" "$repo_root/scripts/install-for-user.sh" "$repo_root/scripts/proxy-files.py" "$test_dir/repo/scripts/"
 mkdir -p "$test_dir/repo/home/dot_config/zsh"
 cp "$repo_root/home/dot_config/zsh/proxy.zsh" "$test_dir/repo/home/dot_config/zsh/"
 cat > "$test_dir/repo/install.sh" <<'EOF'
