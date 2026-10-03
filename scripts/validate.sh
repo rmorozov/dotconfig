@@ -40,6 +40,7 @@ bash scripts/test-credentials.sh
 bash scripts/test-runtime-versions.sh
 bash scripts/test-node-version.sh
 bash scripts/test-dotconfig-review.sh
+bash scripts/test-apt-recovery.sh
 bash scripts/test-package-freshness.sh
 bash scripts/test-update-runtime-versions.sh
 bash scripts/test-update-bootstrap-tools.sh

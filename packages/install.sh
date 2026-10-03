@@ -86,8 +86,28 @@ case "$(uname -s)" in
             fi
             echo "Ubuntu package baseline is satisfied."
         else
-            bash "$PACKAGE_DIR/../scripts/apt-get.sh" update
-            bash "$PACKAGE_DIR/../scripts/apt-get.sh" install -y "${packages[@]}"
+            update_status=0
+            bash "$PACKAGE_DIR/../scripts/apt-get.sh" update || update_status=$?
+            if ((update_status != 0)); then
+                echo "WARNING: APT refresh returned $update_status; trying installation with cached package lists. Updates may be stale." >&2
+            fi
+            install_status=0
+            bash "$PACKAGE_DIR/../scripts/apt-get.sh" install -y "${packages[@]}" || install_status=$?
+            if ((install_status != 0)); then
+                echo "WARNING: APT installation returned $install_status; checking installed baseline and dpkg state." >&2
+                if ! bash "$PACKAGE_DIR/install.sh" --check; then
+                    echo 'APT failed and the package baseline is incomplete; installation cannot continue.' >&2
+                    exit "$install_status"
+                fi
+                audit_status=0
+                audit_output="$(LC_ALL=C dpkg --audit 2>&1)" || audit_status=$?
+                if ((audit_status != 0)) || [[ -n "$audit_output" ]]; then
+                    printf 'APT failed and dpkg state needs attention (audit exit %s):\n%s\n' "$audit_status" "$audit_output" >&2
+                    echo 'Resolve the package-manager errors before continuing installation.' >&2
+                    exit "$install_status"
+                fi
+                echo 'WARNING: Continuing because all baseline packages are fully installed and dpkg audit is clean. APT errors still need investigation; requested upgrades are not guaranteed.' >&2
+            fi
         fi
         ;;
     *)
