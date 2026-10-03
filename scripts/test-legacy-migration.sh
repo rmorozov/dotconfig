@@ -86,15 +86,15 @@ mkdir -p "$backup"
 printf 'untouched vimrc\n' > "$HOME/.vimrc"
 if bash "$migrate" --apply > "$root/error" 2>&1; then exit 1; fi
 grep -q 'Backup is incomplete or its state is unknown' "$root/error"
-! grep -q 'resume with' "$root/error"
+if grep -q 'resume with' "$root/error"; then exit 1; fi
 touch "$backup/backup-ready"
 if bash "$migrate" --apply > "$root/error" 2>&1; then exit 1; fi
 grep -q 'legacy files are unchanged' "$root/error"
-! grep -q 'resume with' "$root/error"
+if grep -q 'resume with' "$root/error"; then exit 1; fi
 touch "$backup/removal-started"
 if bash "$migrate" --apply > "$root/error" 2>&1; then exit 1; fi
 grep -q 'Legacy file removal was interrupted' "$root/error"
-! grep -q 'resume with' "$root/error"
+if grep -q 'resume with' "$root/error"; then exit 1; fi
 grep -q 'untouched vimrc' "$HOME/.vimrc"
 # Preserve a different caller umask, with no skip arguments (Bash 3.2).
 export HOME="$root/mask-home"
