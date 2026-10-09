@@ -22,7 +22,7 @@ call s:DotconfigPin('vim-bootstrap-updater', '55d9d5794a391cd23f9c0d76336a30aeac
 call s:DotconfigPin('vim-rhubarb', '5496d7c94581c4c9ad7430357449bb57fc59f501')
 call s:DotconfigPin('molokai', 'c67bdfcdb31415aa0ade7f8c003261700a885476')
 call s:DotconfigPin('fzf.vim', '023de3c0e158ff9c2b0992175af10be97c2f2158')
-call s:DotconfigPin('fzf', 'b1be3a8be1b833ce5b92fbbac11637643d60a046')
+call s:DotconfigPin('fzf', '33a3456921a17c53f42f8610783b6d379d652d3e')
 call s:DotconfigPin('vimproc.vim', '63a4ce0768c7af434ac53d37bdc1e7ff7fd2bece')
 call s:DotconfigPin('vim-misc', '3e6b8fb6f03f13434543ce1f5d24f6a5d3f34f0b')
 call s:DotconfigPin('vim-session', '9e9a6088f0554f6940c19889d0b2a8f39d13f2bb')
@@ -33,7 +33,7 @@ call s:DotconfigPin('split-manpage.vim', 'e99c7a06e2f3f86218c8849bccf4bd1ec27364
 call s:DotconfigPin('vim-go', '47694979496d4bf2e90ce75d95f1dec3f41cbefb')
 call s:DotconfigPin('jedi-vim', 'a13c7bf64dbb4abcf676b4e41c5fedc2d4e7f6dd')
 call s:DotconfigPin('requirements.txt.vim', 'd55452136a162ac31b15876ab98c00bd1b6c312f')
-call s:DotconfigPin('coc.nvim', '0ab39f2ab540676d413431fee65ec0ad9c2829ac')
+call s:DotconfigPin('coc.nvim', '9b05543cf78fc6aa45c26a4eeac86600615aacc4')
 call s:DotconfigPin('vim-trailing-whitespace', 'dc22ff46010e55d2c33edd21cdcd14f99e729b6f')
 
 delfunction s:DotconfigPin
