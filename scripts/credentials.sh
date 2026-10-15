@@ -3,13 +3,19 @@ set -Eeuo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 inspector="$repo_root/scripts/credentials-inspect.py"
+log_checker="$repo_root/scripts/credentials-logs.py"
 
 usage() {
     cat <<'EOF'
 Usage: dotconfig creds status
+       dotconfig creds check-logs [--days N] [--examples N]
        dotconfig creds clear [--purge [--yes]]
 
 status  Show what SSSD and Kerberos have cached for domain logins, without secrets.
+check-logs
+        Search SSSD, PAM, Kerberos, and VPN logs from the last N days (default 7)
+        for known login problems and judge the likely cause. --examples sets
+        how many log lines to quote per finding (default 1).
 clear   Destroy your Kerberos tickets and mark SSSD identity entries stale.
         Cached passwords for offline login are kept.
 --purge Also stop SSSD and move its whole cache aside, including cached passwords.
@@ -17,14 +23,9 @@ clear   Destroy your Kerberos tickets and mark SSSD identity entries stale.
 EOF
 }
 
+# Runs a helper script as root with the filesystem root appended to its arguments.
 as_root() {
-    if [[ -n "${DOTCONFIG_CREDS_TEST_ROOT:-}" ]]; then
-        python3 "$inspector" "$1" "$DOTCONFIG_CREDS_TEST_ROOT"
-    elif [[ "$EUID" -eq 0 ]]; then
-        python3 "$inspector" "$1" /
-    else
-        sudo python3 "$inspector" "$1" /
-    fi
+    as_root_command python3 "$@" "${DOTCONFIG_CREDS_TEST_ROOT:-/}"
 }
 
 as_root_command() {
@@ -43,13 +44,30 @@ as_root_command() {
 case "${1:-}" in
     status)
         [[ $# -eq 1 ]] || { usage >&2; exit 2; }
-        as_root inspect
+        as_root "$inspector" inspect
         echo "Kerberos tickets for $(id -un):"
         if ! command -v klist >/dev/null 2>&1; then
             echo '  klist not installed (krb5-user)'
         elif ! klist -l 2>/dev/null; then
             echo '  none'
         fi
+        ;;
+    check-logs)
+        shift
+        days=7
+        examples=1
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --days|--examples)
+                    [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { usage >&2; exit 2; }
+                    if [[ "$1" == --days ]]; then days="$2"; else examples="$2"; fi
+                    shift
+                    ;;
+                *) usage >&2; exit 2 ;;
+            esac
+            shift
+        done
+        as_root "$log_checker" --days "$days" --examples "$examples"
         ;;
     clear)
         shift
@@ -80,7 +98,7 @@ case "${1:-}" in
             echo 'SSSD: sss_cache not installed; skipping'
         fi
         if [[ "$purge" == true ]]; then
-            as_root purge
+            as_root "$inspector" purge
         fi
         ;;
     -h|--help) usage ;;
