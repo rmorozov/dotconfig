@@ -390,20 +390,16 @@ def chunks(path):
     """Yield (block, bytes of the file read so far): whole lines, lowercase-able as bytes."""
     with path.open("rb") as raw:
         handle = gzip.GzipFile(fileobj=raw) if path.suffix == ".gz" else raw
-        rest = b""
         while True:
             data = handle.read(CHUNK)
             if not data:
                 break
-            data = rest + data
-            cut = data.rfind(b"\n") + 1
-            if cut:
-                rest = data[cut:]
-                yield data[:cut], raw.tell()
-            else:
-                rest = data
-        if rest:
-            yield rest + b"\n", raw.tell()
+            # Complete the last line, and end a file that stops mid-line with a newline.
+            if not data.endswith(b"\n"):
+                data += handle.readline()
+            if not data.endswith(b"\n"):
+                data += b"\n"
+            yield data, raw.tell()
 
 
 def line_at(block, start):
@@ -435,13 +431,26 @@ def window_start(block, since, previous):
     return low
 
 
-def keyword_offsets(path):
-    """The byte offsets of the lines of an uncompressed log that contain a keyword, in order, or None when grep
-    cannot tell. grep -F searches for all keywords at once, about ten times faster than bytes.find per keyword."""
-    grep = shutil.which("grep")
-    if not grep or path.suffix == ".gz":
+def search_command(tool, path):
+    """The command that prints offset:line for each line of path with a keyword, or None. ripgrep is about twice
+    as fast as grep and reads gzip files too (offsets then count decompressed bytes, as chunks() does)."""
+    found = shutil.which(tool)
+    keywords = [arg for keyword in KEYWORDS for arg in ("-e", keyword)]
+    if found and tool == "rg":
+        zipped = ["--search-zip"] if path.suffix == ".gz" else []
+        return [found, "--no-config", "-a", "-b", "-i", "-F", "--no-unicode", "--no-line-number", "--no-filename",
+                "--color", "never"] + zipped + keywords + ["--", str(path)]
+    if found and tool == "grep" and path.suffix != ".gz":
+        return [found, "-a", "-b", "-i", "-F"] + keywords + ["--", str(path)]
+    return None
+
+
+def keyword_offsets(path, tools=("rg", "grep")):
+    """The byte offsets of the lines of a log that contain a keyword, in order, or None when no search tool can
+    tell. They search for all keywords at once, ten to twenty times faster than bytes.find per keyword."""
+    command = next(filter(None, (search_command(tool, path) for tool in tools)), None)
+    if command is None:
         return None
-    command = [grep, "-a", "-b", "-i", "-F"] + [arg for keyword in KEYWORDS for arg in ("-e", keyword)] + [str(path)]
     try:
         result = subprocess.run(command, capture_output=True, check=False, env=dict(os.environ, LC_ALL="C"))
     except OSError:

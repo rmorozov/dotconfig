@@ -356,8 +356,11 @@ def every_line(path):
 
 expected = [every_line(root / "var/log/sssd" / name) for name in ("sssd_corp.example.log", "sssd_corp.example.log.1.gz")]
 logs.CHUNK = 4096
-assert logs.keyword_offsets(root / "var/log/sssd/sssd_corp.example.log")
-for search in (logs.keyword_offsets, lambda path: None):
+import functools, shutil
+tools = [tool for tool in ("rg", "grep") if shutil.which(tool)]
+assert "grep" in tools and logs.keyword_offsets(root / "var/log/sssd/sssd_corp.example.log")
+searches = [functools.partial(logs.keyword_offsets, tools=(tool,)) for tool in tools] + [lambda path: None]
+for search in searches:
     logs.keyword_offsets = search
     events, counts = logs.read_sssd_logs(root, since)
     got = [(event.when, event.text, sorted(event.keys)) for event in events]
