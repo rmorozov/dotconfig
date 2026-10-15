@@ -8,10 +8,12 @@ import datetime
 import gzip
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,7 +47,7 @@ RULES = {
         "warning", "SSSD had no cached password for an offline login",
         "a password is stored only when cache_credentials is on and pam_sss sees the password at an online login",
         r"cached credentials? (are |is )?not available|no cached (credentials|password)|"
-        r"password (caching|cache) (is )?(not enabled|disabled)|cached password.*not (found|available|stored)"),
+        r"password cach(ing|e) (is )?(not enabled|disabled)|cached password.*not (found|available|stored)"),
     "cache-too-old": Rule(
         "warning", "Cached password expired",
         "offline_credentials_expiration passed since the last online login; log in once with the VPN up",
@@ -67,7 +69,7 @@ RULES = {
     "account-expired": Rule("warning", "Domain account expired", "the domain administrators must extend it"),
     "password-expired": Rule(
         "warning", "Domain password expired", "change the password while connected to the VPN",
-        r"password (has )?expired|KRB5KDC_ERR_KEY_EXP"),
+        r"password expired|password has expired|KRB5KDC_ERR_KEY_EXP"),
     "pam-other": Rule("info", "pam_sss returned another PAM error", "the PAM error text on the example names it"),
     "pam-bad-password": Rule(
         "info", "SSSD rejected a password",
@@ -85,8 +87,9 @@ RULES = {
         r"sssd\S*\.service: (main process exited|failed with result)|segmentation fault|core dumped"),
     "config-error": Rule(
         "warning", "SSSD rejected part of its configuration", "run sudo sssctl config-check",
-        r"file ownership and permissions check failed|cannot read config|failed to (read|load|parse) .*config|"
-        r"is not allowed in section|unknown option|invalid (option|section)|confdb_init.*fail"),
+        r"file ownership and permissions check failed|cannot read config|failed to read .*config|"
+        r"failed to load .*config|failed to parse .*config|is not allowed in section|unknown option|invalid option|"
+        r"invalid section|confdb_init.*fail"),
     "clock-skew": Rule(
         "warning", "Kerberos clock skew",
         "the clock differs from the domain by more than 5 minutes; Kerberos refuses tickets until time syncs",
@@ -114,7 +117,8 @@ RULES = {
         "info", "SSSD could not reach a domain controller",
         "expected while the VPN is down; SSSD then answers from its cache",
         r"could not resolve|failed to resolve server|unable to resolve|srv lookup.*(fail|timeout)|"
-        r"no (available )?servers? (available|found)|going offline|backend is offline|marked (as )?offline"),
+        r"no servers? (available|found)|no available servers?|going offline|backend is offline|marked offline|"
+        r"marked as offline"),
     "krb5-login": Rule(
         "info", "pam_krb5 accepted domain passwords",
         "pam_krb5 checked these passwords itself; if its success skips pam_sss, SSSD never sees the password",
@@ -132,7 +136,7 @@ RULES = {
         r"session terminated by server"),
     "sssd-online": Rule(
         "ok", "SSSD went online", "SSSD reached a domain controller",
-        r"going online|backend is online|back online|reset(ting)? offline status|switch(ed|ing)? to online"),
+        r"going online|backend is online|(?<!go )back online|reset(ting)? offline status|switch(ed|ing)? to online"),
     "sss-login": Rule(
         "ok", "SSSD accepted domain logins",
         "pam_sss saw these passwords, so SSSD can cache them when cache_credentials is on",
@@ -215,29 +219,37 @@ class Event:
     classified: bool = False
 
 
-# Every rule needs one of these lowercase literals, so a line without any is skipped before the ~35 rule searches.
-# SSSD at a raised debug_level writes millions of lines a day; this check is about ten times cheaper. Each
-# top-level alternative of each rule must contain one of them (test-credentials-logs.sh checks this).
+# Every rule needs one of these lowercase literals: each top-level alternative of each rule contains one, and
+# test-credentials-logs.sh checks that. SSSD at a raised debug_level writes millions of lines a day, and words
+# such as "server" or "online" are on most of them, so the literals are the specific phrases the rules need.
+# The log files are searched for them with bytes.find, and only the lines that contain one are classified.
 KEYWORDS = (
-    "cach", "too many failed", "expired", "krb5kdc_err", "krb5krb_ap_err", "krb5_kt_", "pam_sss", "pam_krb5",
-    "watchdog", "restart critical", "killing service", "exiting the sssd", ".service:", "segmentation fault",
-    "core dumped", "ownership", "config", "confdb", "not allowed in section", "unknown option", "invalid ", "skew",
-    "kerberos database", "key table", "keytab", "gpo", "authentication failed", "decrypt integrity", "kdc", "resolve",
-    "srv lookup", "server", "offline", "online", "connected as", "cstp connected", "dtls connection", "vpn",
-    "logout successful", "session terminated", "apparmor", "ccache", "credential cache", "krb5_cc_", "pam_mkhomedir",
-    "directory", "encryption type", "enctype", "key version", "version of key", "p11_child", "certificate", "ocsp",
-    "pcsc", "pkcs",
+    "cached credential", "no cached ", "password cach", "cached password", "cached user entry", "too many failed",
+    "password expired", "password has expired", "krb5kdc_err", "krb5krb_ap_err", "krb5_kt_", "krb5_kdc_unreach",
+    "pam_sss", "pam_krb5", "watchdog", "restart critical", "killing service", "exiting the sssd", ".service:",
+    "segmentation fault", "core dumped", "ownership", "cannot read config", "failed to read", "failed to load",
+    "failed to parse", "not allowed in section", "unknown option", "invalid option", "invalid section",
+    "confdb_init", "clock skew", "kerberos database", "key table", "keytab contains", "using keytab", "gpo-based",
+    "ad_gpo_access", "authentication failed", "decrypt integrity", "any kdc", "find kdc", "could not resolve",
+    "resolve server", "unable to resolve", "srv lookup", "no server", "no available server", "going offline",
+    "backend is offline", "marked offline", "marked as offline", "connected as ", "cstp connected",
+    "dtls connection", "vpn plugin", "vpn connection", "logout successful", "session terminated", "going online",
+    "backend is online", "back online", "offline status", "to online", "apparmor", "ccache", "credential cache",
+    "krb5_cc_", "pam_mkhomedir", "unable to create and initiali", "chdir to home", "no directory, logging",
+    "encryption type", "enctype ", "key version number", "version of key", "p11_child", "certificate", "ocsp",
+    "pcsc", "pkcs", "authenticated with cached", "offline authentication",
 )
-
-
-def relevant(text, low=None):
-    low = text.lower() if low is None else low
-    return any(keyword in low for keyword in KEYWORDS)
+KEYWORD_BYTES = tuple(keyword.encode() for keyword in KEYWORDS)
+# The rules whose pattern text names each keyword: a line is searched only with the rules its keywords select.
+RULES_FOR = {keyword: tuple(key for key, rule in RULES.items()
+                            if rule.pattern and keyword in re.sub(r"\\(.)", r"\1", rule.pattern).lower())
+             for keyword in KEYWORDS}
 
 
 def classify(event):
     low = event.text.lower()
-    if not relevant(event.text, low):
+    keys = {key for keyword in KEYWORDS if keyword in low for key in RULES_FOR[keyword]}
+    if not keys and "pam_sss" not in low:
         return event
     result = PAM_RESULT.search(event.text)
     if result:
@@ -246,8 +258,8 @@ def classify(event):
             event.keys.add(f"pam-{stage}")
         else:
             event.keys.add(PAM_CODES.get(code, "pam-other"))
-    for key, pattern in COMPILED.items():
-        if pattern.search(low):
+    for key in keys:
+        if COMPILED[key].search(low):
             event.keys.add(key)
     event.classified = True
     return event
@@ -352,31 +364,155 @@ def parse_sssd_line(line):
     return None, line
 
 
+class Progress:
+    """A one-line progress report on stderr while a large log is read; silent when stderr is not a terminal."""
+
+    def __init__(self, label, total):
+        self.label, self.total, self.shown = label, total, 0.0
+        self.live = sys.stderr.isatty() and total > 4 * CHUNK
+
+    def update(self, done):
+        now = time.monotonic()
+        if self.live and now - self.shown >= 0.5:
+            self.shown = now
+            print(f"\r  reading {self.label}: {100 * done // self.total}% of {self.total / 2**30:.1f} GiB ",
+                  end="", file=sys.stderr, flush=True)
+
+    def close(self):
+        if self.live and self.shown:
+            print("\r\033[K", end="", file=sys.stderr, flush=True)
+
+
+CHUNK = 1 << 24
+
+
+def chunks(path):
+    """Yield (block, bytes of the file read so far): whole lines, lowercase-able as bytes."""
+    with path.open("rb") as raw:
+        handle = gzip.GzipFile(fileobj=raw) if path.suffix == ".gz" else raw
+        rest = b""
+        while True:
+            data = handle.read(CHUNK)
+            if not data:
+                break
+            data = rest + data
+            cut = data.rfind(b"\n") + 1
+            if cut:
+                rest = data[cut:]
+                yield data[:cut], raw.tell()
+            else:
+                rest = data
+        if rest:
+            yield rest + b"\n", raw.tell()
+
+
+def line_at(block, start):
+    end = block.find(b"\n", start)
+    return block[start:end].decode(errors="replace")
+
+
+def stamp_before(block, end, previous):
+    """The timestamp of the last timed line that starts before offset end, else previous."""
+    while end > 0:
+        start = block.rfind(b"\n", 0, end - 1) + 1
+        stamp, _text = parse_sssd_line(line_at(block, start))
+        if stamp:
+            return stamp
+        end = start
+    return previous
+
+
+def window_start(block, since, previous):
+    """Offset of the first line at or after since, by bisection over the lines of a block ordered by time."""
+    low, high = 0, len(block)
+    while low < high:
+        middle = (low + high) // 2
+        start = block.rfind(b"\n", 0, middle) + 1
+        if (stamp_before(block, block.find(b"\n", start) + 1, previous) or since) < since:
+            low = block.find(b"\n", middle) + 1
+        else:
+            high = start
+    return low
+
+
+def keyword_offsets(path):
+    """The byte offsets of the lines of an uncompressed log that contain a keyword, in order, or None when grep
+    cannot tell. grep -F searches for all keywords at once, about ten times faster than bytes.find per keyword."""
+    grep = shutil.which("grep")
+    if not grep or path.suffix == ".gz":
+        return None
+    command = [grep, "-a", "-b", "-i", "-F"] + [arg for keyword in KEYWORDS for arg in ("-e", keyword)] + [str(path)]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False, env=dict(os.environ, LC_ALL="C"))
+    except OSError:
+        return None
+    if result.returncode > 1:
+        return None
+    return [int(line[:line.index(b":")]) for line in result.stdout.splitlines() if b":" in line]
+
+
+def keyword_starts(block, offset):
+    """The starts of the lines of block from offset that contain a keyword, searched with bytes.find."""
+    low = block.lower()
+    starts = set()
+    for keyword in KEYWORD_BYTES:
+        found = low.find(keyword, offset)
+        while found != -1:
+            starts.add(low.rfind(b"\n", 0, found) + 1)
+            end = low.find(b"\n", found)
+            found = low.find(keyword, end + 1)
+    return sorted(starts)
+
+
+def scan_block(block, starts, source, previous):
+    """Classify the lines of block that start at starts; lines without a timestamp of their own take the
+    previous one."""
+    events = []
+    for start in starts:
+        stamp, text = parse_sssd_line(line_at(block, start))
+        when = stamp or stamp_before(block, start, previous)
+        if when is None or not text.strip():
+            continue
+        event = classify(Event(when, source, text.strip()))
+        if event.keys:
+            events.append(event)
+    return events
+
+
 def read_sssd_logs(root, since):
-    """Read /var/log/sssd, including rotated files; untimed lines inherit the previous timestamp. Lines are
-    classified as they are read and only those a rule matches are kept, so memory follows the findings, not the
-    log volume. Returns the matched events and the number of lines in the window per file."""
+    """Read /var/log/sssd, including rotated files; untimed lines inherit the previous timestamp. Only lines that
+    contain a keyword (found by grep, else by bytes.find) are decoded and classified, and only those a rule
+    matches are kept, so time and memory follow the findings, not the log volume. Returns the matched events and
+    the number of lines in the window per file."""
     events, counts = [], {}
     directory = root / "var/log/sssd"
     files = sorted(directory.glob("*.log*")) if directory.is_dir() else []
     for path in files:
+        info = path.stat()
         # A file last written before the window holds nothing in it, which skips most rotated logs.
-        if datetime.datetime.fromtimestamp(path.stat().st_mtime, UTC) < since:
+        if datetime.datetime.fromtimestamp(info.st_mtime, UTC) < since:
             continue
+        name = str(path.relative_to(root))
         source = re.sub(r"\.log.*$", "", path.name)
-        count = 0
-        when = None
-        with open_log(path) as handle:
-            for line in handle:
-                stamp, text = parse_sssd_line(line.rstrip("\n"))
-                when = stamp or when
-                if when is None or when < since or not text.strip():
-                    continue
-                count += 1
-                event = classify(Event(when, source, text.strip()))
-                if event.keys:
-                    events.append(event)
-        counts[str(path.relative_to(root))] = count
+        count, previous, base = 0, None, 0
+        progress = Progress(f"/{name}", info.st_size)
+        offsets = keyword_offsets(path)
+        for block, done in chunks(path):
+            last = stamp_before(block, len(block), previous)
+            if last is not None and last >= since:
+                offset = window_start(block, since, previous) if previous is None or previous < since else 0
+                count += block.count(b"\n", offset)
+                if offsets is None:
+                    starts = keyword_starts(block, offset)
+                else:
+                    first = bisect.bisect_left(offsets, base + offset)
+                    starts = [o - base for o in offsets[first:bisect.bisect_left(offsets, base + len(block))]]
+                events += scan_block(block, starts, source, previous)
+            previous = last
+            base += len(block)
+            progress.update(done)
+        progress.close()
+        counts[name] = count
     return events, counts
 
 
@@ -562,21 +698,30 @@ def print_findings(found, examples):
 
 
 def boot_of(when, boots):
-    current = None
-    for start in boots:
-        if start <= when:
-            current = start
-    return current
+    """The start of the boot that when falls in; boots is sorted."""
+    index = bisect.bisect_right(boots, when)
+    return boots[index - 1] if index else None
 
 
-def vpn_down_until_later(when, found, boots):
+def vpn_timeline(found, boots):
+    """Per boot: its VPN connects and disconnects as sorted (time, key) pairs, and its last connect."""
+    timeline = {}
+    for key in ("vpn-up", "vpn-down"):
+        for e in found.get(key, []):
+            timeline.setdefault(boot_of(e.when, boots), ([], []))[0].append((e.when, key))
+    for changes, last_up in timeline.values():
+        changes.sort()
+        last_up.append(max([t for t, key in changes if key == "vpn-up"], default=None))
+    return timeline
+
+
+def vpn_down_until_later(when, timeline, boots):
     """Whether the VPN was not up at this time but connected later in the same boot."""
-    boot = boot_of(when, boots)
-    same_boot = [(e.when, key) for key in ("vpn-up", "vpn-down") for e in found.get(key, [])
-                 if boot_of(e.when, boots) == boot]
-    before = [key for t, key in sorted(same_boot) if t <= when]
-    later_up = any(t > when and key == "vpn-up" for t, key in same_boot)
-    return later_up and (not before or before[-1] == "vpn-down")
+    changes, last_up = timeline.get(boot_of(when, boots), ([], [None]))
+    later_up = last_up[0] is not None and last_up[0] > when
+    # Keys sort below "~", so this counts the changes at or before when.
+    before = bisect.bisect_right(changes, (when, "~"))
+    return later_up and (not before or changes[before - 1][1] == "vpn-down")
 
 
 def offline_failures(found, boots, facts):
@@ -592,6 +737,7 @@ def offline_failures(found, boots, facts):
     for times in unreachable.values():
         times.sort()
     failures = [(event, True) for event in found.get("no-cached-password", [])]
+    timeline = vpn_timeline(found, boots)
     for event in found.get("pam-authinfo-unavail", []):
         domain = failure_context(event, domains, realms)[2]
         # The window runs from 10 minutes before to 2 minutes after, clipped to the failure's own boot.
@@ -603,7 +749,7 @@ def offline_failures(found, boots, facts):
                 if bisect.bisect_left(times, low) < (bisect.bisect_left(times, later_boots[0])
                                                      if later_boots and later_boots[0] <= high
                                                      else bisect.bisect_right(times, high))]
-        before_vpn = vpn_down_until_later(event.when, found, boots)
+        before_vpn = vpn_down_until_later(event.when, timeline, boots)
         if domain is not None and domain in near:
             failures.append((event, True))
         elif before_vpn and len(domains) <= 1:
@@ -759,9 +905,19 @@ def explain_offline(offline, facts, krb5_logins):
     contexts = [(event, *failure_context(event, domains, facts["realms"]), certain) for event, certain in offline]
     # An SSSD-side line without a PAM service duplicates a PAM failure of the same domain logged within two
     # minutes; one from another or an unknown domain is a separate failure.
-    with_service = [(e.when, domain) for e, _u, service, domain, _c in contexts if service and domain]
-    contexts = [c for c in contexts if c[2] or not any(abs((c[0].when - t).total_seconds()) <= 120
-                                                       and c[3] == domain for t, domain in with_service)]
+    with_service = {}
+    for event, _user, service, domain, _certain in contexts:
+        if service and domain:
+            with_service.setdefault(domain, []).append(event.when)
+    for times in with_service.values():
+        times.sort()
+
+    def duplicate(event, domain):
+        times = with_service.get(domain, [])
+        index = bisect.bisect_left(times, event.when - datetime.timedelta(seconds=120))
+        return index < len(times) and times[index] <= event.when + datetime.timedelta(seconds=120)
+
+    contexts = [c for c in contexts if c[2] or not duplicate(c[0], c[3])]
     stacks = {}
 
     def stack_of(service):

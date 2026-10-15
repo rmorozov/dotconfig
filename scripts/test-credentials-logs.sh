@@ -315,6 +315,62 @@ events, counts = logs.read_sssd_logs(root, since)
 assert counts == {"var/log/sssd/sssd_corp.example.log": 20000}, counts
 assert len(events) == 20 and all(event.keys == {"dc-unreachable"} for event in events), len(events)
 assert events[0].when == (now - datetime.timedelta(seconds=20000)).astimezone(logs.UTC), events[0].when
+
+# The block scanner finds what classifying every line would: across block boundaries, in gzip files, with the
+# window starting mid-file, and for untimed lines, which take the time of the line before them.
+import gzip, random
+random.seed(7)
+texts = ["[be[corp.example]] [sdap_process_result] (0x2000): Trace: server dc1 is online",
+         "[be[corp.example]] [check_if_online] (0x0400): Trying to go back online!",
+         "[be[corp.example]] [be_offline_reply] (0x0400): Backend is offline",
+         "[be[corp.example]] [sysdb_cache_auth] (0x0400): Cached credentials not available.",
+         "[be[corp.example]] [be_reset_offline] (0x0400): Going online!",
+         "   untimed continuation: Failed to resolve server 'dc1.corp.example'",
+         "[pam] [pam_reply] (0x0200): pam_sss(gdm-password:auth): received for user a@corp.example: 9 (x)"]
+lines = []
+for number in range(6000):
+    when = now - datetime.timedelta(days=2) + datetime.timedelta(seconds=40 * number)
+    text = random.choice(texts)
+    lines.append(text if text.startswith(" ") else f"({when:%Y-%m-%d %H:%M:%S}:000001): {text}")
+body = "\n".join(lines) + "\n"
+(root / "var/log/sssd/sssd_corp.example.log").write_text(body)
+with gzip.open(root / "var/log/sssd/sssd_corp.example.log.1.gz", "wt") as handle:
+    handle.write(body)
+since = datetime.datetime.now(logs.UTC) - datetime.timedelta(days=1)
+
+
+def every_line(path):
+    found, count, when = [], 0, None
+    with logs.open_log(path) as handle:
+        for line in handle:
+            stamp, text = logs.parse_sssd_line(line.rstrip("\n"))
+            when = stamp or when
+            if when is None or when < since:
+                continue
+            count += 1
+            event = logs.classify(logs.Event(when, "sssd_corp.example", text.strip()))
+            if event.keys:
+                found.append((event.when, event.text, sorted(event.keys)))
+    return found, count
+
+
+expected = [every_line(root / "var/log/sssd" / name) for name in ("sssd_corp.example.log", "sssd_corp.example.log.1.gz")]
+logs.CHUNK = 4096
+assert logs.keyword_offsets(root / "var/log/sssd/sssd_corp.example.log")
+for search in (logs.keyword_offsets, lambda path: None):
+    logs.keyword_offsets = search
+    events, counts = logs.read_sssd_logs(root, since)
+    got = [(event.when, event.text, sorted(event.keys)) for event in events]
+    assert got == expected[0][0] + expected[1][0], (len(got), len(expected[0][0]) + len(expected[1][0]))
+    assert list(counts.values()) == [expected[0][1], expected[1][1]], (counts, expected[0][1])
+# Searching only the rules a line's keywords select finds what searching every rule finds.
+samples = texts + [line.split("): ", 1)[-1] for path in sorted((root / "var/log/sssd").glob("*.log"))
+                   for line in path.read_text().splitlines()[:50]]
+samples += [rule.pattern.replace("\\", "").replace("?", "") for rule in logs.RULES.values() if rule.pattern]
+for text in samples:
+    every = {key for key, pattern in logs.COMPILED.items() if pattern.search(text.lower())}
+    assert every <= logs.classify(logs.Event(now, "sssd", text)).keys, (text, every)
+assert len(expected[0][0]) > 1000 and not any("sssd-online" in keys and "go back" in text for _w, text, keys in got)
 EOF
 
 # Without journal persistence or SSSD log files, the report says what it could not see.
