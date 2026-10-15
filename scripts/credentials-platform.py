@@ -9,15 +9,24 @@ here prints key material, password hashes, PINs, or configuration values that ma
 import importlib.util
 import os
 import re
-import shutil
 import struct
-import subprocess
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location("credentials_inspect", Path(__file__).with_name("credentials-inspect.py"))
 inspector = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(inspector)
-shown, allows, EVERYONE = inspector.shown, inspector.allows, inspector.EVERYONE
+shown, EVERYONE = inspector.shown, inspector.EVERYONE
+probe, probe_failure = inspector.probe, inspector.probe_failure
+
+def access(root, path, identity, want, problem, question):
+    """The access finding for path: problem as a warning when mode bits deny it and no ACL exists, a not checked
+    result naming question when an ACL or unreadable metadata leaves it open, and nothing when access works."""
+    checked = inspector.access_check(root, path, path.stat(), identity, want)
+    if not checked:
+        return []
+    level, _blocked, doubt = checked
+    return [("warning", problem)] if level == "warning" else [(level, f"whether {question}: {doubt}")]
+
 
 # --- Packages -------------------------------------------------------------------------------------------------
 
@@ -162,18 +171,54 @@ def fold_capability_set(values):
     return state
 
 
-def hardening(root, live):
-    """(NoNewPrivileges on, bounding set) for sssd.service, from systemd itself on a live system."""
-    if live:
-        result = run(["systemctl", "show", "-p", "NoNewPrivileges", "-p", "CapabilityBoundingSet", "sssd.service"])
-        if result is not None and result.returncode == 0:
-            props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-            if "CapabilityBoundingSet" in props:
-                return (props.get("NoNewPrivileges") == "yes",
-                        {name.lower() for name in props["CapabilityBoundingSet"].split()})
-    no_new = [v for v, _ in inspector.unit_values(root, "sssd.service", "NoNewPrivileges")]
-    bounding = [v for v, _ in inspector.unit_values(root, "sssd.service", "CapabilityBoundingSet")]
-    return bool(no_new) and no_new[-1].lower() in inspector.TRUE, fold_capability_set(bounding)
+HARDENING = ("NoNewPrivileges", "CapabilityBoundingSet", "ProtectSystem", "ReadWritePaths", "ReadOnlyPaths",
+             "InaccessiblePaths", "StateDirectory", "LogsDirectory", "RuntimeDirectory")
+# What SSSD must write, and what it must be able to see at all.
+SSSD_WRITES = ("/var/lib/sss", "/var/log/sssd")
+SSSD_READS = ("/etc/sssd", "/etc/krb5.conf", "/etc/krb5.keytab", "/var/lib/sss", "/usr/libexec/sssd")
+
+
+def sandbox_view(props):
+    """How sssd.service's mount sandbox treats a path: 'rw', 'ro', or 'hidden'. The most specific setting wins,
+    as systemd applies deeper mounts last; ProtectSystem=strict makes everything else read-only."""
+    rules = [("/", "ro")] if props["ProtectSystem"].lower() == "strict" else []
+    for key, mode in (("ReadOnlyPaths", "ro"), ("ReadWritePaths", "rw"), ("InaccessiblePaths", "hidden")):
+        rules += [("/" + path.lstrip("-+").strip("/"), mode) for path in props[key]]
+    for key, base in (("StateDirectory", "/var/lib"), ("LogsDirectory", "/var/log"), ("RuntimeDirectory", "/run")):
+        rules += [(f"{base}/{name.split(':')[0].strip('/')}", "rw") for name in props[key]]
+
+    def view(path):
+        covering = [(len(prefix), mode) for prefix, mode in rules
+                    if path == prefix or path.startswith(prefix.rstrip("/") + "/")]
+        return max(covering)[1] if covering else "rw"
+    return view
+
+
+def hardening_findings(root, live, not_checked, helpers=True):
+    """NoNewPrivileges, the capability bounding set, and the mount sandbox of sssd.service, from systemd itself
+    on a live system and otherwise from the unit files. The first two matter only when helpers need capabilities."""
+    props, failure = inspector.unit_properties(root, HARDENING, live)
+    findings = [("failed", f"{failure}; the unit files were read instead")] if failure else []
+    if not live or failure:
+        not_checked.append("sssd.service sandbox and capabilities as systemd applies them (read from unit files, "
+                           "an approximation)")
+    if helpers and props["NoNewPrivileges"].lower() in inspector.TRUE:
+        findings.append(("warning", "sssd.service sets NoNewPrivileges, so the helpers' file capabilities are "
+                         "ignored and krb5_child cannot read the keytab or switch users"))
+    missing = {CAPS[c] for caps in HELPERS.values() for c in caps} - fold_capability_set(
+        props["CapabilityBoundingSet"])
+    if helpers and missing:
+        findings.append(("warning", f"sssd.service's CapabilityBoundingSet removes {', '.join(sorted(missing))}, "
+                         "which the helpers need"))
+    view = sandbox_view(props)
+    for path in SSSD_READS:
+        if view(path) == "hidden":
+            findings.append(("warning", f"sssd.service's InaccessiblePaths hides {path} from SSSD"))
+    for path in SSSD_WRITES:
+        if view(path) == "ro":
+            findings.append(("warning", f"sssd.service's sandbox makes {path} read-only, so SSSD cannot update it; "
+                             "add it to ReadWritePaths in the drop-in that restricts it"))
+    return findings
 
 
 def service_findings(root, identity, accounts, live):
@@ -189,17 +234,11 @@ def service_findings(root, identity, accounts, live):
         findings.append(("info", "responder services run as a different user than sssd.service: "
                          + ", ".join(f"{u} as {n}" for u, n in sorted(differing.items()))))
     if identity and not identity.root:
-        no_new, allowed = hardening(root, live)
-        if no_new:
-            findings.append(("warning", "sssd.service sets NoNewPrivileges, so the helpers' file capabilities are "
-                             "ignored and krb5_child cannot read the keytab or switch users"))
-        missing = {CAPS[c] for caps in HELPERS.values() for c in caps} - allowed
-        if missing:
-            findings.append(("warning", f"sssd.service's CapabilityBoundingSet removes {', '.join(sorted(missing))}, "
-                             "which the helpers need"))
+        findings += hardening_findings(root, live, not_checked)
         findings += helper_findings(root, identity, accounts, not_checked)
     elif identity:
         findings.append(("info", "SSSD runs as root, so helper capabilities are not needed"))
+        findings += hardening_findings(root, live, not_checked, helpers=False)
     else:
         not_checked.append("helper ownership and capabilities (the SSSD service user is unknown)")
     if live:
@@ -226,8 +265,13 @@ def helper_findings(root, identity, accounts, not_checked):
             findings.append(("warning", f"{shown(root, path)} is {inspector.owner_name(accounts, st.st_uid, st.st_gid)}"
                              f" {mode:04o}; the package installs it as root:{inspector.SSSD_ACCOUNT} 0750. "
                              "Reinstall sssd-common and sssd-krb5-common rather than changing it by hand"))
-        elif not allows(st, identity, 1):
-            findings.append(("warning", f"the SSSD service user {identity.name} cannot run {shown(root, path)}"))
+        else:
+            checked = inspector.access_check(root, path, st, identity, 1)
+            if checked and checked[0] == "warning":
+                findings.append(("warning", f"the SSSD service user {identity.name} cannot run {shown(root, path)}"))
+            elif checked:
+                findings.append((checked[0], f"whether the SSSD service user {identity.name} can run "
+                                 f"{shown(root, path)}: {checked[2]}"))
         caps = file_capabilities(path)
         if caps == "unknown":
             not_checked.append(f"file capabilities of {shown(root, path)}")
@@ -240,17 +284,13 @@ def helper_findings(root, identity, accounts, not_checked):
     return findings
 
 
-def run(command):
-    if not shutil.which(command[0]):
-        return None
-    return subprocess.run(command, capture_output=True, text=True, check=False)
-
-
 def runtime_findings(not_checked):
     findings = []
-    result = run(["systemctl", "show", "-p", "Id,ActiveState,SubState,UnitFileState,User,DropInPaths", *UNITS])
+    result = probe(["systemctl", "show", "-p", "Id,ActiveState,SubState,UnitFileState,User,DropInPaths", *UNITS])
     if result is None:
         not_checked.append("systemd unit state (no systemctl)")
+    elif result.returncode != 0:
+        findings.append(("failed", f"{probe_failure('systemctl show', result)}; unit state unknown"))
     else:
         for block in result.stdout.strip().split("\n\n"):
             props = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
@@ -261,12 +301,16 @@ def runtime_findings(not_checked):
             extra = f", drop-ins {props['DropInPaths']}" if props.get("DropInPaths") else ""
             level = "warning" if props.get("ActiveState") == "failed" else "info"
             findings.append((level, f"{unit}: {state}, user {props.get('User') or 'root'}{extra}"))
-    result = run(["sssd", "--version"])
-    if result is not None:
-        findings.append(("info", f"sssd --version: {result.stdout.strip() or result.stderr.strip()}"))
-    result = run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
+    result = probe(["sssd", "--version"])
+    if result is not None and result.returncode != 0:
+        findings.append(("failed", probe_failure("sssd --version", result)))
+    elif result is not None:
+        findings.append(("info", f"sssd --version: {result.stdout.strip()}"))
+    result = probe(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
     if result is None:
         not_checked.append("NTP sync (no timedatectl)")
+    elif result.returncode != 0:
+        findings.append(("failed", f"{probe_failure('timedatectl show', result)}; NTP sync unknown"))
     elif result.stdout.strip() == "no":
         findings.append(("warning", "the clock is not NTP-synchronized; Kerberos fails beyond 5 minutes of skew"))
     try:
@@ -309,10 +353,15 @@ def state_findings(root, identity):
         if private and st.st_mode & 0o007:
             findings.append(("warning", f"/{rel} is open to other users but {why}; remove their access with "
                              f"chmod o= /{rel}, not a recursive chmod"))
-        if reach == "everyone" and not allows(st, EVERYONE, 1):
-            findings.append(("warning", f"ordinary users cannot enter /{rel}, the {why}"))
-        if identity and not identity.root and not allows(st, identity, 7):
+        if reach == "everyone":
+            findings += access(root, path, EVERYONE, 1, f"ordinary users cannot enter /{rel}, the {why}",
+                               f"ordinary users can enter /{rel}")
+        checked = inspector.access_check(root, path, st, identity, 7) if identity and not identity.root else None
+        if checked and checked[0] == "warning":
             findings.append(("warning", f"the SSSD service user {identity.name} cannot write to /{rel} ({why})"))
+        elif checked:
+            findings.append((checked[0], f"whether the SSSD service user {identity.name} can write to /{rel}: "
+                             f"{checked[2]}"))
     return findings
 
 
@@ -413,8 +462,9 @@ def ccache_findings(root, config, domains, live):
         if not path.is_dir():
             findings.append(("warning", f"tickets go to {template} ({origin}) but {parent} does not exist, and SSSD "
                              "2.11+ no longer creates it"))
-        elif not allows(path.stat(), EVERYONE, 3):
-            findings.append(("warning", f"users cannot create ticket caches in {parent} ({origin})"))
+        else:
+            findings += access(root, path, EVERYONE, 3, f"users cannot create ticket caches in {parent} ({origin})",
+                               f"users can create ticket caches in {parent}")
     weak, weak_source = krb5_relation(root, "allow_weak_crypto")
     if weak and weak.lower() in inspector.TRUE:
         findings.append(("info", f"allow_weak_crypto is on in {weak_source}; prefer AES keys over re-enabling "
@@ -539,11 +589,14 @@ def smartcard_findings(root, config, identity, packages):
     path = root / ca_db.lstrip("/")
     if not path.is_file():
         findings.append(("warning", f"pam_cert_auth is on but the CA bundle {ca_db} is missing"))
-    elif identity and not allows(path.stat(), identity, 4):
-        findings.append(("warning", f"the SSSD service user {identity.name} cannot read the CA bundle {ca_db}"))
+    elif identity:
+        findings += access(root, path, identity, 4, f"the SSSD service user {identity.name} cannot read the CA "
+                           f"bundle {ca_db}", f"the SSSD service user {identity.name} can read {ca_db}")
     for module in sorted((root / "etc/pkcs11/modules").glob("*.module")):
-        if identity and not allows(module.stat(), identity, 4):
-            findings.append(("warning", f"the SSSD service user {identity.name} cannot read {shown(root, module)}"))
+        if identity:
+            findings += access(root, module, identity, 4, f"the SSSD service user {identity.name} cannot read "
+                               f"{shown(root, module)}", f"the SSSD service user {identity.name} can read "
+                               f"{shown(root, module)}")
         target = re.search(r"^module:\s*(\S+)", module.read_text(errors="replace"), re.M)
         if target and target.group(1).startswith("/") and not (root / target.group(1).lstrip("/")).exists():
             findings.append(("warning", f"{shown(root, module)} points at {target.group(1)}, which is missing"))

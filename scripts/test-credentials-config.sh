@@ -109,6 +109,33 @@ assessment_line() { grep -n "$1" "$test_dir/out" | head -1 | cut -d: -f1; }
 accounts "$me"
 logs
 check '^warning: cause: cache_credentials is off for corp.example'
+
+# Uncertainty is reported, never turned into a cause: an unreadable snippet may hold the setting SSSD applies.
+ln -s 60-loop.conf "$root/etc/sssd/conf.d/60-loop.conf"
+status
+check '^not checked: /etc/sssd/conf.d/60-loop.conf cannot be read'
+refute '^ok: configuration files have an owner'
+logs
+check '^not checked: /etc/sssd/conf.d/60-loop.conf cannot be read'
+check '^possible cause: cache_credentials is off for corp.example.*not confirmed'
+refute '^warning: cause'
+rm "$root/etc/sssd/conf.d/60-loop.conf"
+
+# A failed probe keeps its exit status and a sanitized reason, and is not a verdict on the configuration.
+cp "$stubs/sssctl" "$test_dir/sssctl.ok"
+printf '#!/usr/bin/env bash\necho "sssctl: cannot read ldap_default_authtok = ProbeSecret" >&2\nexit 3\n' > "$stubs/sssctl"
+logs
+check '^check failed: sssctl config-check exited 3: sssctl: cannot read ldap_default_authtok = <hidden>; the configuration was not validated'
+check '^possible cause: cache_credentials is off for corp.example'
+refute 'SSSD configuration is invalid'
+refute 'ProbeSecret'
+cp "$test_dir/sssctl.ok" "$stubs/sssctl"
+cp "$stubs/journalctl" "$test_dir/journalctl.ok"
+printf '#!/usr/bin/env bash\necho "Failed to open journal: Permission denied" >&2\nexit 1\n' > "$stubs/journalctl"
+logs
+check '^check failed: journalctl exited 1: Failed to open journal: Permission denied (reading -u sssd\*); entries'
+check '^check failed: journalctl --list-boots exited 1'
+cp "$test_dir/journalctl.ok" "$stubs/journalctl"
 printf 'cache_credentials = True\n' >> "$root/etc/sssd/conf.d/50-cache.conf"
 
 # The service user must be able to enter the directories and read the files; root can always.
@@ -127,6 +154,90 @@ check 'service user: root (from /etc/systemd/system/sssd.service.d/root.conf)'
 refute 'cannot read /etc/sssd/sssd.conf'
 rm -r "$root/etc/systemd/system/sssd.service.d"
 chmod 640 "$root/etc/sssd/sssd.conf"
+
+# Group= replaces the primary group and SupplementaryGroups= adds groups, with an empty value resetting the list.
+# /etc/sssd is opened for search here so the file itself, not its directory, decides.
+dropin="$root/etc/systemd/system/sssd.service.d"
+mkdir -p "$dropin"
+chmod 751 "$root/etc/sssd"
+printf '[Service]\nGroup=root\n' > "$dropin/10-group.conf"
+status
+check 'service groups: root (from unit files and the account database; an approximation'
+check '^warning: the SSSD service user sssd cannot read /etc/sssd/sssd.conf (root:sssd 0640)'
+printf '[Service]\nSupplementaryGroups=sssd\n' > "$dropin/20-extra.conf"
+status
+check 'service groups: root, sssd ('
+refute 'cannot read /etc/sssd/sssd.conf'
+printf '[Service]\nSupplementaryGroups=\n' > "$dropin/30-reset.conf"
+status
+check '^warning: the SSSD service user sssd cannot read /etc/sssd/sssd.conf'
+
+# An ACL may grant what mode bits deny, so effective access is reported as not checked rather than denied.
+if python3 - "$root/etc/sssd/sssd.conf" "$((me + 1))" <<'PY' 2>/dev/null
+import os, struct, sys
+# POSIX ACL xattr: version 2, then (tag, perm, id) for user::rw-, user:SERVICE:r--, group::r--, mask::r--, other::---.
+entries = [(0x01, 6, 0xFFFFFFFF), (0x02, 4, int(sys.argv[2])), (0x04, 4, 0xFFFFFFFF), (0x10, 4, 0xFFFFFFFF),
+           (0x20, 0, 0xFFFFFFFF)]
+os.setxattr(sys.argv[1], "system.posix_acl_access",
+            struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries))
+PY
+then
+    status
+    check '^not checked: whether the SSSD service user sssd can read /etc/sssd/sssd.conf (root:sssd 0640): mode bits deny it, but an ACL is present'
+    refute '^warning: the SSSD service user sssd cannot read /etc/sssd/sssd.conf'
+    logs
+    check '^not checked: whether the SSSD service user sssd can read /etc/sssd/sssd.conf'
+    refute 'invalid: .*cannot read /etc/sssd/sssd.conf'
+    python3 -c 'import os, sys; os.removexattr(sys.argv[1], "system.posix_acl_access")' "$root/etc/sssd/sssd.conf"
+    chmod 640 "$root/etc/sssd/sssd.conf"
+else
+    echo 'Skipping the ACL case: this filesystem does not accept POSIX ACLs.'
+fi
+rm "$dropin"/*.conf
+chmod 750 "$root/etc/sssd"
+
+# Numeric identities resolve through the account database; an unknown one leaves access unchecked.
+printf '[Service]\nUser=%s\nGroup=%s\n' "$((me + 1))" "$my_group" > "$dropin/10-numeric.conf"
+status
+check 'service user: sssd (from /etc/systemd/system/sssd.service.d/10-numeric.conf)'
+check 'service groups: sssd ('
+refute 'cannot read /etc/sssd/sssd.conf'
+printf '[Service]\nUser=nosuchuser\n' > "$dropin/10-numeric.conf"
+status
+check '^not checked: cannot resolve the SSSD service user or its groups (User=nosuchuser'
+check 'helper ownership and capabilities (the SSSD service user is unknown)'
+refute '^ok: configuration files have an owner'
+refute 'cannot read /etc/sssd/sssd.conf'
+logs
+refute 'SSSD configuration is invalid'
+rm -r "$dropin"
+
+# On a live system the credentials come from systemctl show; when it fails, the failure is kept and the unit
+# files are read instead.
+python3 - "$repo_root/scripts/credentials-inspect.py" "$root" "$stubs" "$((me + 1))" <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("credentials_inspect", sys.argv[1])
+inspector = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inspector)
+root, stubs, uid = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+accounts = inspector.read_accounts(root)
+os.environ["PATH"] = f"{stubs}:{os.environ['PATH']}"
+systemctl = stubs / "systemctl"
+systemctl.write_text(f"#!/usr/bin/env bash\nprintf 'User={uid}\\nGroup=\\nSupplementaryGroups=root\\n'\n")
+systemctl.chmod(0o755)
+identity, source, notes = inspector.service_identity(root, accounts, live=True)
+assert (identity.name, identity.effective, source, notes) == ("sssd", True, "systemctl show sssd.service", []), \
+    (identity, source, notes)
+assert identity.gids == (accounts[1]["sssd"][0], accounts[1]["root"][0]), identity
+systemctl.write_text("#!/usr/bin/env bash\necho 'Failed to connect to bus: No such file or directory' >&2\nexit 1\n")
+identity, source, notes = inspector.service_identity(root, accounts, live=True)
+assert notes == [("failed", "systemctl show sssd.service exited 1: Failed to connect to bus: No such file or "
+                  "directory")], notes
+assert (identity.name, identity.effective, source) == ("sssd", False, "/usr/lib/systemd/system/sssd.service"), \
+    (identity, source)
+systemctl.unlink()
+PY
 
 # The [sssd] user option was removed in 2.11: it is reported as stale and does not change the service user.
 cp -p "$root/etc/sssd/sssd.conf" "$root/etc/sssd/sssd.conf.bak"

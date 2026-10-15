@@ -184,6 +184,55 @@ refute 'CapabilityBoundingSet removes'
 printf '[Service]\nCapabilityBoundingSet=\n' > "$root/etc/systemd/system/sssd.service.d/more.conf"
 status
 check "^warning: sssd.service's CapabilityBoundingSet removes cap_dac_read_search, cap_setgid, cap_setuid"
+# The mount sandbox: ProtectSystem=strict makes the cache read-only unless a writable path or StateDirectory
+# reopens it, the most specific setting wins, and InaccessiblePaths can hide the keytab.
+printf '[Service]\nProtectSystem=strict\n' > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
+status
+check "^warning: sssd.service's sandbox makes /var/lib/sss read-only, so SSSD cannot update it"
+check "^warning: sssd.service's sandbox makes /var/log/sssd read-only"
+printf '[Service]\nProtectSystem=strict\nStateDirectory=sss\nReadWritePaths=-/var/log/sssd\n' \
+    > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
+status
+refute 'read-only, so SSSD'
+printf '[Service]\nReadWritePaths=/var\nReadOnlyPaths=/var/lib/sss\nInaccessiblePaths=-/etc/krb5.keytab\n' \
+    > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
+status
+check "^warning: sssd.service's sandbox makes /var/lib/sss read-only"
+refute "makes /var/log/sssd read-only"
+check "^warning: sssd.service's InaccessiblePaths hides /etc/krb5.keytab from SSSD"
+check 'sssd.service sandbox and capabilities as systemd applies them (read from unit files, an approximation)'
+rm "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
+
+# On a live system these come from systemctl show; a failed call is reported and the unit files are read.
+python3 - "$repo_root/scripts/credentials-platform.py" "$root" "$stubs" <<'EOF'
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("credentials_platform", sys.argv[1])
+platform = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(platform)
+root, stubs = Path(sys.argv[2]), Path(sys.argv[3])
+os.environ["PATH"] = f"{stubs}:{os.environ['PATH']}"
+systemctl = stubs / "systemctl"
+systemctl.write_text("#!/usr/bin/env bash\nprintf 'NoNewPrivileges=no\\nCapabilityBoundingSet=cap_dac_read_search "
+                     "cap_setuid\\nProtectSystem=strict\\nReadWritePaths=/var/log/sssd\\nStateDirectory=\\n'\n")
+systemctl.chmod(0o755)
+not_checked = []
+found = platform.hardening_findings(root, True, not_checked)
+assert ("warning", "sssd.service's CapabilityBoundingSet removes cap_setgid, which the helpers need") in found, found
+assert any("makes /var/lib/sss read-only" in message for _level, message in found), found
+assert not any("/var/log/sssd" in message for _level, message in found), found
+assert not_checked == [], not_checked
+systemctl.write_text("#!/usr/bin/env bash\necho 'Access denied' >&2\nexit 4\n")
+not_checked = []
+found = platform.hardening_findings(root, True, not_checked)
+# The fallback still sees the empty CapabilityBoundingSet= drop-in from the case above.
+assert found[0] == ("failed", "systemctl show sssd.service exited 4: Access denied; the unit files were read "
+                    "instead"), found
+assert "CapabilityBoundingSet removes cap_dac_read_search" in found[1][1], found
+assert len(not_checked) == 1 and "approximation" in not_checked[0], not_checked
+systemctl.unlink()
+EOF
+
 rm -r "$root/etc/systemd/system/sssd.service.d" "$root/usr/lib/systemd/system/sssd-nss.service"
 
 # State directories: private ones stay private, public ones stay reachable, and the service user can write.

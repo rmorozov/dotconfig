@@ -23,6 +23,8 @@ EOF
 chmod 600 "$root/etc/sssd/sssd.conf"
 printf 'auth [success=2 default=ignore] pam_unix.so nullok\nauth [success=1 default=ignore] pam_sss.so use_first_pass\nauth requisite pam_deny.so\n' \
     > "$root/etc/pam.d/common-auth"
+printf 'account [default=bad success=ok user_unknown=ignore] pam_sss.so\n' > "$root/etc/pam.d/common-account"
+printf '@include common-auth\n@include common-account\n' > "$root/etc/pam.d/gdm-password"
 
 # Two boots: in each, login fails before the VPN; in the second, SSSD stays unreachable after it connects.
 python3 - "$root" "$journal" <<'EOF'
@@ -111,7 +113,7 @@ printf 'cache_credentials = True\n' >> "$root/etc/sssd/sssd.conf"
 printf 'auth sufficient pam_krb5.so minimum_uid=1000\n' | cat - "$root/etc/pam.d/common-auth" > "$test_dir/pam"
 cp "$test_dir/pam" "$root/etc/pam.d/common-auth"
 bash "$repo_root/scripts/credentials.sh" check-logs --examples 2 > "$test_dir/out" 2>&1
-check '^warning: cause: pam_krb5 succeeds before pam_sss and skips it'
+check '^warning: cause: in gdm-password, pam_krb5 succeeds before pam_sss and skips it'
 refute 'cause: cache_credentials'
 [[ "$(grep -c 'e.g. .*received for user' "$test_dir/out")" == 2 ]] || { cat "$test_dir/out" >&2; exit 1; }
 
@@ -162,7 +164,7 @@ python3 "$test_dir/journal.py" "$journal" -180,-177 \
     "auth|-175|gdm-password]|$unavailable"
 bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
 check '^warning: Domain login failed: SSSD could not check the password (once'
-check '^info: no online login through pam_sss is logged in this window, though a password cached earlier may still exist'
+check '^info: 1 failed offline login: alice@corp.example via gdm-password, which no setting above explains. No online login through pam_sss is logged in this window, though a password cached earlier may still exist'
 refute 'after the VPN connected'
 refute 'boot(s) with a VPN connection'
 refute '^warning: cause'
@@ -209,6 +211,42 @@ for text in ('Unknown option ldap_default_authtok = "two word secret"', "Unknown
     shown = logs.example(logs.Event(when, "sssd", text))
     assert shown.split("=", 1)[1].strip() == "<hidden>", shown
 EOF
+
+# Causes are scoped: each failure is explained only by its own domain's cache setting and its own PAM service's
+# stack. A short name with two domains and a service without a PAM file leave only a hypothesis.
+cp "$root/etc/sssd/sssd.conf" "$test_dir/sssd.conf"
+cat > "$root/etc/sssd/sssd.conf" <<'EOF'
+[sssd]
+domains = corp.example, lab.example
+services = nss, pam
+
+[domain/corp.example]
+id_provider = ad
+cache_credentials = True
+
+[domain/lab.example]
+id_provider = ad
+cache_credentials = False
+EOF
+printf 'auth sufficient pam_krb5.so minimum_uid=1000\n@include common-auth\n@include common-account\n' \
+    > "$root/etc/pam.d/sshd"
+failed() { echo "pam_sss($1:auth): received for user $2: 9 (Authentication service cannot retrieve authentication info)"; }
+offline='sssd_be|Failed to resolve server dc1.corp.example: Timeout'
+python3 "$test_dir/journal.py" "$journal" -60 \
+    "sssd|-51|$offline" "auth|-50|gdm-password]|$(failed gdm-password bob@lab.example)" \
+    "sssd|-41|$offline" "auth|-40|sshd|$(failed sshd alice@corp.example)" \
+    "sssd|-31|$offline" "auth|-30|gdm-password]|$(failed gdm-password alice@corp.example)" \
+    "sssd|-21|$offline" "auth|-20|su|$(failed su carol)"
+bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
+check '^warning: cause: cache_credentials is off for lab.example, .*(1 failed offline login: bob@lab.example via gdm-password)'
+check '^warning: cause: in sshd, pam_krb5 succeeds before pam_sss and skips it, .*(1 failed offline login: alice@corp.example via sshd)'
+check '^possible cause: 1 failed offline login: carol via su. The domain and PAM stack of these logins cannot be determined, so the configuration to blame is a hypothesis: cache_credentials is off for lab.example; pam_krb5 skips pam_sss in sshd'
+refute 'cause: .*alice@corp.example via gdm-password'
+refute 'cause: cache_credentials.*alice'
+refute 'cause: in sshd.*bob'
+refute 'cause: in gdm-password'
+cp "$test_dir/sssd.conf" "$root/etc/sssd/sssd.conf"
+rm "$root/etc/pam.d/sshd"
 
 # Without journal persistence or SSSD log files, the report says what it could not see.
 rmdir "$root/var/log/journal"

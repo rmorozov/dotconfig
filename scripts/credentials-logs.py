@@ -24,9 +24,7 @@ _spec.loader.exec_module(platform)
 
 LEVELS = ("warning", "info", "ok")
 UTC = datetime.timezone.utc
-# Kerberos and SSSD never log passwords, but a debug line may quote a config value. A value may be quoted or
-# contain spaces, so examples hide the rest of the line after any sensitive assignment.
-PRIVATE_VALUE = re.compile(r"(\b\w*(?:authtok|password|passwd|secret)\w*\s*=\s*)\S.*$", re.I)
+PRIVATE_VALUE = inspector.PRIVATE_VALUE
 
 
 @dataclass
@@ -119,7 +117,7 @@ RULES = {
     "krb5-login": Rule(
         "info", "pam_krb5 accepted domain passwords",
         "pam_krb5 checked these passwords itself; if its success skips pam_sss, SSSD never sees the password",
-        r"pam_krb5\([^)]*\): authentication succeeds"),
+        r"pam_krb5\([^):]*:auth\): authentication succeeds"),
     "krb5-pam-failure": Rule(
         "info", "pam_krb5 rejected a login", "usually the KDC being unreachable before the VPN is up",
         r"pam_krb5\([^)]*\): authentication failure"),
@@ -137,7 +135,7 @@ RULES = {
     "sss-login": Rule(
         "ok", "SSSD accepted domain logins",
         "pam_sss saw these passwords, so SSSD can cache them when cache_credentials is on",
-        r"pam_sss\([^)]*\): authentication success"),
+        r"pam_sss\([^):]*:auth\): authentication success"),
     "apparmor-denied": Rule(
         "warning", "AppArmor denied an SSSD or Kerberos process",
         "confinement, not account policy, refused the operation; add a rule under /etc/apparmor.d/local/ for "
@@ -151,7 +149,8 @@ RULES = {
         r"ccache.*no such file or directory|krb5_cc_(initialize|resolve|store_cred)\S*.*fail"),
     "home-failure": Rule(
         "warning", "The login session could not set up the home directory",
-        "the password was accepted; the session stage failed, so this is not a cached-password problem",
+        "the session stage failed; it also runs for logins without a password (SSH keys), so this neither "
+        "shows that a password was accepted nor implicates the cache",
         r"pam_mkhomedir.*(unable|fail|error|cannot)|unable to create and initiali[sz]e directory|"
         r"could not chdir to home directory|no directory, logging in with home"),
     "enctype": Rule(
@@ -173,17 +172,20 @@ RULES = {
         r"verification failed)|\bocsp\b.*(fail|error)|pcsc.*(fail|error)|pkcs#?11.*(fail|error)"),
     "pam-account": Rule(
         "warning", "A domain account was refused at the account (access) stage",
-        "the password was fine but an access rule refused the login; sudo sssctl user-checks -a acct -s "
-        "gdm-password USER shows the decision"),
+        "an access rule refused the login. This stage also runs without a password check (SSH keys), so it "
+        "says nothing about the password; sudo sssctl user-checks -a acct -s SERVICE USER shows the decision"),
     "pam-session": Rule(
         "warning", "A domain login failed at the session stage",
-        "authentication and access passed; session setup (home directory, limits) failed"),
+        "session setup (home directory, limits) failed; this stage does not show that a password was checked"),
     "cached-login": Rule(
         "ok", "Logins succeeded from cached credentials", "offline login worked for these attempts",
         r"authenticated with cached credentials|offline authentication succeeded"),
 }
 COMPILED = {key: re.compile(rule.pattern, re.I) for key, rule in RULES.items() if rule.pattern}
-PAM_RESULT = re.compile(r"pam_sss\([^:)]*:?(\w*)\): received for user (\S+): (\d+) \(([^)]*)\)")
+PAM_RESULT = re.compile(r"pam_sss\(([^:)]*):?(\w*)\): received for user (\S+): (\d+) \(([^)]*)\)")
+BACKEND = re.compile(r"\[be\[([^\]]+)\]\]")
+RESPONDERS = {"sssd", "sssd_nss", "sssd_pam", "sssd_be", "sssd_sudo", "sssd_ssh", "sssd_pac", "sssd_ifp", "sssd_kcm",
+              "sssd_autofs", "sssd_secrets"}
 APPARMOR = re.compile(r'apparmor="DENIED"')
 APPARMOR_FIELDS = re.compile(r'(operation|profile|name|comm|requested_mask)="([^"]*)"')
 SSSD_PROCESS = re.compile(r"sssd|krb5_child|ldap_child|p11_child|selinux_child|gpo_child|proxy_child", re.I)
@@ -204,7 +206,7 @@ class Event:
 def classify(event):
     result = PAM_RESULT.search(event.text)
     if result:
-        stage, code = result.group(1), int(result.group(3))
+        stage, code = result.group(2), int(result.group(4))
         if stage in ("account", "session") and code:
             event.keys.add(f"pam-{stage}")
         else:
@@ -238,11 +240,13 @@ def read_journal(root, since):
     if not journalctl:
         return None
     base = [journalctl, "--no-pager"] + ([] if root == Path("/") else [f"--root={root}"])
-    events, seen = [], set()
+    events, seen, failures = [], set(), []
     auth_entries = 0
     for selector in JOURNAL_SELECTORS:
         command = base + ["-o", "json", "--since", f"@{int(since.timestamp())}"] + selector
         result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            failures.append(f"{inspector.probe_failure('journalctl', result)} (reading {' '.join(selector)})")
         for line in result.stdout.splitlines():
             try:
                 entry = json.loads(line)
@@ -265,12 +269,15 @@ def read_journal(root, since):
             events.append(Event(when, source, text))
     boots = []
     result = subprocess.run(base + ["--list-boots", "-o", "json"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        failures.append(f"{inspector.probe_failure('journalctl --list-boots', result)}; logins are not grouped "
+                        "by boot")
     try:
         for boot in json.loads(result.stdout or "[]"):
             boots.append(datetime.datetime.fromtimestamp(int(boot["first_entry"]) / 1e6, UTC))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         boots = []
-    return events, sorted(boots), auth_entries
+    return events, sorted(boots), auth_entries, failures
 
 
 def open_log(path):
@@ -361,7 +368,8 @@ def read_auth_log(root, since):
 # --- Configuration facts --------------------------------------------------------------------------------------
 
 def sssctl_check(root):
-    """Ask the installed SSSD to validate its configuration: (issues, exit code), or None without sssctl."""
+    """Ask the installed SSSD to validate its configuration: (issues, exit code, output), or None without sssctl.
+    A nonzero exit with no issues listed is a failed check, not a verdict on the configuration."""
     sssctl = shutil.which("sssctl")
     if not sssctl:
         return None
@@ -376,7 +384,7 @@ def sssctl_check(root):
             issues.append(PRIVATE_VALUE.sub(r"\1<hidden>", line.strip()))
         elif collecting and not line.strip():
             collecting = False
-    return issues, result.returncode
+    return issues, result.returncode, result
 
 
 def domains_of(config):
@@ -384,17 +392,35 @@ def domains_of(config):
     return domains or [s.split("/", 1)[1] for s in config.sections() if s.startswith("domain/")]
 
 
+def pam_service_stack(root, service):
+    """(bypass, has pam_sss) for a PAM service's auth stack, or None when the stack is unknown. PAM falls back to
+    /etc/pam.d/other for a service without its own file."""
+    name = service if (root / "etc/pam.d" / service).is_file() else "other"
+    if not (root / "etc/pam.d" / name).is_file():
+        return None
+    stack = [inspector.parse_pam_line(line) for line in inspector.pam_auth_lines(root, name)]
+    modules = [module for _control, module in stack]
+    if "pam_sss" not in modules:
+        return False, False
+    sss = modules.index("pam_sss")
+    krb5 = modules.index("pam_krb5") if "pam_krb5" in modules[:sss] else None
+    return krb5 is not None and inspector.success_skips(stack[krb5][0], krb5, sss), True
+
+
 def config_facts(root):
-    """What the configuration says, and whether SSSD would accept it: valid, invalid, unknown, or absent."""
+    """What the configuration says, and whether SSSD would accept it: valid, invalid, unknown, or absent.
+    doubts are (level, message) results that leave the configuration's effect uncertain: an unreadable file or a
+    failed probe. They turn configuration-based causes into hypotheses."""
     facts = {"state": "unknown", "reasons": [], "confirmed": False, "kerberos": [], "present": False,
-             "platform": [], "not_checked": [], "accounts": inspector.read_accounts(root),
-             "domains": [], "cache_off": [], "pam_bypass": False, "pam_sss": True}
+             "platform": [], "not_checked": [], "accounts": inspector.read_accounts(root), "doubts": [],
+             "domains": [], "cache_off": [], "pam_bypass": False, "pam_sss": True, "root": root}
     config = identity = accounts = None
     try:
         config, files, identity, _source, accounts, findings = inspector.check_config(root)
-        facts["present"] = bool(files)
-        facts["state"] = "valid" if files else "absent"
+        facts["present"] = bool(files) or bool(config.unreadable)
+        facts["state"] = "valid" if facts["present"] else "absent"
         facts["reasons"] = [message for level, message in findings if level == "warning"]
+        facts["doubts"] = [(level, message) for level, message in findings if level in inspector.DOUBTS]
         if facts["reasons"]:
             facts["state"] = "invalid"
     except configparser.Error as exc:
@@ -406,11 +432,14 @@ def config_facts(root):
     if facts["present"]:
         checked = sssctl_check(root)
         if checked is not None:
-            issues, code = checked
-            if issues or code != 0:
+            issues, code, result = checked
+            if issues:
                 facts["state"] = "invalid"
-                facts["reasons"].append(f"sssctl config-check reported {len(issues) or 'a'} problem(s)"
-                                        + (": " + "; ".join(issues[:3]) if issues else f" (exit {code})"))
+                facts["reasons"].append(f"sssctl config-check reported {len(issues)} problem(s): "
+                                        + "; ".join(issues[:3]))
+            elif code != 0:
+                facts["doubts"].append(("failed", f"{inspector.probe_failure('sssctl config-check', result)}; "
+                                        "the configuration was not validated"))
             elif facts["state"] == "valid":
                 facts["confirmed"] = True
     if config is not None:
@@ -428,22 +457,20 @@ def config_facts(root):
     try:
         facts["kerberos"] = inspector.kerberos_findings(root, identity, accounts)
     except OSError as exc:
-        facts["kerberos"] = [("info", f"Kerberos files could not be checked ({exc.strerror or exc})")]
+        facts["kerberos"] = [("unchecked", f"Kerberos files ({exc.strerror or exc})")]
     if config is not None and facts["state"] == "valid":
         domains = facts["domains"] = domains_of(config)
         facts["cache_off"] = [d for d in domains
                               if config.get(f"domain/{d}", "cache_credentials", fallback="false").strip().lower()
                               not in inspector.TRUE]
     try:
-        lines = inspector.pam_auth_lines(root, "gdm-password") or inspector.pam_auth_lines(root, "common-auth")
+        stack = pam_service_stack(root, "gdm-password")
+        if stack is None and (root / "etc/pam.d/common-auth").is_file():
+            stack = pam_service_stack(root, "common-auth")
     except OSError:
         return facts
-    stack = [inspector.parse_pam_line(line) for line in lines]
-    modules = [module for _control, module in stack]
-    if "pam_sss" in modules and "pam_krb5" in modules[:modules.index("pam_sss")]:
-        krb5 = modules.index("pam_krb5")
-        facts["pam_bypass"] = inspector.success_skips(stack[krb5][0], krb5, modules.index("pam_sss"))
-    facts["pam_sss"] = "pam_sss" in modules or not lines
+    if stack is not None:
+        facts["pam_bypass"], facts["pam_sss"] = stack
     return facts
 
 
@@ -557,16 +584,19 @@ def assess_config(facts):
             "run without it, so fix this first; the judgements below do not rely on sssd.conf")
     elif facts["state"] == "unknown":
         judged = True
-        say("info", f"SSSD configuration could not be checked: {'; '.join(facts['reasons'])}. The judgements below "
-            "do not rely on sssd.conf")
+        say("unchecked", f"the SSSD configuration: {'; '.join(facts['reasons'])}. The judgements below do not rely "
+            "on sssd.conf")
     elif facts["confirmed"]:
         say("ok", "sssctl config-check accepts the SSSD configuration")
+    for level, message in facts["doubts"]:
+        judged = True
+        say(level, message)
     for level, message in facts["kerberos"]:
-        if level == "warning":
+        if level in ("warning",) + inspector.DOUBTS:
             judged = True
             say(level, f"Kerberos: {message}")
     for title, level, message in facts["platform"]:
-        if level == "warning" and message not in facts["reasons"]:
+        if level in ("warning", "failed") and message not in facts["reasons"]:
             judged = True
             say(level, f"{title}: {message}")
     return judged
@@ -592,7 +622,7 @@ def assess_name_collisions(found, accounts):
     for events in found.values():
         for event in events:
             result = PAM_RESULT.search(event.text)
-            name = result.group(2) if result else (re.search(r"\buser=(\S+@\S+)", event.text) or [None, None])[1]
+            name = result.group(3) if result else (re.search(r"\buser=(\S+@\S+)", event.text) or [None, None])[1]
             if name and "@" in name:
                 domain_users.add(name)
     clashes = sorted(u for u in domain_users
@@ -603,6 +633,98 @@ def assess_name_collisions(found, accounts):
     return bool(clashes)
 
 
+def failure_context(event, domains):
+    """(user, PAM service, domain) of a failure, each None when the logs do not say. A domain is known from the
+    SSSD backend that logged it, a qualified user name, or a single configured domain, whose trusted subdomains
+    share its settings."""
+    result = PAM_RESULT.search(event.text)
+    user = result.group(3) if result else None
+    service = (result.group(1) or None) if result else None
+    backend = BACKEND.search(event.text)
+    hint = backend.group(1) if backend else None
+    if not hint and event.source.startswith("sssd_") and event.source not in RESPONDERS:
+        hint = event.source[5:]
+    if not hint and user and "@" in user:
+        hint = user.rsplit("@", 1)[1]
+    by_name = {d.lower(): d for d in domains}
+    domain = by_name.get((hint or "").lower())
+    if domain is None and len(domains) == 1:
+        domain = domains[0]
+    return user, service, domain
+
+
+def describe(failures):
+    """'2 failed offline logins: alice@corp.example via gdm-password' with unknown parts left out."""
+    who = sorted({(user or "an unnamed user") + (f" via {service}" if service else "")
+                  for user, service, _event in failures})
+    count = len(failures)
+    return f"{count} failed offline login{'s' if count > 1 else ''}: {', '.join(who)}"
+
+
+def explain_offline(offline, facts, krb5_logins):
+    """Tie each offline failure to the configuration of its own domain and PAM service. A cause is stated only
+    when the failure's context selects it; otherwise the candidate settings are printed as a hypothesis.
+    Returns the failures no configuration explains."""
+    root, domains = facts["root"], facts["domains"]
+    contexts = [(event, *failure_context(event, domains)) for event in offline]
+    # An SSSD-side line without a PAM service duplicates a PAM failure logged within two minutes.
+    with_service = [e.when for e, _u, service, _d in contexts if service]
+    contexts = [c for c in contexts if c[2] or not any(abs((c[0].when - t).total_seconds()) <= 120
+                                                       for t in with_service)]
+    stacks = {}
+
+    def stack_of(service):
+        if service not in stacks:
+            stacks[service] = pam_service_stack(root, service)
+        return stacks[service]
+
+    groups = {}
+    for event, user, service, domain in contexts:
+        groups.setdefault((domain, service), []).append((user, service, event))
+    named = {service for _event, _user, service, _domain in contexts if service}
+    named |= {name for name in platform.PAM_SERVICES if (root / "etc/pam.d" / name).is_file()}
+    bypassing = sorted(name for name in named if (stack_of(name) or (False,))[0])
+
+    results = []
+
+    def cause(text):
+        if facts["doubts"]:
+            results.append(("possible", text + "; not confirmed, because the configuration could not be fully "
+                            "checked (above)"))
+        else:
+            results.append(("warning", "cause: " + text))
+
+    unexplained = []
+    for (domain, service), failures in sorted(groups.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))):
+        stack = stack_of(service) if service else None
+        if domain and domain in facts["cache_off"]:
+            cause(f"cache_credentials is off for {domain}, so SSSD never stores a password and every offline login "
+                  f"to it fails ({describe(failures)}). Set cache_credentials = True in [domain/{domain}], restart "
+                  "sssd, and log in once with the VPN up")
+        elif stack and stack[0]:
+            cause(f"in {service}, pam_krb5 succeeds before pam_sss and skips it, so SSSD never sees the password "
+                  f"({describe(failures)}"
+                  + (f"; pam_krb5 accepted {len(krb5_logins)} login(s) in this window" if krb5_logins else "")
+                  + "). Remove libpam-krb5 and let SSSD obtain tickets")
+        else:
+            candidates = []
+            if domain is None and facts["cache_off"]:
+                candidates.append(f"cache_credentials is off for {', '.join(facts['cache_off'])}")
+            if (service is None or stack is None) and bypassing:
+                candidates.append(f"pam_krb5 skips pam_sss in {', '.join(bypassing)}")
+            if candidates:
+                missing = [what for what, known in (("domain", domain), ("PAM stack", stack)) if known is None]
+                results.append(("possible", f"{describe(failures)}. The {' and '.join(missing)} of these logins "
+                                "cannot be determined, so the configuration to blame is a hypothesis: "
+                                + "; ".join(candidates)))
+            else:
+                unexplained += failures
+    # Confirmed causes first, then hypotheses.
+    for level, text in sorted(results, key=lambda result: result[0] != "warning"):
+        say(level, text)
+    return unexplained
+
+
 def assess(found, facts, sssd_lines, offline):
     print("Assessment:")
     judged = assess_config(facts)
@@ -610,25 +732,20 @@ def assess(found, facts, sssd_lines, offline):
     krb5_logins = found.get("krb5-login", [])
     if offline:
         judged = True
-        if facts["cache_off"]:
-            say("warning", f"cause: cache_credentials is off for {', '.join(facts['cache_off'])}, so SSSD never "
-                "stores a password and every offline login fails. Set cache_credentials = True in the domain "
-                "section, restart sssd, and log in once with the VPN up")
-        elif facts["pam_bypass"]:
-            say("warning", "cause: pam_krb5 succeeds before pam_sss and skips it, so SSSD never sees the password"
-                + (f" (pam_krb5 accepted {len(krb5_logins)} login(s) in this window)" if krb5_logins else "")
-                + ". Remove libpam-krb5 and let SSSD obtain tickets")
-        elif krb5_logins and not sss_logins:
-            say("warning", f"likely cause: pam_krb5 accepted {len(krb5_logins)} login(s) and pam_sss none, so SSSD "
-                "never saw a password to cache. Check the PAM stack with dotconfig creds status")
-        elif not sss_logins:
-            say("info", "no online login through pam_sss is logged in this window, though a password cached "
-                "earlier may still exist. If dotconfig creds status shows no cached password, log in once with "
-                "the VPN up; if it shows one, compare when it was stored with these failures")
-        else:
-            say("info", f"pam_sss accepted online logins (last at {stamp(sss_logins[-1].when)}) yet offline login "
-                "still found no usable password. Compare the user name in both examples above, and check "
-                "dotconfig creds status for when the password was stored")
+        unexplained = explain_offline(offline, facts, krb5_logins)
+        if unexplained:
+            who = f"{describe(unexplained)}, which no setting above explains"
+            if krb5_logins and not sss_logins:
+                say("possible", f"{who}. pam_krb5 accepted {len(krb5_logins)} login(s) and pam_sss none, so SSSD "
+                    "may never have seen a password to cache. Check the PAM stack with dotconfig creds status")
+            elif not sss_logins:
+                say("info", f"{who}. No online login through pam_sss is logged in this window, though a password "
+                    "cached earlier may still exist. If dotconfig creds status shows no cached password, log in "
+                    "once with the VPN up; if it shows one, compare when it was stored with these failures")
+            else:
+                say("info", f"{who}. pam_sss accepted online logins (last at {stamp(sss_logins[-1].when)}) yet "
+                    "offline login still found no usable password. Compare the user names, and check dotconfig "
+                    "creds status for when the password was stored")
     elif found.get("pam-authinfo-unavail"):
         judged = True
         say("info", f"pam_sss returned PAM result 9 {len(found['pam-authinfo-unavail'])} time(s) with no sign that "
@@ -672,9 +789,11 @@ def main():
     if journal is None:
         say("info", "journalctl not found; only log files are searched")
     else:
-        journal_events, boots, auth_entries = journal
+        journal_events, boots, auth_entries, failures = journal
         events += journal_events
         print(f"  journal: {len(journal_events)} entries (SSSD units, auth facility, VPN)")
+        for failure in failures:
+            say("failed", f"{failure}; entries it would have returned are missing from this report")
         if not (root / "var/log/journal").is_dir():
             say("info", "the journal is not kept across reboots, so logins from earlier boots are lost; "
                 "sudo mkdir -p /var/log/journal && sudo systemctl restart systemd-journald keeps it")
