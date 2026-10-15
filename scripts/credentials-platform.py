@@ -221,7 +221,7 @@ def hardening_findings(root, live, not_checked, helpers=True):
     return findings
 
 
-def service_findings(root, identity, accounts, live):
+def service_findings(root, identity, accounts, live, responders_listed=()):
     findings, not_checked = [], []
     responders = {}
     for unit in UNITS[1:]:
@@ -242,7 +242,7 @@ def service_findings(root, identity, accounts, live):
     else:
         not_checked.append("helper ownership and capabilities (the SSSD service user is unknown)")
     if live:
-        findings += runtime_findings(not_checked)
+        findings += runtime_findings(not_checked, responders_listed)
     else:
         not_checked.append("systemd unit and socket state, sssd --version, NTP sync, and mount options "
                            "(live system only)")
@@ -284,7 +284,10 @@ def helper_findings(root, identity, accounts, not_checked):
     return findings
 
 
-def runtime_findings(not_checked):
+def runtime_findings(not_checked, responders_listed=()):
+    """Unit state, sssd --version, NTP sync and mount options of the running system. responders_listed are the
+    [sssd] services entries: SSSD starts those responders itself, and their sockets then fail by design, because
+    each socket's ExecStartPre refuses to activate a responder sssd.conf already lists."""
     findings = []
     result = probe(["systemctl", "show", "-p", "Id,ActiveState,SubState,UnitFileState,User,DropInPaths", *UNITS])
     if result is None:
@@ -300,7 +303,13 @@ def runtime_findings(not_checked):
             state = f"{props.get('ActiveState')}/{props.get('SubState')}"
             extra = f", drop-ins {props['DropInPaths']}" if props.get("DropInPaths") else ""
             level = "warning" if props.get("ActiveState") == "failed" else "info"
-            findings.append((level, f"{unit}: {state}, user {props.get('User') or 'root'}{extra}"))
+            responder = re.fullmatch(r"sssd-(\w+?)(?:-priv)?\.socket", unit)
+            note = ""
+            if level == "warning" and responder and responder.group(1) in responders_listed:
+                level = "info"
+                note = (f"; expected, because [sssd] services lists {responder.group(1)}, so sssd starts that "
+                        "responder itself")
+            findings.append((level, f"{unit}: {state}, user {props.get('User') or 'root'}{extra}{note}"))
     result = probe(["sssd", "--version"])
     if result is not None and result.returncode != 0:
         findings.append(("failed", probe_failure("sssd --version", result)))
@@ -616,7 +625,9 @@ def platform_report(root, config, domains, identity, accounts):
     """All platform checks as ordered (title, findings) sections, plus what could not be checked."""
     live = root == Path("/")
     packages_found, not_checked = package_findings(root)
-    services, more = service_findings(root, identity, accounts, live)
+    listed = [name.strip() for name in config.get("sssd", "services", fallback="").split(",") if name.strip()] \
+        if config is not None else []
+    services, more = service_findings(root, identity, accounts, live, listed)
     not_checked += more
     sections = [
         ("Packages", packages_found),

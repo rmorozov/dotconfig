@@ -520,7 +520,8 @@ def inspect_kerberos(root, identity, accounts):
     for level, message in findings:
         say(level, message)
     if not any(level in ("warning",) + DOUBTS for level, _ in findings):
-        say("ok", "krb5.conf and its includes are readable and the keytab is private")
+        say("ok", "krb5.conf and its includes are readable"
+            + (" and the keytab is private" if os.path.lexists(root / "etc/krb5.keytab") else ""))
 
 
 def load_platform():

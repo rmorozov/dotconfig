@@ -47,7 +47,7 @@ grep -q '^ok: configuration files have an owner, group, and mode SSSD accepts' "
 # Anything the packaged layout itself would trigger is a false positive.
 false_positive='cannot (read|enter|write|run)|is owned by|accessible to other users|lacks cap_|CapabilityBoundingSet|'
 false_positive+='NoNewPrivileges|read-only|InaccessiblePaths|installs it as|not fully installed|different versions|'
-false_positive+='^check failed|^not checked'
+false_positive+='^check failed|^not checked|^warning: .*failed/failed'
 if grep -En "$false_positive" "$out"; then
     fail 'warnings above come from the packaged layout'
 fi

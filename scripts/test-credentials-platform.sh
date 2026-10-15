@@ -230,6 +230,17 @@ assert found[0] == ("failed", "systemctl show sssd.service exited 4: Access deni
                     "instead"), found
 assert "CapabilityBoundingSet removes cap_dac_read_search" in found[1][1], found
 assert len(not_checked) == 1 and "approximation" in not_checked[0], not_checked
+# A responder listed in [sssd] services makes its socket fail by design; an unlisted one failing is a problem.
+systemctl.write_text("#!/usr/bin/env bash\nprintf '"
+                     + "\\n\\n".join(f"Id={unit}\\nActiveState=failed\\nSubState=failed\\nUnitFileState=enabled"
+                                     for unit in ("sssd-nss.socket", "sssd-pam-priv.socket", "sssd-kcm.socket"))
+                     + "\\n'\n")
+systemctl.chmod(0o755)
+found = platform.runtime_findings([], ["nss", "pam"])
+assert ("info", "sssd-nss.socket: failed/failed, user root; expected, because [sssd] services lists nss, so sssd "
+        "starts that responder itself") in found, found
+assert any(level == "info" and message.startswith("sssd-pam-priv.socket") for level, message in found), found
+assert ("warning", "sssd-kcm.socket: failed/failed, user root") in found, found
 systemctl.unlink()
 EOF
 
