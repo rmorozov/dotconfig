@@ -8,6 +8,7 @@ import importlib.util
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -222,41 +223,81 @@ def allows(st, identity, want):
     return bits & want == want
 
 
-def has_acl(path):
-    """True with an access ACL, False without, None when that cannot be told."""
+# POSIX ACL entry tags from linux/posix_acl_xattr.h.
+ACL_USER_OBJ, ACL_USER, ACL_GROUP_OBJ, ACL_GROUP, ACL_MASK, ACL_OTHER = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
+
+
+def parse_acl(raw):
+    """(tag, permissions, id) entries of a system.posix_acl_access value; ValueError when malformed."""
+    if len(raw) < 4 or (len(raw) - 4) % 8 or struct.unpack_from("<I", raw)[0] != 2:
+        raise ValueError("not a POSIX ACL")
+    return [struct.unpack_from("<HHI", raw, offset) for offset in range(4, len(raw), 8)]
+
+
+def read_acl(path):
+    """The access ACL of path, or None when it has none. Raises OSError or ValueError when it cannot be read."""
     try:
-        return ACL_XATTR in os.listxattr(path)
+        raw = os.getxattr(path, ACL_XATTR, follow_symlinks=True)
     except AttributeError:
         # No Linux xattr API (macOS fixtures): there are no POSIX access ACLs to find.
-        return False
+        return None
     except OSError as exc:
-        return False if exc.errno == errno.ENOTSUP else None
+        if exc.errno in (errno.ENODATA, getattr(errno, "ENOATTR", errno.ENODATA), errno.ENOTSUP):
+            return None
+        raise
+    return parse_acl(raw)
 
 
-def blocked_parent(root, path, identity):
-    """The first directory between root and path that identity cannot search, or None."""
-    for parent in reversed(path.parents):
-        if parent == root or root in parent.parents:
-            if not allows(parent.stat(), identity, 1):
-                return parent
-    return None
+def acl_allows(entries, st, identity, want):
+    """The acl(5) access check: the owner entry, else a named user entry, else any matching group entry that
+    grants all of want, else other. Named users and groups are limited by the mask."""
+    perms = {tag: perm for tag, perm, _id in entries if tag in (ACL_USER_OBJ, ACL_MASK, ACL_OTHER)}
+    mask = perms.get(ACL_MASK, 7)
+    if st.st_uid == identity.uid:
+        return perms.get(ACL_USER_OBJ, 0) & want == want
+    for tag, perm, uid in entries:
+        if tag == ACL_USER and uid == identity.uid:
+            return perm & mask & want == want
+    matched = False
+    for tag, perm, gid in entries:
+        if (tag == ACL_GROUP_OBJ and st.st_gid in identity.gids) or (tag == ACL_GROUP and gid in identity.gids):
+            matched = True
+            if perm & mask & want == want:
+                return True
+    return False if matched else perms.get(ACL_OTHER, 0) & want == want
+
+
+def permits(path, st, identity, want):
+    """Whether identity has want on path, honouring its ACL; None when the ACL cannot be read."""
+    if identity.root:
+        return True
+    try:
+        entries = read_acl(path)
+    except (OSError, ValueError):
+        return None
+    return allows(st, identity, want) if entries is None else acl_allows(entries, st, identity, want)
 
 
 def access_check(root, path, st, identity, want):
-    """None when identity can use path. Otherwise (level, blocked, doubt): blocked is the directory that stops it
-    or None for path itself. Mode bits decide only without an ACL; with one, or when the metadata cannot be read,
-    level is unchecked and doubt says why, so an incomplete calculation never reads as denied."""
-    try:
-        blocked = blocked_parent(root, path, identity)
-    except OSError as exc:
-        return "unchecked", None, f"a parent directory cannot be examined ({exc.strerror or exc})"
-    if blocked is None and allows(st, identity, want):
-        return None
-    acl = has_acl(blocked or path)
-    if acl is False:
-        return "warning", blocked, ""
-    return "unchecked", blocked, "mode bits deny it, but " + (
-        "an ACL is present, which this check does not evaluate" if acl else "its ACLs cannot be listed")
+    """None when identity can search every directory down to path and has want on it. Otherwise (level, blocked,
+    doubt): blocked is the directory that stops it, or None for path itself. ACLs are evaluated on every
+    component, so mode bits never decide alone; when metadata or an ACL cannot be read, level is unchecked and
+    doubt says why, so an incomplete calculation never reads as either allowed or denied."""
+    for parent in reversed(path.parents):
+        if parent != root and root not in parent.parents:
+            continue
+        try:
+            verdict = permits(parent, parent.stat(), identity, 1)
+        except OSError as exc:
+            return "unchecked", parent, f"its metadata cannot be read ({exc.strerror or exc})"
+        if verdict is None:
+            return "unchecked", parent, "its ACL cannot be read"
+        if not verdict:
+            return "warning", parent, ""
+    verdict = permits(path, st, identity, want)
+    if verdict is None:
+        return "unchecked", None, "its ACL cannot be read"
+    return None if verdict else ("warning", None, "")
 
 
 def shown(root, path):

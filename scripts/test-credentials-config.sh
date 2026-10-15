@@ -172,27 +172,64 @@ printf '[Service]\nSupplementaryGroups=\n' > "$dropin/30-reset.conf"
 status
 check '^warning: the SSSD service user sssd cannot read /etc/sssd/sssd.conf'
 
-# An ACL may grant what mode bits deny, so effective access is reported as not checked rather than denied.
-if python3 - "$root/etc/sssd/sssd.conf" "$((me + 1))" <<'PY' 2>/dev/null
+# ACLs are evaluated as acl(5) does: a named user entry decides before group and other bits.
+cat > "$test_dir/acl.py" <<'PY'
 import os, struct, sys
-# POSIX ACL xattr: version 2, then (tag, perm, id) for user::rw-, user:SERVICE:r--, group::r--, mask::r--, other::---.
-entries = [(0x01, 6, 0xFFFFFFFF), (0x02, 4, int(sys.argv[2])), (0x04, 4, 0xFFFFFFFF), (0x10, 4, 0xFFFFFFFF),
-           (0x20, 0, 0xFFFFFFFF)]
+# Set a POSIX access ACL from "tag:perm:id" triples; the kernel rewrites the group mode bits to the mask.
+entries = [tuple(int(field, 0) for field in spec.split(":")) for spec in sys.argv[2:]]
 os.setxattr(sys.argv[1], "system.posix_acl_access",
             struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries))
 PY
-then
+any_id=0xFFFFFFFF
+if python3 "$test_dir/acl.py" "$root/etc/sssd/sssd.conf" "1:6:$any_id" "2:4:$((me + 1))" "4:4:$any_id" \
+    "0x10:4:$any_id" "0x20:0:$any_id" 2>/dev/null; then
+    # The mode bits leave the service user (outside the file's group here) nothing; the ACL grants it read.
     status
-    check '^not checked: whether the SSSD service user sssd can read /etc/sssd/sssd.conf (root:sssd 0640): mode bits deny it, but an ACL is present'
-    refute '^warning: the SSSD service user sssd cannot read /etc/sssd/sssd.conf'
-    logs
-    check '^not checked: whether the SSSD service user sssd can read /etc/sssd/sssd.conf'
-    refute 'invalid: .*cannot read /etc/sssd/sssd.conf'
+    refute 'cannot read /etc/sssd/sssd.conf'
+    refute 'can read /etc/sssd/sssd.conf'
     python3 -c 'import os, sys; os.removexattr(sys.argv[1], "system.posix_acl_access")' "$root/etc/sssd/sssd.conf"
     chmod 640 "$root/etc/sssd/sssd.conf"
+    # A 0644 file whose ACL names the service user with no access denies it, though other may read.
+    python3 "$test_dir/acl.py" "$root/etc/krb5.conf.d/corp" "1:6:$any_id" "2:0:$((me + 1))" "4:4:$any_id" \
+        "0x10:4:$any_id" "0x20:4:$any_id"
+    status
+    check '^warning: /etc/krb5.conf.d/corp is not readable by sssd'
+    refute 'not readable by ordinary users'
+    python3 -c 'import os, sys; os.removexattr(sys.argv[1], "system.posix_acl_access")' "$root/etc/krb5.conf.d/corp"
+    chmod 644 "$root/etc/krb5.conf.d/corp"
 else
-    echo 'Skipping the ACL case: this filesystem does not accept POSIX ACLs.'
+    echo 'Skipping the filesystem ACL cases: this filesystem does not accept POSIX ACLs.'
 fi
+# The evaluation itself, without a filesystem: owner, named user under the mask, group class, other, and an ACL
+# that cannot be read.
+python3 - "$repo_root/scripts/credentials-inspect.py" <<'PY'
+import errno, importlib.util, os, sys
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location("credentials_inspect", sys.argv[1])
+inspector = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inspector)
+I = inspector
+st = SimpleNamespace(st_uid=0, st_gid=50, st_mode=0o100644)
+sssd = I.Identity("sssd", 101, (102,))
+member = I.Identity("member", 103, (50,))
+base = [(I.ACL_USER_OBJ, 6, 0), (I.ACL_GROUP_OBJ, 4, 0), (I.ACL_OTHER, 4, 0)]
+assert I.acl_allows(base, st, sssd, 4)
+assert not I.acl_allows(base + [(I.ACL_USER, 0, 101), (I.ACL_MASK, 4, 0)], st, sssd, 4)
+assert not I.acl_allows(base + [(I.ACL_USER, 6, 101), (I.ACL_MASK, 0, 0)], st, sssd, 4)
+assert I.acl_allows(base + [(I.ACL_GROUP, 4, 102), (I.ACL_MASK, 4, 0)], st, sssd, 4)
+# A matching group entry that lacks the permission denies, even when other would allow it.
+assert not I.acl_allows([(I.ACL_USER_OBJ, 6, 0), (I.ACL_GROUP_OBJ, 0, 0), (I.ACL_MASK, 4, 0),
+                         (I.ACL_OTHER, 4, 0)], st, member, 4)
+assert not I.acl_allows([(I.ACL_USER_OBJ, 6, 0), (I.ACL_GROUP_OBJ, 4, 0), (I.ACL_MASK, 0, 0),
+                         (I.ACL_OTHER, 0, 0)], st, member, 4)
+raw = b"\x02\x00\x00\x00" + b"".join(I.struct.pack("<HHI", *entry) for entry in base)
+assert I.parse_acl(raw) == base
+def unreadable(*_args, **_kwargs):
+    raise PermissionError(errno.EACCES, "Permission denied")
+I.os = SimpleNamespace(getxattr=unreadable)
+assert I.permits("/x", st, sssd, 4) is None
+assert I.permits("/x", st, I.Identity("root", 0, (0,), root=True), 4) is True
+PY
 rm "$dropin"/*.conf
 chmod 750 "$root/etc/sssd"
 

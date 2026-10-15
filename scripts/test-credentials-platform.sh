@@ -188,19 +188,29 @@ check "^warning: sssd.service's CapabilityBoundingSet removes cap_dac_read_searc
 # reopens it, the most specific setting wins, and InaccessiblePaths can hide the keytab.
 printf '[Service]\nProtectSystem=strict\n' > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
 status
-check "^warning: sssd.service's sandbox makes /var/lib/sss read-only, so SSSD cannot update it"
-check "^warning: sssd.service's sandbox makes /var/log/sssd read-only"
-printf '[Service]\nProtectSystem=strict\nStateDirectory=sss\nReadWritePaths=-/var/log/sssd\n' \
+check "^warning: sssd.service's sandbox makes /var/lib/sss/db, /var/lib/sss/mc, .*, /run/sssd, /var/log/sssd read-only, so SSSD cannot update its state there"
+printf '[Service]\nProtectSystem=strict\nStateDirectory=sss\nReadWritePaths=-/var/log/sssd /run/sssd\n' \
     > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
 status
 refute 'read-only, so SSSD'
 printf '[Service]\nReadWritePaths=/var\nReadOnlyPaths=/var/lib/sss\nInaccessiblePaths=-/etc/krb5.keytab\n' \
     > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
 status
-check "^warning: sssd.service's sandbox makes /var/lib/sss read-only"
-refute "makes /var/log/sssd read-only"
+check "^warning: sssd.service's sandbox makes /var/lib/sss/db, /var/lib/sss/mc, .*/var/lib/sss/keytabs read-only"
+refute "/var/log/sssd read-only"
 check "^warning: sssd.service's InaccessiblePaths hides /etc/krb5.keytab from SSSD"
 check 'sssd.service sandbox and capabilities as systemd applies them (read from unit files, an approximation)'
+# Restricting one state directory under a writable parent, or a file inside one, is still found.
+printf '[Service]\nReadOnlyPaths=/var/lib/sss/db\nInaccessiblePaths=/var/lib/sss/secrets/.secrets.mkey\n' \
+    > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
+status
+check "^warning: sssd.service's sandbox makes /var/lib/sss/db read-only, so SSSD cannot update its state there"
+check "^warning: sssd.service's sandbox makes /var/lib/sss/secrets/.secrets.mkey inaccessible"
+printf '[Service]\nReadOnlyPaths=/var/lib/sss\nReadWritePaths=/var/lib/sss/db /var/lib/sss/mc /var/lib/sss/secrets\n%s\n' \
+    'ReadWritePaths=/var/lib/sss/pipes /var/lib/sss/pubconf /var/lib/sss/gpo_cache /var/lib/sss/keytabs' \
+    > "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
+status
+refute "sandbox makes"
 rm "$root/etc/systemd/system/sssd.service.d/sandbox.conf"
 
 # On a live system these come from systemctl show; a failed call is reported and the unit files are read.
@@ -219,7 +229,7 @@ systemctl.chmod(0o755)
 not_checked = []
 found = platform.hardening_findings(root, True, not_checked)
 assert ("warning", "sssd.service's CapabilityBoundingSet removes cap_setgid, which the helpers need") in found, found
-assert any("makes /var/lib/sss read-only" in message for _level, message in found), found
+assert any("makes /var/lib/sss/db, " in message for _level, message in found), found
 assert not any("/var/log/sssd" in message for _level, message in found), found
 assert not_checked == [], not_checked
 systemctl.write_text("#!/usr/bin/env bash\necho 'Access denied' >&2\nexit 4\n")

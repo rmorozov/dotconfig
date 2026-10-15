@@ -174,7 +174,9 @@ def fold_capability_set(values):
 HARDENING = ("NoNewPrivileges", "CapabilityBoundingSet", "ProtectSystem", "ReadWritePaths", "ReadOnlyPaths",
              "InaccessiblePaths", "StateDirectory", "LogsDirectory", "RuntimeDirectory")
 # What SSSD must write, and what it must be able to see at all.
-SSSD_WRITES = ("/var/lib/sss", "/var/log/sssd")
+# The directories SSSD writes, each checked on its own: a sandbox can restrict one below a writable parent.
+SSSD_WRITES = ("/var/lib/sss/db", "/var/lib/sss/mc", "/var/lib/sss/secrets", "/var/lib/sss/pipes",
+               "/var/lib/sss/pubconf", "/var/lib/sss/gpo_cache", "/var/lib/sss/keytabs", "/run/sssd", "/var/log/sssd")
 SSSD_READS = ("/etc/sssd", "/etc/krb5.conf", "/etc/krb5.keytab", "/var/lib/sss", "/usr/libexec/sssd")
 
 
@@ -191,6 +193,13 @@ def sandbox_view(props):
         covering = [(len(prefix), mode) for prefix, mode in rules
                     if path == prefix or path.startswith(prefix.rstrip("/") + "/")]
         return max(covering)[1] if covering else "rw"
+
+    def restricted(path):
+        """path and anything restricted beneath it, as (path, mode) pairs that are not writable."""
+        found = [(path, view(path))] + [(prefix, view(prefix)) for prefix, _mode in rules
+                                        if prefix.startswith(path.rstrip("/") + "/")]
+        return [(where, mode) for where, mode in found if mode != "rw"]
+    view.restricted = restricted
     return view
 
 
@@ -214,10 +223,15 @@ def hardening_findings(root, live, not_checked, helpers=True):
     for path in SSSD_READS:
         if view(path) == "hidden":
             findings.append(("warning", f"sssd.service's InaccessiblePaths hides {path} from SSSD"))
+    blocked = {}
     for path in SSSD_WRITES:
-        if view(path) == "ro":
-            findings.append(("warning", f"sssd.service's sandbox makes {path} read-only, so SSSD cannot update it; "
-                             "add it to ReadWritePaths in the drop-in that restricts it"))
+        for where, mode in view.restricted(path):
+            blocked.setdefault(mode, []).append(where) if where not in blocked.get(mode, []) else None
+    for mode, label in (("ro", "read-only"), ("hidden", "inaccessible")):
+        if blocked.get(mode):
+            findings.append(("warning", f"sssd.service's sandbox makes {', '.join(blocked[mode])} {label}, so SSSD "
+                             "cannot update its state there; add the paths to ReadWritePaths in the drop-in that "
+                             "restricts them"))
     return findings
 
 

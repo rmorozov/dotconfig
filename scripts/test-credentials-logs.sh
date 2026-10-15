@@ -231,12 +231,12 @@ EOF
 printf 'auth sufficient pam_krb5.so minimum_uid=1000\n@include common-auth\n@include common-account\n' \
     > "$root/etc/pam.d/sshd"
 failed() { echo "pam_sss($1:auth): received for user $2: 9 (Authentication service cannot retrieve authentication info)"; }
-offline='sssd_be|Failed to resolve server dc1.corp.example: Timeout'
+offline() { echo "sssd_be|[be[$1]] [fo_resolve_service_done] (0x0020): Failed to resolve server dc1.$1: Timeout"; }
 python3 "$test_dir/journal.py" "$journal" -60 \
-    "sssd|-51|$offline" "auth|-50|gdm-password]|$(failed gdm-password bob@lab.example)" \
-    "sssd|-41|$offline" "auth|-40|sshd|$(failed sshd alice@corp.example)" \
-    "sssd|-31|$offline" "auth|-30|gdm-password]|$(failed gdm-password alice@corp.example)" \
-    "sssd|-21|$offline" "auth|-20|su|$(failed su carol)"
+    "sssd|-51|$(offline lab.example)" "auth|-50|gdm-password]|$(failed gdm-password bob@lab.example)" \
+    "sssd|-41|$(offline corp.example)" "auth|-40|sshd|$(failed sshd alice@corp.example)" \
+    "sssd|-31|$(offline corp.example)" "auth|-30|gdm-password]|$(failed gdm-password alice@corp.example)" \
+    "sssd|-21|sssd_be|Going offline" "auth|-20|su|$(failed su carol)"
 bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
 check '^warning: cause: cache_credentials is off for lab.example, .*(1 failed offline login: bob@lab.example via gdm-password)'
 check '^warning: cause: in sshd, pam_krb5 succeeds before pam_sss and skips it, .*(1 failed offline login: alice@corp.example via sshd)'
@@ -245,6 +245,19 @@ refute 'cause: .*alice@corp.example via gdm-password'
 refute 'cause: cache_credentials.*alice'
 refute 'cause: in sshd.*bob'
 refute 'cause: in gdm-password'
+
+# Offline evidence counts only for its own domain. corp's unreachable KDC does not make bob@lab.example's
+# contemporaneous result 9 an offline failure, and lab's own cache message is not merged into corp's failure.
+python3 "$test_dir/journal.py" "$journal" -60 \
+    "sssd|-41|krb5_child|[krb5_child[4242]] [get_and_save_tgt] (0x0020): Cannot contact any KDC for realm 'CORP.EXAMPLE'" \
+    "auth|-40|sshd|$(failed sshd bob@lab.example)" \
+    "auth|-39|gdm-password]|$(failed gdm-password alice@corp.example)" \
+    "sssd|-39|sssd_be|[be[lab.example]] [sysdb_cache_auth] (0x0400): Cached credentials not available."
+bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
+check '^info: pam_sss returned PAM result 9 1 time(s) with no sign that SSSD was offline for that user.s domain (bob@lab.example)'
+check '^warning: cause: cache_credentials is off for lab.example, .*(1 failed offline login: an unnamed user)'
+check '^info: 1 failed offline login: alice@corp.example via gdm-password, which no setting above explains'
+refute 'cause: .*bob@lab.example'
 cp "$test_dir/sssd.conf" "$root/etc/sssd/sssd.conf"
 rm "$root/etc/pam.d/sshd"
 

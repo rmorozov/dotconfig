@@ -413,7 +413,7 @@ def config_facts(root):
     failed probe. They turn configuration-based causes into hypotheses."""
     facts = {"state": "unknown", "reasons": [], "confirmed": False, "kerberos": [], "present": False,
              "platform": [], "not_checked": [], "accounts": inspector.read_accounts(root), "doubts": [],
-             "domains": [], "cache_off": [], "pam_bypass": False, "pam_sss": True, "root": root}
+             "domains": [], "realms": {}, "cache_off": [], "pam_bypass": False, "pam_sss": True, "root": root}
     config = identity = accounts = None
     try:
         config, files, identity, _source, accounts, findings = inspector.check_config(root)
@@ -460,6 +460,10 @@ def config_facts(root):
         facts["kerberos"] = [("unchecked", f"Kerberos files ({exc.strerror or exc})")]
     if config is not None and facts["state"] == "valid":
         domains = facts["domains"] = domains_of(config)
+        for d in domains:
+            section = f"domain/{d}"
+            realm = config.get(section, "krb5_realm", fallback="") or config.get(section, "ad_domain", fallback="")
+            facts["realms"][(realm.strip() or d).lower()] = d
         facts["cache_off"] = [d for d in domains
                               if config.get(f"domain/{d}", "cache_credentials", fallback="false").strip().lower()
                               not in inspector.TRUE]
@@ -521,16 +525,28 @@ def vpn_down_until_later(when, found, boots):
     return later_up and (not before or before[-1] == "vpn-down")
 
 
-def offline_failures(found, boots):
-    """Failed domain logins with evidence that SSSD was offline; PAM result 9 alone does not prove it."""
-    unreachable = [e.when for key in UNREACHABLE for e in found.get(key, [])]
-    failures = list(found.get("no-cached-password", []))
+def offline_failures(found, boots, facts):
+    """Failed domain logins with evidence that SSSD was offline, as (event, certain) pairs; PAM result 9 alone
+    does not prove it. Only an unreachable line from the failure's own domain makes it certain. Evidence that
+    names no domain, or VPN timing, only suggests it when several domains are configured; evidence from another
+    domain does not count."""
+    domains, realms = facts["domains"], facts["realms"]
+    unreachable = [(e.when, failure_context(e, domains, realms)[2]) for key in UNREACHABLE for e in found.get(key, [])]
+    failures = [(event, True) for event in found.get("no-cached-password", [])]
     for event in found.get("pam-authinfo-unavail", []):
-        near = any(event.when - datetime.timedelta(minutes=10) <= t <= event.when + datetime.timedelta(minutes=2)
-                   and boot_of(t, boots) == boot_of(event.when, boots) for t in unreachable)
-        if near or vpn_down_until_later(event.when, found, boots):
-            failures.append(event)
-    return sorted(failures, key=lambda e: e.when)
+        domain = failure_context(event, domains, realms)[2]
+        near = [where for t, where in unreachable
+                if event.when - datetime.timedelta(minutes=10) <= t <= event.when + datetime.timedelta(minutes=2)
+                and boot_of(t, boots) == boot_of(event.when, boots)]
+        before_vpn = vpn_down_until_later(event.when, found, boots)
+        if domain is not None and domain in near:
+            failures.append((event, True))
+        elif before_vpn and len(domains) <= 1:
+            # With one domain, the VPN timing concerns that domain.
+            failures.append((event, True))
+        elif None in near or (domain is None and near) or before_vpn:
+            failures.append((event, False))
+    return sorted(failures, key=lambda pair: pair[0].when)
 
 
 def assess_boots(found, boots, offline):
@@ -633,10 +649,13 @@ def assess_name_collisions(found, accounts):
     return bool(clashes)
 
 
-def failure_context(event, domains):
-    """(user, PAM service, domain) of a failure, each None when the logs do not say. A domain is known from the
-    SSSD backend that logged it, a qualified user name, or a single configured domain, whose trusted subdomains
-    share its settings."""
+REALM = re.compile(r"\brealm ['\"]?([A-Za-z0-9.-]+)", re.I)
+
+
+def failure_context(event, domains, realms=None):
+    """(user, PAM service, domain) of an event, each None when the logs do not say. A domain is known from the
+    SSSD backend that logged it, a Kerberos realm it names, a qualified user name, or a single configured domain,
+    whose trusted subdomains share its settings."""
     result = PAM_RESULT.search(event.text)
     user = result.group(3) if result else None
     service = (result.group(1) or None) if result else None
@@ -646,6 +665,9 @@ def failure_context(event, domains):
         hint = event.source[5:]
     if not hint and user and "@" in user:
         hint = user.rsplit("@", 1)[1]
+    realm = REALM.search(event.text)
+    if not hint and realm:
+        hint = (realms or {}).get(realm.group(1).lower(), realm.group(1))
     by_name = {d.lower(): d for d in domains}
     domain = by_name.get((hint or "").lower())
     if domain is None and len(domains) == 1:
@@ -666,11 +688,12 @@ def explain_offline(offline, facts, krb5_logins):
     when the failure's context selects it; otherwise the candidate settings are printed as a hypothesis.
     Returns the failures no configuration explains."""
     root, domains = facts["root"], facts["domains"]
-    contexts = [(event, *failure_context(event, domains)) for event in offline]
-    # An SSSD-side line without a PAM service duplicates a PAM failure logged within two minutes.
-    with_service = [e.when for e, _u, service, _d in contexts if service]
+    contexts = [(event, *failure_context(event, domains, facts["realms"]), certain) for event, certain in offline]
+    # An SSSD-side line without a PAM service duplicates a PAM failure of the same domain logged within two
+    # minutes; one from another or an unknown domain is a separate failure.
+    with_service = [(e.when, domain) for e, _u, service, domain, _c in contexts if service and domain]
     contexts = [c for c in contexts if c[2] or not any(abs((c[0].when - t).total_seconds()) <= 120
-                                                       for t in with_service)]
+                                                       and c[3] == domain for t, domain in with_service)]
     stacks = {}
 
     def stack_of(service):
@@ -679,33 +702,36 @@ def explain_offline(offline, facts, krb5_logins):
         return stacks[service]
 
     groups = {}
-    for event, user, service, domain in contexts:
-        groups.setdefault((domain, service), []).append((user, service, event))
-    named = {service for _event, _user, service, _domain in contexts if service}
+    for event, user, service, domain, certain in contexts:
+        groups.setdefault((domain, service, certain), []).append((user, service, event))
+    named = {service for _event, _user, service, _domain, _certain in contexts if service}
     named |= {name for name in platform.PAM_SERVICES if (root / "etc/pam.d" / name).is_file()}
     bypassing = sorted(name for name in named if (stack_of(name) or (False,))[0])
 
     results = []
 
-    def cause(text):
-        if facts["doubts"]:
+    def cause(text, certain):
+        if not certain:
+            results.append(("possible", text + "; whether SSSD was offline for that domain is not logged, only "
+                            "VPN timing or unreachable lines that name no domain, so this is a hypothesis"))
+        elif facts["doubts"]:
             results.append(("possible", text + "; not confirmed, because the configuration could not be fully "
                             "checked (above)"))
         else:
             results.append(("warning", "cause: " + text))
 
     unexplained = []
-    for (domain, service), failures in sorted(groups.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))):
+    for (domain, service, certain), failures in sorted(groups.items(), key=lambda item: tuple(map(str, item[0]))):
         stack = stack_of(service) if service else None
         if domain and domain in facts["cache_off"]:
             cause(f"cache_credentials is off for {domain}, so SSSD never stores a password and every offline login "
                   f"to it fails ({describe(failures)}). Set cache_credentials = True in [domain/{domain}], restart "
-                  "sssd, and log in once with the VPN up")
+                  "sssd, and log in once with the VPN up", certain)
         elif stack and stack[0]:
             cause(f"in {service}, pam_krb5 succeeds before pam_sss and skips it, so SSSD never sees the password "
                   f"({describe(failures)}"
                   + (f"; pam_krb5 accepted {len(krb5_logins)} login(s) in this window" if krb5_logins else "")
-                  + "). Remove libpam-krb5 and let SSSD obtain tickets")
+                  + "). Remove libpam-krb5 and let SSSD obtain tickets", certain)
         else:
             candidates = []
             if domain is None and facts["cache_off"]:
@@ -746,10 +772,15 @@ def assess(found, facts, sssd_lines, offline):
                 say("info", f"{who}. pam_sss accepted online logins (last at {stamp(sss_logins[-1].when)}) yet "
                     "offline login still found no usable password. Compare the user names, and check dotconfig "
                     "creds status for when the password was stored")
-    elif found.get("pam-authinfo-unavail"):
+    offline_events = {id(event) for event, _certain in offline}
+    online_nine = [e for e in found.get("pam-authinfo-unavail", []) if id(e) not in offline_events]
+    if online_nine:
         judged = True
-        say("info", f"pam_sss returned PAM result 9 {len(found['pam-authinfo-unavail'])} time(s) with no sign that "
-            "SSSD was offline, so the cache is not implicated; the SSSD lines around those times give the cause")
+        who = sorted({failure_context(e, facts["domains"], facts["realms"])[0] or "an unnamed user"
+                      for e in online_nine})
+        say("info", f"pam_sss returned PAM result 9 {len(online_nine)} time(s) with no sign that SSSD was offline "
+            f"for that user's domain ({', '.join(who)}), so the cache is not implicated; the SSSD lines around "
+            "those times give the cause")
     if not offline and (facts["cache_off"] or facts["pam_bypass"]):
         judged = True
         say("info", "the configuration cannot cache passwords (see dotconfig creds status), though no failing "
@@ -818,9 +849,9 @@ def main():
 
     facts = config_facts(root)
     sssd_lines = len(sssd_events) + sum(1 for e in events if e.source.startswith("sssd"))
-    offline = offline_failures(found, boots)
+    offline = offline_failures(found, boots, facts)
     judged = assess(found, facts, sssd_lines, offline)
-    judged = assess_boots(found, boots, offline) or judged
+    judged = assess_boots(found, boots, [event for event, _certain in offline]) or judged
     judged = assess_vpn(found, boots) or judged
     if not judged and not any(RULES[key].level == "warning" for key in found):
         say("ok", "no sign of a domain login problem in this window")
