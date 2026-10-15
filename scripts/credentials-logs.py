@@ -2,6 +2,7 @@
 """Search SSSD, PAM, Kerberos, and VPN logs for reasons a domain login fails, and judge what was found."""
 
 import argparse
+import bisect
 import configparser
 import datetime
 import gzip
@@ -181,7 +182,17 @@ RULES = {
         "ok", "Logins succeeded from cached credentials", "offline login worked for these attempts",
         r"authenticated with cached credentials|offline authentication succeeded"),
 }
-COMPILED = {key: re.compile(rule.pattern, re.I) for key, rule in RULES.items() if rule.pattern}
+def casefolded(pattern):
+    """pattern lowercased for matching lowercased text, with escapes such as \\S kept as they are. Searching
+    lowercased text this way is about three times faster than re.IGNORECASE, which defeats literal scanning."""
+    out, escaped = [], False
+    for char in pattern:
+        out.append(char if escaped else char.lower())
+        escaped = not escaped and char == "\\"
+    return "".join(out)
+
+
+COMPILED = {key: re.compile(casefolded(rule.pattern)) for key, rule in RULES.items() if rule.pattern}
 PAM_RESULT = re.compile(r"pam_sss\(([^:)]*):?(\w*)\): received for user (\S+): (\d+) \(([^)]*)\)")
 BACKEND = re.compile(r"\[be\[([^\]]+)\]\]")
 RESPONDERS = {"sssd", "sssd_nss", "sssd_pam", "sssd_be", "sssd_sudo", "sssd_ssh", "sssd_pac", "sssd_ifp", "sssd_kcm",
@@ -201,9 +212,33 @@ class Event:
     source: str
     text: str
     keys: set = field(default_factory=set)
+    classified: bool = False
+
+
+# Every rule needs one of these lowercase literals, so a line without any is skipped before the ~35 rule searches.
+# SSSD at a raised debug_level writes millions of lines a day; this check is about ten times cheaper. Each
+# top-level alternative of each rule must contain one of them (test-credentials-logs.sh checks this).
+KEYWORDS = (
+    "cach", "too many failed", "expired", "krb5kdc_err", "krb5krb_ap_err", "krb5_kt_", "pam_sss", "pam_krb5",
+    "watchdog", "restart critical", "killing service", "exiting the sssd", ".service:", "segmentation fault",
+    "core dumped", "ownership", "config", "confdb", "not allowed in section", "unknown option", "invalid ", "skew",
+    "kerberos database", "key table", "keytab", "gpo", "authentication failed", "decrypt integrity", "kdc", "resolve",
+    "srv lookup", "server", "offline", "online", "connected as", "cstp connected", "dtls connection", "vpn",
+    "logout successful", "session terminated", "apparmor", "ccache", "credential cache", "krb5_cc_", "pam_mkhomedir",
+    "directory", "encryption type", "enctype", "key version", "version of key", "p11_child", "certificate", "ocsp",
+    "pcsc", "pkcs",
+)
+
+
+def relevant(text, low=None):
+    low = text.lower() if low is None else low
+    return any(keyword in low for keyword in KEYWORDS)
 
 
 def classify(event):
+    low = event.text.lower()
+    if not relevant(event.text, low):
+        return event
     result = PAM_RESULT.search(event.text)
     if result:
         stage, code = result.group(2), int(result.group(4))
@@ -212,8 +247,9 @@ def classify(event):
         else:
             event.keys.add(PAM_CODES.get(code, "pam-other"))
     for key, pattern in COMPILED.items():
-        if pattern.search(event.text):
+        if pattern.search(low):
             event.keys.add(key)
+    event.classified = True
     return event
 
 
@@ -292,27 +328,41 @@ SYSLOG_ISO = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+
 SYSLOG_OLD = re.compile(r"^(\w{3} +\d+ \d{2}:\d{2}:\d{2})\s+\S+\s+([^:\[]+)(?:\[\d+\])?:\s*(.*)")
 
 
-def local_time(text, layout):
-    """Parse a timestamp written without an offset, which SSSD and classic syslog write in local time."""
-    return datetime.datetime.strptime(text, layout).astimezone(UTC)
+_MINUTES = {}
+
+
+def local_time(minute, seconds, layout):
+    """A local timestamp without an offset, as SSSD and classic syslog write it, in UTC. strptime and the local
+    zone lookup run once per minute, not once per line."""
+    start = _MINUTES.get((minute, layout))
+    if start is None:
+        start = _MINUTES[(minute, layout)] = datetime.datetime.strptime(minute, layout).astimezone(UTC)
+    return start + datetime.timedelta(seconds=int(seconds))
 
 
 def parse_sssd_line(line):
     match = SSSD_STAMP.match(line)
     if match:
-        return local_time(f"{match.group(1)} {match.group(2)}", "%Y-%m-%d %H:%M:%S"), match.group(3)
+        clock = match.group(2)
+        return local_time(f"{match.group(1)} {clock[:-3]}", clock[-2:], "%Y-%m-%d %H:%M"), match.group(3)
     match = SSSD_OLD_STAMP.match(line)
     if match:
-        return local_time(f"{match.group(1)} {match.group(2)}", "%b %d %H:%M:%S %Y"), match.group(3)
+        clock = match.group(1)
+        return local_time(f"{clock[:-3]} {match.group(2)}", clock[-2:], "%b %d %H:%M %Y"), match.group(3)
     return None, line
 
 
 def read_sssd_logs(root, since):
-    """Read /var/log/sssd, including rotated files; untimed lines inherit the previous timestamp."""
+    """Read /var/log/sssd, including rotated files; untimed lines inherit the previous timestamp. Lines are
+    classified as they are read and only those a rule matches are kept, so memory follows the findings, not the
+    log volume. Returns the matched events and the number of lines in the window per file."""
     events, counts = [], {}
     directory = root / "var/log/sssd"
     files = sorted(directory.glob("*.log*")) if directory.is_dir() else []
     for path in files:
+        # A file last written before the window holds nothing in it, which skips most rotated logs.
+        if datetime.datetime.fromtimestamp(path.stat().st_mtime, UTC) < since:
+            continue
         source = re.sub(r"\.log.*$", "", path.name)
         count = 0
         when = None
@@ -322,8 +372,10 @@ def read_sssd_logs(root, since):
                 when = stamp or when
                 if when is None or when < since or not text.strip():
                     continue
-                events.append(Event(when, source, text.strip()))
                 count += 1
+                event = classify(Event(when, source, text.strip()))
+                if event.keys:
+                    events.append(event)
         counts[str(path.relative_to(root))] = count
     return events, counts
 
@@ -359,8 +411,10 @@ def read_auth_log(root, since):
                     when = when.astimezone(UTC)
                 if when < since:
                     continue
-                events.append(Event(when, match.group(2).strip(), match.group(3).strip()))
                 count += 1
+                event = classify(Event(when, match.group(2).strip(), match.group(3).strip()))
+                if event.keys:
+                    events.append(event)
         counts[str(path.relative_to(root))] = count
     return events, counts
 
@@ -531,13 +585,24 @@ def offline_failures(found, boots, facts):
     names no domain, or VPN timing, only suggests it when several domains are configured; evidence from another
     domain does not count."""
     domains, realms = facts["domains"], facts["realms"]
-    unreachable = [(e.when, failure_context(e, domains, realms)[2]) for key in UNREACHABLE for e in found.get(key, [])]
+    unreachable = {}
+    for key in UNREACHABLE:
+        for e in found.get(key, []):
+            unreachable.setdefault(failure_context(e, domains, realms)[2], []).append(e.when)
+    for times in unreachable.values():
+        times.sort()
     failures = [(event, True) for event in found.get("no-cached-password", [])]
     for event in found.get("pam-authinfo-unavail", []):
         domain = failure_context(event, domains, realms)[2]
-        near = [where for t, where in unreachable
-                if event.when - datetime.timedelta(minutes=10) <= t <= event.when + datetime.timedelta(minutes=2)
-                and boot_of(t, boots) == boot_of(event.when, boots)]
+        # The window runs from 10 minutes before to 2 minutes after, clipped to the failure's own boot.
+        boot = boot_of(event.when, boots)
+        later_boots = [b for b in boots if b > event.when]
+        low = max([event.when - datetime.timedelta(minutes=10)] + ([boot] if boot else []))
+        high = event.when + datetime.timedelta(minutes=2)
+        near = [where for where, times in unreachable.items()
+                if bisect.bisect_left(times, low) < (bisect.bisect_left(times, later_boots[0])
+                                                     if later_boots and later_boots[0] <= high
+                                                     else bisect.bisect_right(times, high))]
         before_vpn = vpn_down_until_later(event.when, found, boots)
         if domain is not None and domain in near:
             failures.append((event, True))
@@ -576,14 +641,17 @@ def assess_vpn(found, boots):
     downs = [e.when for e in found.get("vpn-down", [])]
     onlines = [e.when for e in found.get("sssd-online", [])]
     failures = sorted(e.when for key in UNREACHABLE for e in found.get(key, []))
+    onlines.sort()
     episodes = []
     for up in ups:
         until = min([t for t in downs + ups if t > up], default=up + datetime.timedelta(minutes=30))
         # A reboot ends the connection even when no disconnect was logged.
         until = min([until, up + datetime.timedelta(minutes=30)] + [b for b in boots if b > up])
-        late = [t for t in failures if up + datetime.timedelta(seconds=90) <= t < until]
-        if late and not any(up <= t <= late[0] for t in onlines):
-            episodes.append(up)
+        first = bisect.bisect_left(failures, up + datetime.timedelta(seconds=90))
+        if first < len(failures) and failures[first] < until:
+            late = failures[first]
+            if bisect.bisect_right(onlines, late) == bisect.bisect_left(onlines, up):
+                episodes.append(up)
     if episodes:
         say("warning", f"after the VPN connected (last at {stamp(episodes[-1])}), SSSD or Kerberos still could not "
             f"reach the domain ({len(episodes)} time(s)). Check that resolvectl status lists the domain on the VPN "
@@ -815,13 +883,14 @@ def main():
     print(f"Logs searched since {stamp(since)}:")
     events = []
     journal = read_journal(root, since)
-    auth_entries = 0
+    auth_entries = journal_sssd = 0
     boots = []
     if journal is None:
         say("info", "journalctl not found; only log files are searched")
     else:
         journal_events, boots, auth_entries, failures = journal
         events += journal_events
+        journal_sssd = sum(1 for e in journal_events if e.source.startswith("sssd"))
         print(f"  journal: {len(journal_events)} entries (SSSD units, auth facility, VPN)")
         for failure in failures:
             say("failed", f"{failure}; entries it would have returned are missing from this report")
@@ -843,12 +912,12 @@ def main():
 
     found = {}
     for event in sorted(events, key=lambda e: e.when):
-        for key in classify(event).keys:
+        for key in (event if event.classified else classify(event)).keys:
             found.setdefault(key, []).append(event)
     print_findings(found, args.examples)
 
     facts = config_facts(root)
-    sssd_lines = len(sssd_events) + sum(1 for e in events if e.source.startswith("sssd"))
+    sssd_lines = sum(sssd_counts.values()) + journal_sssd
     offline = offline_failures(found, boots, facts)
     judged = assess(found, facts, sssd_lines, offline)
     judged = assess_boots(found, boots, [event for event, _certain in offline]) or judged

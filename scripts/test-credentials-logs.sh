@@ -261,6 +261,62 @@ refute 'cause: .*bob@lab.example'
 cp "$test_dir/sssd.conf" "$root/etc/sssd/sssd.conf"
 rm "$root/etc/pam.d/sshd"
 
+# Large SSSD logs stream: only lines a rule matches are kept, the keyword prefilter covers every rule, and casefolded
+# patterns keep their escapes.
+python3 - "$repo_root/scripts/credentials-logs.py" "$test_dir/scale" <<'EOF'
+import datetime, importlib.util, re, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("credentials_logs", sys.argv[1])
+logs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(logs)
+
+
+def alternatives(pattern):
+    """The top-level alternatives of a regular expression, split at | outside groups and classes."""
+    parts, current, depth, escaped, in_class = [], "", 0, False, False
+    for char in pattern:
+        if escaped:
+            current, escaped = current + char, False
+            continue
+        if char == "\\":
+            current, escaped = current + char, True
+            continue
+        if in_class:
+            current, in_class = current + char, char != "]"
+            continue
+        in_class = char == "["
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if char == "|" and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    return parts + [current]
+
+
+for key, rule in logs.RULES.items():
+    for alternative in alternatives(rule.pattern) if rule.pattern else []:
+        literal = re.sub(r"\\(.)", r"\1", alternative).lower()
+        assert any(keyword in literal for keyword in logs.KEYWORDS), (key, alternative)
+assert any(keyword in logs.PAM_RESULT.pattern for keyword in logs.KEYWORDS)
+assert logs.casefolded(r"Sssd\S*\.SERVICE") == r"sssd\S*\.service"
+
+root = Path(sys.argv[2])
+(root / "var/log/sssd").mkdir(parents=True)
+now = datetime.datetime.now().replace(microsecond=0)
+with open(root / "var/log/sssd/sssd_corp.example.log", "w") as handle:
+    for number in range(20000):
+        when = now - datetime.timedelta(seconds=20000 - number)
+        text = ("[be[corp.example]] [fo_resolve_service_done] (0x0020): Failed to resolve server 'dc1': Timeout"
+                if number % 1000 == 0 else "[be[corp.example]] [sdap_process_result] (0x2000): Trace: sh[0x55d4]")
+        handle.write(f"({when:%Y-%m-%d %H:%M:%S}:000001): {text}\n")
+since = datetime.datetime.now(logs.UTC) - datetime.timedelta(days=1)
+events, counts = logs.read_sssd_logs(root, since)
+assert counts == {"var/log/sssd/sssd_corp.example.log": 20000}, counts
+assert len(events) == 20 and all(event.keys == {"dc-unreachable"} for event in events), len(events)
+assert events[0].when == (now - datetime.timedelta(seconds=20000)).astimezone(logs.UTC), events[0].when
+EOF
+
 # Without journal persistence or SSSD log files, the report says what it could not see.
 rmdir "$root/var/log/journal"
 rmdir "$root/var/log/sssd"
