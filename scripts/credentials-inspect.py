@@ -207,6 +207,28 @@ def krb5_includes(root, path, seen):
                         yield from krb5_includes(root, child, seen)
 
 
+def krb5_writer_findings(root, path, st, accounts):
+    """Who may change a Kerberos file: root, and also sssd for the snippets SSSD generates under pubconf."""
+    rel = shown(root, path)
+    if st.st_mode & 0o002:
+        return [("warning", f"{rel} is writable by everyone, who could redirect Kerberos")]
+    if not accounts:
+        return []
+    users, groups = accounts
+    owners, writers = {users.get("root", (0,))[0]}, {groups.get("root", (0,))[0]}
+    if rel.startswith("/var/lib/sss/pubconf/"):
+        # Ubuntu's sssd-krb5-common installs krb5.include.d as sssd:sssd 0775 so SSSD can write there.
+        owners |= {users[SSSD_ACCOUNT][0]} if SSSD_ACCOUNT in users else set()
+        writers |= {groups[SSSD_ACCOUNT][0]} if SSSD_ACCOUNT in groups else set()
+    who = owner_name(accounts, st.st_uid, st.st_gid)
+    if st.st_uid not in owners:
+        return [("warning", f"{rel} is owned by {who}, so that account could redirect Kerberos")]
+    if st.st_mode & 0o020 and st.st_gid not in writers:
+        return [("warning", f"{rel} ({who} {st.st_mode & 0o777:04o}) is writable by its group, whose members could "
+                 "redirect Kerberos")]
+    return []
+
+
 def kerberos_findings(root, identity, accounts):
     """Access problems for krb5.conf, its includes, and the machine keytab, as (level, message) pairs."""
     findings = []
@@ -244,8 +266,7 @@ def kerberos_findings(root, identity, accounts):
                 if blocked:
                     findings.append(("warning", f"{reader.name} cannot enter {shown(root, blocked)} to read {rel}"))
                     break
-            if st.st_mode & 0o002 or (st.st_mode & 0o020 and accounts and st.st_gid != accounts[1].get("root", (0,))[0]):
-                findings.append(("warning", f"{rel} is writable by non-root users, who could redirect Kerberos"))
+            findings += krb5_writer_findings(root, path, st, accounts)
         if not pubconf:
             findings.append(("info", "krb5.conf does not include /var/lib/sss/pubconf/krb5.include.d, so Kerberos "
                              "tools miss the realm mappings and localauth plugin SSSD generates there"))
@@ -254,6 +275,9 @@ def kerberos_findings(root, identity, accounts):
         findings.append(("info", "no /etc/krb5.keytab; the AD provider needs the machine keytab to go online"))
     else:
         st = keytab.stat()
+        if accounts and st.st_uid != accounts[0].get("root", (0,))[0]:
+            findings.append(("warning", f"/etc/krb5.keytab is owned by {owner_name(accounts, st.st_uid, st.st_gid)}, "
+                             "so that account can read and replace the machine's secret keys; only root should own it"))
         group_ok = accounts is None or st.st_gid in {accounts[1][n][0] for n in ("root", SSSD_ACCOUNT)
                                                      if n in accounts[1]}
         if st.st_mode & 0o007 or (st.st_mode & 0o070 and not group_ok):
@@ -266,7 +290,9 @@ def kerberos_findings(root, identity, accounts):
 def load_sssd(root):
     """Merge sssd.conf and its conf.d snippets in SSSD's order: later snippets override earlier settings."""
     config = configparser.ConfigParser(interpolation=None, strict=False)
-    files = [root / "etc/sssd/sssd.conf", *sorted((root / "etc/sssd/conf.d").glob("*.conf"))]
+    # SSSD reads only snippets matching ^[^.].*\.conf$, so hidden backups never take effect.
+    snippets = sorted(p for p in (root / "etc/sssd/conf.d").glob("*.conf") if not p.name.startswith("."))
+    files = [root / "etc/sssd/sssd.conf", *snippets]
     present = [f for f in files if f.is_file()]
     config.origins = {}
     for file in present:

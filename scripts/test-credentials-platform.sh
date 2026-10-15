@@ -39,6 +39,8 @@ chmod 640 "$root/etc/sssd/sssd.conf"
 chmod 770 "$root/var/lib/sss/db" "$root/var/lib/sss/gpo_cache" "$root/var/lib/sss/pipes/private"
 chmod 775 "$root/var/lib/sss/mc" "$root/var/lib/sss/pipes" "$root/var/lib/sss/pubconf" "$root/var/log/sssd"
 chmod 1777 "$root/tmp"
+# Ubuntu's sssd-krb5-common makes SSSD's generated Kerberos snippets group-writable by sssd.
+chmod 775 "$root/var/lib/sss/pubconf/krb5.include.d"
 for helper in krb5_child ldap_child sssd_pam; do
     printf '#!/bin/sh\n' > "$root/usr/libexec/sssd/$helper"
     chmod 750 "$root/usr/libexec/sssd/$helper"
@@ -120,6 +122,14 @@ assert cmp("2.12.1-1", "2.12.0-1ubuntu9") > 0
 caps = struct.pack("<IIIII", 0x02000001, (1 << 2) | (1 << 6) | (1 << 7), 0, 0, 0)
 assert platform.parse_capabilities(caps) == {2, 6, 7}
 assert platform.parse_capabilities(struct.pack("<III", 0x01000000, 1 << 2, 0)) == {2}
+fold = platform.fold_capability_set
+needed = {"cap_dac_read_search", "cap_setuid", "cap_setgid"}
+assert fold([]) == set(platform.ALL_CAPS)
+assert needed <= fold(["CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID", "CAP_CHOWN"])
+assert fold(["CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID", ""]) == set()
+assert fold(["~CAP_SETUID"]) == set(platform.ALL_CAPS) - {"cap_setuid"}
+assert "cap_setuid" in fold(["CAP_CHOWN", "~CAP_SETUID", "CAP_SETUID"])
+assert fold(["", "CAP_CHOWN"]) == {"cap_chown"}
 EOF
 
 # A healthy Ubuntu 26.04 layout: only the missing helper capabilities (fixtures cannot set them) are flagged.
@@ -140,6 +150,7 @@ else
 fi
 check 'systemd unit and socket state, sssd --version, NTP sync, and mount options (live system only)'
 refute 'is not fully installed'
+refute 'redirect Kerberos'
 
 # Packaging: partial installs, mixed versions, and Ubuntu fixes the upstream version hides.
 dpkg_status sssd-common 'install ok half-configured' 2.12.0-1ubuntu5.1 sssd-krb5-common "$ok" 2.12.0-1ubuntu5.5 \
@@ -164,6 +175,15 @@ check '^warning: sssd.service sets NoNewPrivileges'
 check "^warning: sssd.service's CapabilityBoundingSet removes cap_setgid, cap_setuid"
 check '^info: responder services run as a different user than sssd.service: sssd-nss.service as root'
 chmod 750 "$root/usr/libexec/sssd/ldap_child"
+# Repeated assignments merge, and an empty one empties the set.
+printf '[Service]\nCapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID\n' \
+    > "$root/etc/systemd/system/sssd.service.d/harden.conf"
+printf '[Service]\nCapabilityBoundingSet=CAP_CHOWN\n' > "$root/etc/systemd/system/sssd.service.d/more.conf"
+status
+refute 'CapabilityBoundingSet removes'
+printf '[Service]\nCapabilityBoundingSet=\n' > "$root/etc/systemd/system/sssd.service.d/more.conf"
+status
+check "^warning: sssd.service's CapabilityBoundingSet removes cap_dac_read_search, cap_setgid, cap_setuid"
 rm -r "$root/etc/systemd/system/sssd.service.d" "$root/usr/lib/systemd/system/sssd-nss.service"
 
 # State directories: private ones stay private, public ones stay reachable, and the service user can write.
@@ -262,6 +282,28 @@ check '^warning: this sssd-common predates the slow-smartcard PAM responder cras
 check '^info: a smartcard failure does not mean password login fails'
 rm "$root/etc/sssd/conf.d/40-sc.conf" "$root/etc/pkcs11/modules/vendor.module"
 dpkg_status sssd-common "$ok" 2.12.0-1ubuntu5.5
+
+# Kerberos writers: sssd may own its generated snippets, but nothing else; only root may own the keytab.
+cp "$root/etc/passwd" "$test_dir/passwd"
+printf 'root:x:%s:0::/root:/bin/sh\nsssd:x:%s:%s::/var/lib/sss:/usr/sbin/nologin\n' "$((me + 2))" "$me" "$my_group" \
+    > "$root/etc/passwd"
+status
+refute '/var/lib/sss/pubconf/krb5.include.d is owned by'
+check '^warning: /etc/krb5.conf is owned by sssd:sssd, so that account could redirect Kerberos'
+check '^warning: /etc/krb5.keytab is owned by sssd:sssd, so that account can read and replace'
+printf 'root:x:%s:0::/root:/bin/sh\nsssd:x:%s:%s::/var/lib/sss:/usr/sbin/nologin\nalice:x:%s:1000::/home/alice:/bin/bash\n' \
+    "$((me + 2))" "$((me + 1))" "$my_group" "$me" > "$root/etc/passwd"
+status
+check '^warning: /var/lib/sss/pubconf/krb5.include.d is owned by alice:sssd, so that account could redirect Kerberos'
+check '^warning: /etc/krb5.keytab is owned by alice:sssd, so that account can read and replace'
+cp "$test_dir/passwd" "$root/etc/passwd"
+mkdir -p "$root/etc/krb5.conf.d"
+chmod 775 "$root/etc/krb5.conf.d"
+printf 'includedir /etc/krb5.conf.d/\nincludedir /var/lib/sss/pubconf/krb5.include.d/\n[libdefaults]\n' > "$root/etc/krb5.conf"
+status
+check '^warning: /etc/krb5.conf.d (root:sssd 0775) is writable by its group, whose members could redirect Kerberos'
+refute '/var/lib/sss/pubconf/krb5.include.d (root:sssd 0775) is writable'
+printf 'includedir /var/lib/sss/pubconf/krb5.include.d/\n[libdefaults]\n' > "$root/etc/krb5.conf"
 
 # Logs: AppArmor denials for SSSD only, ticket cache, home, crypto and keytab failures, PAM stages, collisions.
 now_us="$(python3 -c 'import time; print(int(time.time() * 1e6) - 60000000)')"

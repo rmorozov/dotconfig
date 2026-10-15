@@ -145,6 +145,17 @@ check '^warning: SSSD configuration is invalid: sssctl config-check reported 1 p
 refute 'SecretMustNeverPrint'
 printf '#!/usr/bin/env bash\nprintf "Issues identified by validators: 0\\n"\n' > "$stubs/sssctl"
 
+# SSSD ignores hidden snippets, so neither a hidden override nor a broken hidden backup counts.
+printf '[domain/corp.example]\ncache_credentials = False\n' > "$root/etc/sssd/conf.d/.backup.conf"
+printf 'not a section line\n' > "$root/etc/sssd/conf.d/.broken.conf"
+chmod 644 "$root/etc/sssd/conf.d/.backup.conf" "$root/etc/sssd/conf.d/.broken.conf"
+status
+check '^ok: corp.example: cache_credentials is on'
+refute '.backup.conf\|.broken.conf'
+logs
+refute 'SSSD configuration is invalid'
+rm "$root/etc/sssd/conf.d/.backup.conf" "$root/etc/sssd/conf.d/.broken.conf"
+
 # A malformed snippet cannot be parsed; check-logs reports it instead of failing.
 printf 'not a section line\n' > "$root/etc/sssd/conf.d/90-broken.conf"
 chmod 640 "$root/etc/sssd/conf.d/90-broken.conf"

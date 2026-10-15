@@ -117,6 +117,12 @@ UNITS = ("sssd.service", "sssd-nss.socket", "sssd-pam.socket", "sssd-pam-priv.so
 HELPER_DIR = "usr/libexec/sssd"
 # Capability numbers from linux/capability.h.
 CAPS = {2: "cap_dac_read_search", 6: "cap_setgid", 7: "cap_setuid"}
+ALL_CAPS = frozenset(f"cap_{name}" for name in (
+    "chown dac_override dac_read_search fowner fsetid kill setgid setuid setpcap linux_immutable net_bind_service "
+    "net_broadcast net_admin net_raw ipc_lock ipc_owner sys_module sys_rawio sys_chroot sys_ptrace sys_pacct "
+    "sys_admin sys_boot sys_nice sys_resource sys_time sys_tty_config mknod lease audit_write audit_control "
+    "setfcap mac_override mac_admin syslog wake_alarm block_suspend audit_read perfmon bpf checkpoint_restore"
+).split())
 HELPERS = {"krb5_child": {2, 6, 7}, "ldap_child": {2}, "sssd_pam": {2}}
 
 
@@ -141,6 +147,35 @@ def parse_capabilities(raw):
     return {bit for bit in range(64) if mask >> bit & 1}
 
 
+def fold_capability_set(values):
+    """CapabilityBoundingSet as systemd builds it: the first assignment or an empty one replaces the set, later
+    ones are OR-ed in, and ~ inverts that one assignment's list."""
+    state = set(ALL_CAPS)
+    for value in values:
+        invert = value.startswith("~")
+        names = {name.lower() for name in value.lstrip("~").split()}
+        current = set(ALL_CAPS) - names if invert else names
+        if not current or state == ALL_CAPS:
+            state = current
+        else:
+            state |= current
+    return state
+
+
+def hardening(root, live):
+    """(NoNewPrivileges on, bounding set) for sssd.service, from systemd itself on a live system."""
+    if live:
+        result = run(["systemctl", "show", "-p", "NoNewPrivileges", "-p", "CapabilityBoundingSet", "sssd.service"])
+        if result is not None and result.returncode == 0:
+            props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+            if "CapabilityBoundingSet" in props:
+                return (props.get("NoNewPrivileges") == "yes",
+                        {name.lower() for name in props["CapabilityBoundingSet"].split()})
+    no_new = [v for v, _ in inspector.unit_values(root, "sssd.service", "NoNewPrivileges")]
+    bounding = [v for v, _ in inspector.unit_values(root, "sssd.service", "CapabilityBoundingSet")]
+    return bool(no_new) and no_new[-1].lower() in inspector.TRUE, fold_capability_set(bounding)
+
+
 def service_findings(root, identity, accounts, live):
     findings, not_checked = [], []
     responders = {}
@@ -154,18 +189,14 @@ def service_findings(root, identity, accounts, live):
         findings.append(("info", "responder services run as a different user than sssd.service: "
                          + ", ".join(f"{u} as {n}" for u, n in sorted(differing.items()))))
     if identity and not identity.root:
-        no_new = [v for v, _ in inspector.unit_values(root, "sssd.service", "NoNewPrivileges")]
-        if no_new and no_new[-1].lower() in inspector.TRUE:
+        no_new, allowed = hardening(root, live)
+        if no_new:
             findings.append(("warning", "sssd.service sets NoNewPrivileges, so the helpers' file capabilities are "
                              "ignored and krb5_child cannot read the keytab or switch users"))
-        bounding = [v for v, _ in inspector.unit_values(root, "sssd.service", "CapabilityBoundingSet")]
-        if bounding and bounding[-1]:
-            allowed = set(bounding[-1].replace("~", "").lower().split())
-            needed = {CAPS[c] for caps in HELPERS.values() for c in caps}
-            missing = needed - allowed if not bounding[-1].startswith("~") else needed & allowed
-            if missing:
-                findings.append(("warning", f"sssd.service's CapabilityBoundingSet removes {', '.join(sorted(missing))}"
-                                 ", which the helpers need"))
+        missing = {CAPS[c] for caps in HELPERS.values() for c in caps} - allowed
+        if missing:
+            findings.append(("warning", f"sssd.service's CapabilityBoundingSet removes {', '.join(sorted(missing))}, "
+                             "which the helpers need"))
         findings += helper_findings(root, identity, accounts, not_checked)
     elif identity:
         findings.append(("info", "SSSD runs as root, so helper capabilities are not needed"))
