@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+test_dir="$(mktemp -d)"
+trap 'rm -rf "$test_dir"' EXIT
+export DOTCONFIG_CREDS_TEST_ROOT="$test_dir/root"
+root="$DOTCONFIG_CREDS_TEST_ROOT"
+stubs="$test_dir/bin"
+journal="$test_dir/journal"
+mkdir -p "$root/etc/sssd" "$root/etc/pam.d" "$root/var/log/sssd" "$root/var/log/journal" "$stubs" "$journal"
+
+cat > "$root/etc/sssd/sssd.conf" <<'EOF'
+[sssd]
+domains = corp.example
+services = nss, pam
+
+[domain/corp.example]
+id_provider = ad
+EOF
+chmod 600 "$root/etc/sssd/sssd.conf"
+printf 'auth [success=2 default=ignore] pam_unix.so nullok\nauth [success=1 default=ignore] pam_sss.so use_first_pass\nauth requisite pam_deny.so\n' \
+    > "$root/etc/pam.d/common-auth"
+
+# Two boots: in each, login fails before the VPN; in the second, SSSD stays unreachable after it connects.
+python3 - "$root" "$journal" <<'EOF'
+import datetime, gzip, json, sys
+from pathlib import Path
+
+root, journal = Path(sys.argv[1]), Path(sys.argv[2])
+now = datetime.datetime.now().replace(microsecond=0)
+boot1, boot2 = now - datetime.timedelta(days=2), now - datetime.timedelta(hours=1)
+def at(boot, minutes):
+    return boot + datetime.timedelta(minutes=minutes)
+
+entries = {"auth": [], "sssd": [], "vpn": []}
+def log(kind, when, ident, message, facility=None):
+    entry = {"__CURSOR": f"c{len(sum(entries.values(), []))}-{kind}", "__REALTIME_TIMESTAMP": str(int(when.timestamp() * 1e6)),
+             "SYSLOG_IDENTIFIER": ident, "MESSAGE": message}
+    if facility:
+        entry["SYSLOG_FACILITY"] = facility
+    entries[kind].append(entry)
+
+failure = "pam_sss(gdm-password:auth): received for user alice@corp.example: 9 (Authentication service cannot retrieve authentication info)"
+for boot in (boot1, boot2):
+    log("auth", at(boot, 1), "gdm-password]", failure, "10")
+    log("vpn", at(boot, 3), "nm-openconnect-service", "Connected as 10.8.0.5, using SSL, with DTLS in progress")
+log("auth", at(boot1, 4), "gdm-password]", "pam_sss(gdm-password:auth): authentication success; logname= uid=0 euid=0 tty=/dev/tty1 ruser= rhost= user=alice@corp.example", "10")
+log("sssd", at(boot2, 0), "systemd", "sssd.service: Main process exited, code=killed, status=6/ABRT")
+for kind in entries:
+    (journal / kind).write_text("".join(json.dumps(e) + "\n" for e in entries[kind]))
+(journal / "boots").write_text(json.dumps([{"boot_id": "a", "first_entry": int(boot1.timestamp() * 1e6)},
+                                           {"boot_id": "b", "first_entry": int(boot2.timestamp() * 1e6)}]))
+
+def sssd(when, text):
+    return f"({when:%Y-%m-%d} {when.hour:2d}:{when:%M:%S}:000123): {text}\n"
+old = now - datetime.timedelta(days=30)
+(root / "var/log/sssd/sssd_corp.example.log").write_text(
+    sssd(old, "[be[corp.example]] [sysdb_cache_auth] (0x0040): Too many failed logins.")
+    + sssd(at(boot2, 1), "[be[corp.example]] [sysdb_cache_auth] (0x0400): Cached credentials not available.")
+    + "   untimed continuation line\n"
+    + sssd(at(boot2, 9), "[be[corp.example]] [fo_resolve_service_done] (0x0020): Failed to resolve server 'dc1.corp.example': Timeout")
+    + sssd(at(boot2, 10), "[be[corp.example]] [confdb] (0x0010): Unknown option ldap_default_authtok = SecretMustNeverPrint"))
+(root / "var/log/sssd/krb5_child.log").write_text(
+    sssd(at(boot2, 12), "[krb5_child[4242]] [get_and_save_tgt] (0x0020): 1765328228: [-1765328228][Cannot contact any KDC for realm 'CORP.EXAMPLE']")
+    + sssd(at(boot2, 13), "[krb5_child[4243]] [get_and_save_tgt] (0x0020): Clock skew too great"))
+with gzip.open(root / "var/log/sssd/sssd.log.2.gz", "wt") as handle:
+    handle.write(sssd(at(boot1, 30), "[sssd] [mt_svc_exit_handler] (0x0010): Child [123] ('corp.example':'%BE_corp.example') was terminated by own WATCHDOG"))
+EOF
+
+cat > "$stubs/journalctl" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+    *--list-boots*) cat "$journal/boots" ;;
+    *SYSLOG_FACILITY=*) cat "$journal/auth" ;;
+    *sssd*) cat "$journal/sssd" ;;
+    *openconnect*) cat "$journal/vpn" ;;
+esac
+EOF
+chmod +x "$stubs/journalctl"
+export PATH="$stubs:$PATH"
+
+check() {
+    grep -q -- "$1" "$test_dir/out" || { cat "$test_dir/out" >&2; echo "Missing: $1" >&2; exit 1; }
+}
+refute() {
+    if grep -q -- "$1" "$test_dir/out"; then cat "$test_dir/out" >&2; echo "Unexpected: $1" >&2; exit 1; fi
+}
+
+bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
+check '^warning: Domain login failed: no domain controller and no usable cached password (2 times'
+check '^warning: SSSD had no cached password for an offline login (once'
+check 'e.g. .* gdm-password\]: pam_sss(gdm-password:auth): received for user alice@corp.example: 9'
+check '^warning: cause: cache_credentials is off for corp.example'
+check '^warning: in 2 of 2 boot(s) with login activity, domain login failed before the VPN connected; in 1 of them'
+check '^warning: after the VPN connected .* still could not reach the domain (1 time'
+check '^warning: Kerberos clock skew'
+check '^warning: SSSD crashed, hung, or was restarted (2 times'
+check '^ok: SSSD accepted domain logins'
+check 'ldap_default_authtok = <hidden>'
+check '/var/log/sssd/sssd.log.2.gz: 1 lines'
+refute 'SecretMustNeverPrint'
+refute 'Too many failed logins'
+refute 'untimed continuation'
+
+# The PAM stack is blamed when the configuration caches passwords but pam_krb5 skips pam_sss.
+printf 'cache_credentials = True\n' >> "$root/etc/sssd/sssd.conf"
+printf 'auth sufficient pam_krb5.so minimum_uid=1000\n' | cat - "$root/etc/pam.d/common-auth" > "$test_dir/pam"
+cp "$test_dir/pam" "$root/etc/pam.d/common-auth"
+bash "$repo_root/scripts/credentials.sh" check-logs --examples 2 > "$test_dir/out" 2>&1
+check '^warning: cause: pam_krb5 succeeds before pam_sss and skips it'
+refute 'cause: cache_credentials'
+[[ "$(grep -c 'e.g. .*received for user' "$test_dir/out")" == 2 ]] || { cat "$test_dir/out" >&2; exit 1; }
+
+# A healthy window: an online login and an offline login from the cache, nothing else.
+sed -i.bak '/pam_krb5/d' "$root/etc/pam.d/common-auth"
+rm -f "$root"/var/log/sssd/*
+now_us="$(python3 -c 'import time; print(int(time.time() * 1e6) - 60000000)')"
+printf '{"__CURSOR":"h1","__REALTIME_TIMESTAMP":"%s","SYSLOG_IDENTIFIER":"gdm-password]","SYSLOG_FACILITY":"10","MESSAGE":"pam_sss(gdm-password:auth): authentication success; user=alice@corp.example"}\n' \
+    "$now_us" > "$journal/auth"
+printf '{"__CURSOR":"h2","__REALTIME_TIMESTAMP":"%s","SYSLOG_IDENTIFIER":"gdm-password]","SYSLOG_FACILITY":"10","MESSAGE":"Authenticated with cached credentials, your cached password will expire at: never"}\n' \
+    "$now_us" >> "$journal/auth"
+: > "$journal/sssd"
+: > "$journal/vpn"
+bash "$repo_root/scripts/credentials.sh" check-logs --days 1 > "$test_dir/out" 2>&1
+refute '^warning'
+check '^ok: offline login from cached credentials worked 1 time'
+check '^info: SSSD logged nothing in this window'
+
+# Without journal persistence or SSSD log files, the report says what it could not see.
+rmdir "$root/var/log/journal"
+rmdir "$root/var/log/sssd"
+bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
+check 'journal is not kept across reboots'
+check 'no /var/log/sssd logs'
+
+for bad in '--days' '--days 0' '--days x' '--bogus'; do
+    # shellcheck disable=SC2086 # Each case is a separate argument list.
+    if bash "$repo_root/scripts/credentials.sh" check-logs $bad > /dev/null 2>&1; then
+        echo "check-logs accepted: $bad" >&2
+        exit 1
+    fi
+done
+echo 'Credential log check tests passed.'

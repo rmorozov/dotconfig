@@ -76,11 +76,14 @@ On Ubuntu machines that log in with a domain account through SSSD, `dotconfig cr
 
 ```sh
 dotconfig creds status          # settings, PAM order, cached passwords, tickets; never secrets
+dotconfig creds check-logs      # search the last 7 days of login logs and judge the likely cause
 dotconfig creds clear           # kdestroy -A and sss_cache -E; cached passwords stay
 dotconfig creds clear --purge   # also stop SSSD and move its whole cache aside
 ```
 
 `status` reads `/etc/sssd` and `/var/lib/sss` through `sudo`. It shows only the settings that decide offline login and flags the two usual reasons a domain password is never cached: `cache_credentials` left at its default of `False`, and `pam_krb5` authenticating before `pam_sss`, which skips SSSD entirely. Installing `ldb-tools` lets it name the users with a cached password.
+
+`check-logs` reads, through `sudo`, the journal for the SSSD units, the auth facility, and OpenConnect or NetworkManager VPN messages, plus `/var/log/sssd/*.log` including rotated files, and falls back to `/var/log/auth.log` when the journal has no auth entries. It matches known patterns such as `pam_sss` returning `Authentication service cannot retrieve authentication info`, `Cached credentials not available`, expired cached entries, unreachable KDCs or domain controllers, clock skew, keytab and GPO failures, and SSSD watchdog restarts. It prints each finding with its count, time span, and one example line (`--examples N` for more), then an assessment that weighs the logs against the configuration: which of the two usual causes applies, whether login failed before the VPN connected in each boot, and whether SSSD stayed unreachable after the VPN came up, which points at DNS over the VPN. Use `--days N` to widen or narrow the window. SSSD's default `debug_level` logs only serious failures, so if it finds little, run `sudo sssctl debug-level 6`, reproduce the login, and run it again. Examples hide values of settings named like passwords or secrets, but do include user and host names.
 
 `--purge` asks for confirmation, then moves the SSSD cache to `/var/lib/sss/dotconfig-backup/<timestamp>/` instead of deleting it. After a purge, the next domain login must reach a domain controller, so connect the VPN first. To undo, stop SSSD, move the files back into `/var/lib/sss/db` and `/var/lib/sss/mc`, and start it again.
 
