@@ -9,7 +9,7 @@ let g:coc_global_extensions = [
             \ 'coc-go@1.3.35',
             \ 'coc-highlight@2.0.5',
             \ 'coc-html@1.9.2',
-            \ 'coc-json@1.9.16',
+            \ 'coc-json@1.9.17',
             \ 'coc-markdownlint@1.41.2',
             \ 'coc-python@1.2.13',
             \ 'coc-rust-analyzer@0.89.2',
