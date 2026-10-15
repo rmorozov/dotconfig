@@ -77,7 +77,8 @@ case "\$*" in
     *openconnect*) cat "$journal/vpn" ;;
 esac
 EOF
-chmod +x "$stubs/journalctl"
+printf '#!/usr/bin/env bash\nprintf "Issues identified by validators: 0\\n"\n' > "$stubs/sssctl"
+chmod +x "$stubs/journalctl" "$stubs/sssctl"
 export PATH="$stubs:$PATH"
 
 check() {

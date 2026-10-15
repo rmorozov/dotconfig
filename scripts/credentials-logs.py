@@ -3,11 +3,9 @@
 
 import argparse
 import configparser
-import contextlib
 import datetime
 import gzip
 import importlib.util
-import io
 import json
 import re
 import shutil
@@ -308,28 +306,76 @@ def read_auth_log(root, since):
 
 # --- Configuration facts --------------------------------------------------------------------------------------
 
-def config_facts(root):
-    """What sssd.conf and PAM say about the two usual causes, or None when unreadable."""
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            config, files = inspector.load_sssd(root)
-            lines = inspector.pam_auth_lines(root, "gdm-password") or inspector.pam_auth_lines(root, "common-auth")
-    except (configparser.Error, OSError):
+def sssctl_check(root):
+    """Ask the installed SSSD to validate its configuration: (issues, exit code), or None without sssctl."""
+    sssctl = shutil.which("sssctl")
+    if not sssctl:
         return None
-    domains = [d.strip() for d in config.get("sssd", "domains", fallback="").split(",") if d.strip()]
-    if not domains:
-        domains = [s.split("/", 1)[1] for s in config.sections() if s.startswith("domain/")]
-    cache_off = [d for d in domains
-                 if config.get(f"domain/{d}", "cache_credentials", fallback="false").strip().lower()
-                 not in inspector.TRUE]
+    result = subprocess.run([sssctl, "config-check", "-c", str(root / "etc/sssd/sssd.conf"),
+                             "-s", str(root / "etc/sssd/conf.d")], capture_output=True, text=True, check=False)
+    output = (result.stdout + result.stderr).splitlines()
+    issues, collecting = [], False
+    for line in output:
+        if re.match(r"Issues identified by validators:\s*\d+", line):
+            collecting = True
+        elif collecting and line.strip() and not re.match(r"Messages generated|Used configuration", line):
+            issues.append(PRIVATE_VALUE.sub(r"\1<hidden>", line.strip()))
+        elif collecting and not line.strip():
+            collecting = False
+    return issues, result.returncode
+
+
+def config_facts(root):
+    """What the configuration says, and whether SSSD would accept it: valid, invalid, unknown, or absent."""
+    facts = {"state": "unknown", "reasons": [], "confirmed": False, "kerberos": [], "present": False,
+             "domains": [], "cache_off": [], "pam_bypass": False, "pam_sss": True}
+    config = identity = accounts = None
+    try:
+        config, files, identity, _source, accounts, findings = inspector.check_config(root)
+        facts["present"] = bool(files)
+        facts["state"] = "valid" if files else "absent"
+        facts["reasons"] = [message for level, message in findings if level == "warning"]
+        if facts["reasons"]:
+            facts["state"] = "invalid"
+    except configparser.Error as exc:
+        # Parser messages quote the offending line, which may hold a private value.
+        facts["state"], facts["present"] = "invalid", True
+        facts["reasons"] = [f"it cannot be parsed ({type(exc).__name__})"]
+    except OSError as exc:
+        facts["reasons"] = [f"it cannot be read ({exc.strerror or exc})"]
+    if facts["present"]:
+        checked = sssctl_check(root)
+        if checked is not None:
+            issues, code = checked
+            if issues or code != 0:
+                facts["state"] = "invalid"
+                facts["reasons"].append(f"sssctl config-check reported {len(issues) or 'a'} problem(s)"
+                                        + (": " + "; ".join(issues[:3]) if issues else f" (exit {code})"))
+            elif facts["state"] == "valid":
+                facts["confirmed"] = True
+    try:
+        facts["kerberos"] = inspector.kerberos_findings(root, identity, accounts)
+    except OSError as exc:
+        facts["kerberos"] = [("info", f"Kerberos files could not be checked ({exc.strerror or exc})")]
+    if config is not None and facts["state"] == "valid":
+        domains = [d.strip() for d in config.get("sssd", "domains", fallback="").split(",") if d.strip()]
+        if not domains:
+            domains = [s.split("/", 1)[1] for s in config.sections() if s.startswith("domain/")]
+        facts["domains"] = domains
+        facts["cache_off"] = [d for d in domains
+                              if config.get(f"domain/{d}", "cache_credentials", fallback="false").strip().lower()
+                              not in inspector.TRUE]
+    try:
+        lines = inspector.pam_auth_lines(root, "gdm-password") or inspector.pam_auth_lines(root, "common-auth")
+    except OSError:
+        return facts
     stack = [inspector.parse_pam_line(line) for line in lines]
     modules = [module for _control, module in stack]
-    bypass = False
     if "pam_sss" in modules and "pam_krb5" in modules[:modules.index("pam_sss")]:
         krb5 = modules.index("pam_krb5")
-        bypass = inspector.success_skips(stack[krb5][0], krb5, modules.index("pam_sss"))
-    return {"present": bool(files), "domains": domains, "cache_off": cache_off,
-            "pam_bypass": bypass, "pam_sss": "pam_sss" in modules}
+        facts["pam_bypass"] = inspector.success_skips(stack[krb5][0], krb5, modules.index("pam_sss"))
+    facts["pam_sss"] = "pam_sss" in modules or not lines
+    return facts
 
 
 # --- Reporting ------------------------------------------------------------------------------------------------
@@ -433,18 +479,38 @@ def assess_vpn(found, boots):
     return bool(episodes)
 
 
+def assess_config(facts):
+    """Configuration problems come first: the judgements after them assume the configuration SSSD runs with."""
+    judged = False
+    if facts["state"] == "invalid":
+        judged = True
+        say("warning", f"SSSD configuration is invalid: {'; '.join(facts['reasons'])}. SSSD may refuse to start or "
+            "run without it, so fix this first; the judgements below do not rely on sssd.conf")
+    elif facts["state"] == "unknown":
+        judged = True
+        say("info", f"SSSD configuration could not be checked: {'; '.join(facts['reasons'])}. The judgements below "
+            "do not rely on sssd.conf")
+    elif facts["confirmed"]:
+        say("ok", "sssctl config-check accepts the SSSD configuration")
+    for level, message in facts["kerberos"]:
+        if level == "warning":
+            judged = True
+            say(level, f"Kerberos: {message}")
+    return judged
+
+
 def assess(found, facts, sssd_lines, offline):
     print("Assessment:")
+    judged = assess_config(facts)
     sss_logins = found.get("sss-login", [])
     krb5_logins = found.get("krb5-login", [])
-    judged = False
     if offline:
         judged = True
-        if facts and facts["cache_off"]:
+        if facts["cache_off"]:
             say("warning", f"cause: cache_credentials is off for {', '.join(facts['cache_off'])}, so SSSD never "
                 "stores a password and every offline login fails. Set cache_credentials = True in the domain "
                 "section, restart sssd, and log in once with the VPN up")
-        elif facts and facts["pam_bypass"]:
+        elif facts["pam_bypass"]:
             say("warning", "cause: pam_krb5 succeeds before pam_sss and skips it, so SSSD never sees the password"
                 + (f" (pam_krb5 accepted {len(krb5_logins)} login(s) in this window)" if krb5_logins else "")
                 + ". Remove libpam-krb5 and let SSSD obtain tickets")
@@ -463,7 +529,7 @@ def assess(found, facts, sssd_lines, offline):
         judged = True
         say("info", f"pam_sss returned PAM result 9 {len(found['pam-authinfo-unavail'])} time(s) with no sign that "
             "SSSD was offline, so the cache is not implicated; the SSSD lines around those times give the cause")
-    if not offline and facts and (facts["cache_off"] or facts["pam_bypass"]):
+    if not offline and (facts["cache_off"] or facts["pam_bypass"]):
         judged = True
         say("info", "the configuration cannot cache passwords (see dotconfig creds status), though no failing "
             "offline login is logged in this window")
@@ -471,7 +537,7 @@ def assess(found, facts, sssd_lines, offline):
         judged = True
         say("ok", f"offline login from cached credentials worked {len(found['cached-login'])} time(s), "
             f"last at {stamp(found['cached-login'][-1].when)}")
-    if facts and facts["present"] and not facts["pam_sss"]:
+    if facts["present"] and not facts["pam_sss"]:
         judged = True
         say("warning", "pam_sss is not in the login PAM stack, so SSSD takes no part in domain logins")
     if not sssd_lines:

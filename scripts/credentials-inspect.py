@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 # Only settings that decide offline login are shown; bind passwords and similar values never are.
@@ -27,23 +28,260 @@ def say(level, message):
     print(f"{level}: {message}")
 
 
+# --- File access ----------------------------------------------------------------------------------------------
+# SSSD 2.12 on Ubuntu 26.04 runs as the sssd user and accepts root or sssd as a config file's owner and group,
+# with no access for others. Users and groups are read from the inspected root's own files.
+SSSD_ACCOUNT = "sssd"
+ACL_XATTR = "system.posix_acl_access"
+
+
+@dataclass
+class Identity:
+    name: str
+    uid: int = -1
+    gids: tuple = ()
+    root: bool = False
+
+
+EVERYONE = Identity("ordinary users")
+
+
+def read_accounts(root):
+    """Map user names to (uid, gid) and group names to (gid, members), or None without /etc/passwd."""
+    passwd, group = root / "etc/passwd", root / "etc/group"
+    if not passwd.is_file():
+        return None
+    users, groups = {}, {}
+    for line in passwd.read_text(errors="replace").splitlines():
+        fields = line.split(":")
+        if len(fields) >= 4 and fields[2].isdigit() and fields[3].isdigit():
+            users.setdefault(fields[0], (int(fields[2]), int(fields[3])))
+    for line in (group.read_text(errors="replace").splitlines() if group.is_file() else []):
+        fields = line.split(":")
+        if len(fields) >= 4 and fields[2].isdigit():
+            groups.setdefault(fields[0], (int(fields[2]), [m for m in fields[3].split(",") if m]))
+    return users, groups
+
+
+def unit_user(root):
+    """The User= systemd gives sssd.service, following unit and drop-in precedence; empty means root."""
+    unit_dirs = ("etc/systemd/system", "run/systemd/system", "usr/lib/systemd/system", "lib/systemd/system")
+    units = [root / d / "sssd.service" for d in unit_dirs if (root / d / "sssd.service").is_file()]
+    dropins = {}
+    for d in reversed(unit_dirs):
+        for path in (root / d / "sssd.service.d").glob("*.conf"):
+            dropins[path.name] = path
+    user, source = "", None
+    for path in units[:1] + [dropins[name] for name in sorted(dropins)]:
+        section = ""
+        for line in path.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("["):
+                section = line
+            elif section == "[Service]" and re.match(r"User\s*=", line):
+                user, source = line.split("=", 1)[1].strip(), shown(root, path)
+    return user, source
+
+
+def service_identity(root, config, accounts):
+    """Who the SSSD daemon runs as, and where that came from; None when the account cannot be resolved."""
+    name, source = config.get("sssd", "user", fallback="").strip(), "[sssd] user"
+    if not name:
+        name, source = unit_user(root)
+        name, source = name or "root", source or "the default"
+    if name == "root" or name == "0":
+        return Identity("root", root=True), source
+    if accounts is None or name not in accounts[0]:
+        return None, source
+    users, groups = accounts
+    uid, gid = users[name]
+    extra = tuple(g for g, members in groups.values() if name in members)
+    return Identity(name, uid, (gid,) + extra), source
+
+
+def allows(st, identity, want):
+    """Mode-bit access check; want is 4 for read, 1 for search, 5 for both."""
+    if identity.root:
+        return True
+    if st.st_uid == identity.uid:
+        bits = st.st_mode >> 6
+    elif st.st_gid in identity.gids:
+        bits = st.st_mode >> 3
+    else:
+        bits = st.st_mode
+    return bits & want == want
+
+
+def has_acl(path):
+    try:
+        return ACL_XATTR in os.listxattr(path)
+    except (AttributeError, OSError):
+        return False
+
+
+def blocked_parent(root, path, identity):
+    """The first directory between root and path that identity cannot search, or None."""
+    for parent in reversed(path.parents):
+        if parent == root or root in parent.parents:
+            if not allows(parent.stat(), identity, 1):
+                return parent
+    return None
+
+
+def shown(root, path):
+    """A path as it appears on the inspected system."""
+    try:
+        return "/" + str(path.relative_to(root)).lstrip("./")
+    except ValueError:
+        return str(path)
+
+
+def owner_name(accounts, uid, gid):
+    users = {v[0]: k for k, v in reversed(list(accounts[0].items()))} if accounts else {}
+    groups = {v[0]: k for k, v in reversed(list(accounts[1].items()))} if accounts else {}
+    return f"{users.get(uid, uid)}:{groups.get(gid, gid)}"
+
+
+def sssd_file_findings(root, files, identity, accounts):
+    """Problems SSSD 2.12 would have with its config files, as (level, message) pairs."""
+    findings = []
+    owners = groups = None
+    if accounts:
+        users, group_table = accounts
+        owners = {users[n][0] for n in ("root", SSSD_ACCOUNT) if n in users}
+        groups = {group_table[n][0] for n in ("root", SSSD_ACCOUNT) if n in group_table}
+    for path in files:
+        rel = shown(root, path)
+        st = path.stat()
+        mode = f"{st.st_mode & 0o777:04o}"
+        if st.st_mode & 0o007:
+            findings.append(("warning", f"{rel} ({mode}) is accessible to other users; SSSD refuses to start with it. "
+                             f"Remove the access for others (chmod o= {rel}) rather than changing its owner"))
+        if owners is not None and (st.st_uid not in owners or st.st_gid not in groups):
+            findings.append(("warning", f"{rel} is owned by {owner_name(accounts, st.st_uid, st.st_gid)}; SSSD "
+                             f"accepts only root or {SSSD_ACCOUNT} as its owner and group"))
+        if identity and not allows(st, identity, 4):
+            findings.append(("warning", f"the SSSD service user {identity.name} cannot read {rel} "
+                             f"({owner_name(accounts, st.st_uid, st.st_gid)} {mode})"
+                             + ("; it has an ACL, which this check does not evaluate" if has_acl(path) else "")))
+        blocked = blocked_parent(root, path, identity) if identity else None
+        if blocked:
+            findings.append(("warning", f"the SSSD service user {identity.name} cannot enter {shown(root, blocked)} "
+                             f"to reach {rel}"))
+    return findings
+
+
+def krb5_includes(root, path, seen):
+    """Yield (path, included_by, is_dir) for every file and directory krb5.conf includes, recursively."""
+    if path in seen or not path.is_file():
+        return
+    seen.add(path)
+    for line in path.read_text(errors="replace").splitlines():
+        match = re.match(r"\s*(include|includedir)\s+(\S.*?)\s*$", line)
+        if not match:
+            continue
+        target = root / match.group(2).lstrip("/")
+        if match.group(1) == "include":
+            yield target, path, False
+            yield from krb5_includes(root, target, seen)
+        else:
+            yield target, path, True
+            if target.is_dir():
+                for child in sorted(target.iterdir()):
+                    # MIT reads only names of letters, digits, dashes and underscores, or ending in .conf.
+                    if re.fullmatch(r"[\w-]+", child.name) or (child.name.endswith(".conf") and child.name[0] != "."):
+                        yield child, target, False
+                        yield from krb5_includes(root, child, seen)
+
+
+def kerberos_findings(root, identity, accounts):
+    """Access problems for krb5.conf, its includes, and the machine keytab, as (level, message) pairs."""
+    findings = []
+    conf = root / "etc/krb5.conf"
+    if not conf.exists():
+        findings.append(("info", "no /etc/krb5.conf; Kerberos relies on DNS and built-in defaults"))
+    else:
+        entries = [(conf, None, False)]
+        if conf.is_symlink():
+            # The link itself is never read; its target and that target's directories are.
+            target = os.readlink(conf)
+            entries.append((root / target.lstrip("/") if target.startswith("/") else conf.parent / target, conf, False))
+        entries += list(krb5_includes(root, conf, set()))
+        pubconf = False
+        for path, parent, is_dir in entries:
+            rel = shown(root, path)
+            if "var/lib/sss/pubconf/krb5.include.d" in str(path):
+                pubconf = True
+            if not path.exists():
+                findings.append(("warning", f"{rel}, included from {shown(root, parent)}, is missing; "
+                                 "Kerberos then fails to load its configuration"))
+                continue
+            st = path.stat()
+            want = 5 if is_dir else 4
+            readers = [EVERYONE] + ([identity] if identity else [])
+            for reader in readers:
+                if not allows(st, reader, want):
+                    note = "; it has an ACL, which this check does not evaluate" if has_acl(path) else ""
+                    findings.append(("info" if note else "warning",
+                                     f"{rel} is not readable by {reader.name} "
+                                     f"({owner_name(accounts, st.st_uid, st.st_gid)} {st.st_mode & 0o777:04o}); "
+                                     "kinit as root works but logins and user tools fail" + note))
+                    break
+                blocked = blocked_parent(root, path, reader)
+                if blocked:
+                    findings.append(("warning", f"{reader.name} cannot enter {shown(root, blocked)} to read {rel}"))
+                    break
+            if st.st_mode & 0o002 or (st.st_mode & 0o020 and accounts and st.st_gid != accounts[1].get("root", (0,))[0]):
+                findings.append(("warning", f"{rel} is writable by non-root users, who could redirect Kerberos"))
+        if not pubconf:
+            findings.append(("info", "krb5.conf does not include /var/lib/sss/pubconf/krb5.include.d, so Kerberos "
+                             "tools miss the realm mappings and localauth plugin SSSD generates there"))
+    keytab = root / "etc/krb5.keytab"
+    if not keytab.exists():
+        findings.append(("info", "no /etc/krb5.keytab; the AD provider needs the machine keytab to go online"))
+    else:
+        st = keytab.stat()
+        group_ok = accounts is None or st.st_gid in {accounts[1][n][0] for n in ("root", SSSD_ACCOUNT)
+                                                     if n in accounts[1]}
+        if st.st_mode & 0o007 or (st.st_mode & 0o070 and not group_ok):
+            findings.append(("warning", f"/etc/krb5.keytab ({owner_name(accounts, st.st_uid, st.st_gid)} "
+                             f"{st.st_mode & 0o777:04o}) holds the machine's secret key and is readable or writable "
+                             "beyond root; restrict it, for example to root:root 0600, which the packaged helpers use"))
+    return findings
+
+
 def load_sssd(root):
+    """Merge sssd.conf and its conf.d snippets in SSSD's order: later snippets override earlier settings."""
     config = configparser.ConfigParser(interpolation=None, strict=False)
     files = [root / "etc/sssd/sssd.conf", *sorted((root / "etc/sssd/conf.d").glob("*.conf"))]
     present = [f for f in files if f.is_file()]
     for file in present:
-        if file.stat().st_mode & 0o077:
-            say("warning", f"{file.relative_to(root)} is readable by other users; SSSD refuses to start with it")
         config.read(file)
     return config, present
 
 
-def inspect_sssd(root):
+def check_config(root):
+    """Load SSSD's configuration and judge its files; raises configparser.Error when unparseable."""
     config, files = load_sssd(root)
+    accounts = read_accounts(root)
+    identity, source = service_identity(root, config, accounts)
+    findings = sssd_file_findings(root, files, identity, accounts)
+    if identity is None:
+        findings.append(("info", f"cannot resolve the SSSD service user set by {source}; its access was not checked"))
+    return config, files, identity, source, accounts, findings
+
+
+def inspect_sssd(root):
+    config, files, identity, source, accounts, findings = check_config(root)
     print("SSSD configuration:")
     if not files:
         say("warning", "no /etc/sssd/sssd.conf; domain logins are not handled by SSSD")
-        return []
+        return [], identity, accounts
+    print(f"  service user: {identity.name if identity else 'unknown'} (from {source})")
+    for level, message in findings:
+        say(level, message)
+    if not any(level == "warning" for level, _ in findings):
+        say("ok", "configuration files have an owner, group, and mode SSSD accepts")
     domains = [d.strip() for d in config.get("sssd", "domains", fallback="").split(",") if d.strip()]
     if not domains:
         domains = [s.split("/", 1)[1] for s in config.sections() if s.startswith("domain/")]
@@ -71,7 +309,16 @@ def inspect_sssd(root):
                 print(f"    {key} = {config.get('pam', key)}")
     if pam_expiration.strip() not in ("", "0"):
         say("info", f"cached passwords expire {pam_expiration} day(s) after the last online login")
-    return domains
+    return domains, identity, accounts
+
+
+def inspect_kerberos(root, identity, accounts):
+    print("Kerberos configuration:")
+    findings = kerberos_findings(root, identity, accounts)
+    for level, message in findings:
+        say(level, message)
+    if not any(level == "warning" for level, _ in findings):
+        say("ok", "krb5.conf and its includes are readable and the keytab is private")
 
 
 def pam_auth_lines(root, name, seen=None):
@@ -218,7 +465,8 @@ def main():
     if sys.argv[1] == "purge":
         purge(root)
         return
-    domains = inspect_sssd(root)
+    domains, identity, accounts = inspect_sssd(root)
+    inspect_kerberos(root, identity, accounts)
     inspect_pam(root)
     cached_passwords(root / "var/lib/sss/db")
     if root == Path("/"):
