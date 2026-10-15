@@ -18,6 +18,9 @@ _spec = importlib.util.spec_from_file_location("credentials_inspect", Path(__fil
 inspector = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(inspector)
 say = inspector.say
+_spec = importlib.util.spec_from_file_location("credentials_platform", Path(__file__).with_name("credentials-platform.py"))
+platform = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(platform)
 
 LEVELS = ("warning", "info", "ok")
 UTC = datetime.timezone.utc
@@ -135,12 +138,55 @@ RULES = {
         "ok", "SSSD accepted domain logins",
         "pam_sss saw these passwords, so SSSD can cache them when cache_credentials is on",
         r"pam_sss\([^)]*\): authentication success"),
+    "apparmor-denied": Rule(
+        "warning", "AppArmor denied an SSSD or Kerberos process",
+        "confinement, not account policy, refused the operation; add a rule under /etc/apparmor.d/local/ for "
+        "the named profile instead of disabling AppArmor",
+        r"apparmor=\"DENIED\""),
+    "ccache-create": Rule(
+        "warning", "A Kerberos ticket cache could not be created",
+        "SSSD 2.11+ no longer creates missing parent directories for FILE and DIR caches; the user needs write "
+        "and search access to the parent (see dotconfig creds status, Kerberos caches)",
+        r"(cannot|can't|failed to|unable to) (create|open|initiali[sz]e|store)\S*.*(ccache|credential cache)|"
+        r"ccache.*no such file or directory|krb5_cc_(initialize|resolve|store_cred)\S*.*fail"),
+    "home-failure": Rule(
+        "warning", "The login session could not set up the home directory",
+        "the password was accepted; the session stage failed, so this is not a cached-password problem",
+        r"pam_mkhomedir.*(unable|fail|error|cannot)|unable to create and initiali[sz]e directory|"
+        r"could not chdir to home directory|no directory, logging in with home"),
+    "enctype": Rule(
+        "warning", "Kerberos found no permitted encryption type",
+        "Ubuntu 26.04 dropped RC4 and 3DES from the defaults; have the domain issue AES keys for the account and "
+        "machine rather than re-enabling weak crypto",
+        r"kdc has no support for encryption type|KRB5KDC_ERR_ETYPE_NOSUPP|no supported encryption types|"
+        r"enctype \S+ not (permitted|supported)|bad encryption type"),
+    "keytab-kvno": Rule(
+        "warning", "The machine keytab is out of date",
+        "the machine account's password changed but the keytab holds old keys; refresh it with adcli update or "
+        "rejoin the domain",
+        r"key version number for principal in key table is incorrect|KRB5KRB_AP_ERR_BADKEYVER|"
+        r"KRB5_KT_KVNONOTFOUND|specified version of key is not available"),
+    "smartcard": Rule(
+        "info", "Smartcard authentication reported a problem",
+        "the smartcard path (p11_child, certificates, PC/SC) failed; this does not mean password login fails",
+        r"p11_child.*(error|fail)|no certificate (found|matched)|certificate.*(revoked|expired|not valid|"
+        r"verification failed)|\bocsp\b.*(fail|error)|pcsc.*(fail|error)|pkcs#?11.*(fail|error)"),
+    "pam-account": Rule(
+        "warning", "A domain account was refused at the account (access) stage",
+        "the password was fine but an access rule refused the login; sudo sssctl user-checks -a acct -s "
+        "gdm-password USER shows the decision"),
+    "pam-session": Rule(
+        "warning", "A domain login failed at the session stage",
+        "authentication and access passed; session setup (home directory, limits) failed"),
     "cached-login": Rule(
         "ok", "Logins succeeded from cached credentials", "offline login worked for these attempts",
         r"authenticated with cached credentials|offline authentication succeeded"),
 }
 COMPILED = {key: re.compile(rule.pattern, re.I) for key, rule in RULES.items() if rule.pattern}
-PAM_RESULT = re.compile(r"pam_sss\([^)]*\): received for user (\S+): (\d+) \(([^)]*)\)")
+PAM_RESULT = re.compile(r"pam_sss\([^:)]*:?(\w*)\): received for user (\S+): (\d+) \(([^)]*)\)")
+APPARMOR = re.compile(r'apparmor="DENIED"')
+APPARMOR_FIELDS = re.compile(r'(operation|profile|name|comm|requested_mask)="([^"]*)"')
+SSSD_PROCESS = re.compile(r"sssd|krb5_child|ldap_child|p11_child|selinux_child|gpo_child|proxy_child", re.I)
 PAM_CODES = {4: "pam-system-error", 6: "pam-denied", 7: "pam-bad-password", 9: "pam-authinfo-unavail",
              10: "pam-user-unknown", 12: "password-expired", 13: "account-expired"}
 UNREACHABLE = ("kdc-unreachable", "dc-unreachable")
@@ -158,7 +204,11 @@ class Event:
 def classify(event):
     result = PAM_RESULT.search(event.text)
     if result:
-        event.keys.add(PAM_CODES.get(int(result.group(2)), "pam-other"))
+        stage, code = result.group(1), int(result.group(3))
+        if stage in ("account", "session") and code:
+            event.keys.add(f"pam-{stage}")
+        else:
+            event.keys.add(PAM_CODES.get(code, "pam-other"))
     for key, pattern in COMPILED.items():
         if pattern.search(event.text):
             event.keys.add(key)
@@ -170,6 +220,7 @@ def classify(event):
 JOURNAL_SELECTORS = (
     ["-u", "sssd*"],
     ["SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"],
+    ["_TRANSPORT=kernel", "_TRANSPORT=audit"],
     ["SYSLOG_IDENTIFIER=openconnect", "SYSLOG_IDENTIFIER=nm-openconnect-service", "SYSLOG_IDENTIFIER=NetworkManager",
      "+", "_COMM=openconnect"],
 )
@@ -204,6 +255,9 @@ def read_journal(root, since):
             source = journal_text(entry.get("SYSLOG_IDENTIFIER") or entry.get("_COMM") or entry.get("_SYSTEMD_UNIT"))
             text = journal_text(entry.get("MESSAGE"))
             if source == "NetworkManager" and not VPN_SOURCE.search(text):
+                continue
+            if entry.get("_TRANSPORT") in ("kernel", "audit") and not (APPARMOR.search(text)
+                                                                        and SSSD_PROCESS.search(text)):
                 continue
             if entry.get("SYSLOG_FACILITY") in ("4", "10"):
                 auth_entries += 1
@@ -325,9 +379,15 @@ def sssctl_check(root):
     return issues, result.returncode
 
 
+def domains_of(config):
+    domains = [d.strip() for d in config.get("sssd", "domains", fallback="").split(",") if d.strip()]
+    return domains or [s.split("/", 1)[1] for s in config.sections() if s.startswith("domain/")]
+
+
 def config_facts(root):
     """What the configuration says, and whether SSSD would accept it: valid, invalid, unknown, or absent."""
     facts = {"state": "unknown", "reasons": [], "confirmed": False, "kerberos": [], "present": False,
+             "platform": [], "not_checked": [], "accounts": inspector.read_accounts(root),
              "domains": [], "cache_off": [], "pam_bypass": False, "pam_sss": True}
     config = identity = accounts = None
     try:
@@ -353,15 +413,24 @@ def config_facts(root):
                                         + (": " + "; ".join(issues[:3]) if issues else f" (exit {code})"))
             elif facts["state"] == "valid":
                 facts["confirmed"] = True
+    if config is not None:
+        try:
+            sections, facts["not_checked"] = platform.platform_report(root, config, domains_of(config), identity,
+                                                                      accounts)
+            facts["platform"] = [(title, level, message) for title, found in sections for level, message in found]
+            hygiene = dict(sections).get("Configuration hygiene", [])
+            stopping = platform.invalid_reasons(hygiene)
+            if stopping and facts["state"] in ("valid", "unknown"):
+                facts["state"] = "invalid"
+            facts["reasons"] += stopping
+        except OSError as exc:
+            facts["not_checked"] = [f"platform checks ({exc.strerror or exc})"]
     try:
         facts["kerberos"] = inspector.kerberos_findings(root, identity, accounts)
     except OSError as exc:
         facts["kerberos"] = [("info", f"Kerberos files could not be checked ({exc.strerror or exc})")]
     if config is not None and facts["state"] == "valid":
-        domains = [d.strip() for d in config.get("sssd", "domains", fallback="").split(",") if d.strip()]
-        if not domains:
-            domains = [s.split("/", 1)[1] for s in config.sections() if s.startswith("domain/")]
-        facts["domains"] = domains
+        domains = facts["domains"] = domains_of(config)
         facts["cache_off"] = [d for d in domains
                               if config.get(f"domain/{d}", "cache_credentials", fallback="false").strip().lower()
                               not in inspector.TRUE]
@@ -496,7 +565,42 @@ def assess_config(facts):
         if level == "warning":
             judged = True
             say(level, f"Kerberos: {message}")
+    for title, level, message in facts["platform"]:
+        if level == "warning" and message not in facts["reasons"]:
+            judged = True
+            say(level, f"{title}: {message}")
     return judged
+
+
+def assess_apparmor(found):
+    denials = {}
+    for event in found.get("apparmor-denied", []):
+        fields = dict(APPARMOR_FIELDS.findall(event.text))
+        key = (fields.get("profile", "?"), fields.get("operation", "?"), fields.get("name", "?"))
+        denials[key] = denials.get(key, 0) + 1
+    for (profile, operation, name), count in sorted(denials.items(), key=lambda item: -item[1])[:5]:
+        say("warning", f"AppArmor profile {profile} denied {operation} on {name} ({count} time(s)); a "
+            "Permission denied from SSSD at those times is confinement, not an account rule")
+    return bool(denials)
+
+
+def assess_name_collisions(found, accounts):
+    """A local account with a domain user's short name decides some logins by nsswitch order alone."""
+    if not accounts:
+        return False
+    domain_users = set()
+    for events in found.values():
+        for event in events:
+            result = PAM_RESULT.search(event.text)
+            name = result.group(2) if result else (re.search(r"\buser=(\S+@\S+)", event.text) or [None, None])[1]
+            if name and "@" in name:
+                domain_users.add(name)
+    clashes = sorted(u for u in domain_users
+                     if u.split("@")[0] in accounts[0] and accounts[0][u.split("@")[0]][0] >= 1000)
+    for user in clashes:
+        say("warning", f"the local account {user.split('@')[0]} shares its name with the domain user {user}; with "
+            "use_fully_qualified_names off, nsswitch order decides which one a short-name login gets")
+    return bool(clashes)
 
 
 def assess(found, facts, sssd_lines, offline):
@@ -540,6 +644,8 @@ def assess(found, facts, sssd_lines, offline):
     if facts["present"] and not facts["pam_sss"]:
         judged = True
         say("warning", "pam_sss is not in the login PAM stack, so SSSD takes no part in domain logins")
+    judged = assess_apparmor(found) or judged
+    judged = assess_name_collisions(found, facts["accounts"]) or judged
     if not sssd_lines:
         judged = True
         say("info", "SSSD logged nothing in this window. Its default debug_level records only serious failures; "
@@ -599,6 +705,10 @@ def main():
     judged = assess_vpn(found, boots) or judged
     if not judged and not any(RULES[key].level == "warning" for key in found):
         say("ok", "no sign of a domain login problem in this window")
+    if facts["not_checked"]:
+        print("Not checked:")
+        for item in facts["not_checked"]:
+            print(f"  {item}")
 
 
 if __name__ == "__main__":

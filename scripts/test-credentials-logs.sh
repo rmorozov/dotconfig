@@ -8,7 +8,9 @@ export DOTCONFIG_CREDS_TEST_ROOT="$test_dir/root"
 root="$DOTCONFIG_CREDS_TEST_ROOT"
 stubs="$test_dir/bin"
 journal="$test_dir/journal"
-mkdir -p "$root/etc/sssd" "$root/etc/pam.d" "$root/var/log/sssd" "$root/var/log/journal" "$stubs" "$journal"
+mkdir -p "$root/etc/sssd" "$root/etc/pam.d" "$root/var/log/sssd" "$root/var/log/journal" "$root/var/lib/sss/pipes" \
+    "$root/tmp" "$stubs" "$journal"
+chmod 1777 "$root/tmp"
 
 cat > "$root/etc/sssd/sssd.conf" <<'EOF'
 [sssd]

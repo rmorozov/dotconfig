@@ -3,6 +3,7 @@
 
 import configparser
 import datetime
+import importlib.util
 import os
 import re
 import shutil
@@ -63,24 +64,37 @@ def read_accounts(root):
     return users, groups
 
 
-def unit_user(root):
-    """The User= systemd gives sssd.service, following unit and drop-in precedence; empty means root."""
-    unit_dirs = ("etc/systemd/system", "run/systemd/system", "usr/lib/systemd/system", "lib/systemd/system")
-    units = [root / d / "sssd.service" for d in unit_dirs if (root / d / "sssd.service").is_file()]
+UNIT_DIRS = ("etc/systemd/system", "run/systemd/system", "usr/lib/systemd/system", "lib/systemd/system")
+
+
+def unit_files(root, unit):
+    """The unit file systemd uses and its drop-ins, in the order systemd applies them."""
+    units = [root / d / unit for d in UNIT_DIRS if (root / d / unit).is_file()]
     dropins = {}
-    for d in reversed(unit_dirs):
-        for path in (root / d / "sssd.service.d").glob("*.conf"):
+    for d in reversed(UNIT_DIRS):
+        for path in (root / d / f"{unit}.d").glob("*.conf"):
             dropins[path.name] = path
-    user, source = "", None
-    for path in units[:1] + [dropins[name] for name in sorted(dropins)]:
-        section = ""
+    return units[:1] + [dropins[name] for name in sorted(dropins)]
+
+
+def unit_values(root, unit, key, section="[Service]"):
+    """Every (value, source) a unit and its drop-ins assign to key, in order; an empty value resets lists."""
+    values = []
+    for path in unit_files(root, unit):
+        current = ""
         for line in path.read_text(errors="replace").splitlines():
             line = line.strip()
             if line.startswith("["):
-                section = line
-            elif section == "[Service]" and re.match(r"User\s*=", line):
-                user, source = line.split("=", 1)[1].strip(), shown(root, path)
-    return user, source
+                current = line
+            elif current == section and re.match(rf"{key}\s*=", line):
+                values.append((line.split("=", 1)[1].strip(), shown(root, path)))
+    return values
+
+
+def unit_user(root):
+    """The User= systemd gives sssd.service; empty means root."""
+    values = unit_values(root, "sssd.service", "User")
+    return values[-1] if values else ("", None)
 
 
 def service_identity(root, config, accounts):
@@ -254,7 +268,13 @@ def load_sssd(root):
     config = configparser.ConfigParser(interpolation=None, strict=False)
     files = [root / "etc/sssd/sssd.conf", *sorted((root / "etc/sssd/conf.d").glob("*.conf"))]
     present = [f for f in files if f.is_file()]
+    config.origins = {}
     for file in present:
+        single = configparser.ConfigParser(interpolation=None, strict=False)
+        single.read(file)
+        for section in single.sections():
+            for key in single.options(section):
+                config.origins[(section, key)] = shown(root, file)
         config.read(file)
     return config, present
 
@@ -273,12 +293,18 @@ def check_config(root):
     return config, files, identity, source, accounts, findings
 
 
+def origin(config, section, key):
+    """Where a shown value was set, when that is not the main sssd.conf."""
+    source = getattr(config, "origins", {}).get((section, key))
+    return f"  (from {source})" if source and source != "/etc/sssd/sssd.conf" else ""
+
+
 def inspect_sssd(root):
     config, files, identity, source, accounts, findings = check_config(root)
     print("SSSD configuration:")
     if not files:
         say("warning", "no /etc/sssd/sssd.conf; domain logins are not handled by SSSD")
-        return [], identity, accounts
+        return [], identity, accounts, config
     print(f"  service user: {identity.name if identity else 'unknown'} (from {source})")
     for level, message in findings:
         say(level, message)
@@ -293,7 +319,7 @@ def inspect_sssd(root):
         print(f"  [{section}]")
         for key in DOMAIN_KEYS:
             if config.has_option(section, key):
-                print(f"    {key} = {config.get(section, key)}")
+                print(f"    {key} = {config.get(section, key)}{origin(config, section, key)}")
         if config.get(section, "cache_credentials", fallback="false").strip().lower() not in TRUE:
             say("warning", f"{domain}: cache_credentials is off (the SSSD default), so a domain password is never "
                 "stored and offline login before VPN cannot work; set cache_credentials = True")
@@ -308,10 +334,10 @@ def inspect_sssd(root):
         print("  [pam]")
         for key in PAM_KEYS:
             if config.has_option("pam", key):
-                print(f"    {key} = {config.get('pam', key)}")
+                print(f"    {key} = {config.get('pam', key)}{origin(config, 'pam', key)}")
     if pam_expiration.strip() not in ("", "0"):
         say("info", f"cached passwords expire {pam_expiration} day(s) after the last online login")
-    return domains, identity, accounts
+    return domains, identity, accounts, config
 
 
 def inspect_kerberos(root, identity, accounts):
@@ -321,6 +347,27 @@ def inspect_kerberos(root, identity, accounts):
         say(level, message)
     if not any(level == "warning" for level, _ in findings):
         say("ok", "krb5.conf and its includes are readable and the keytab is private")
+
+
+def load_platform():
+    spec = importlib.util.spec_from_file_location("credentials_platform",
+                                                  Path(__file__).with_name("credentials-platform.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def inspect_platform(root, config, domains, identity, accounts):
+    sections, not_checked = load_platform().platform_report(root, config, domains, identity, accounts)
+    for title, findings in sections:
+        if findings:
+            print(f"{title}:")
+            for level, message in findings:
+                say(level, message)
+    if not_checked:
+        print("Not checked:")
+        for item in not_checked:
+            print(f"  {item}")
 
 
 def pam_auth_lines(root, name, seen=None):
@@ -467,12 +514,13 @@ def main():
     if sys.argv[1] == "purge":
         purge(root)
         return
-    domains, identity, accounts = inspect_sssd(root)
+    domains, identity, accounts, config = inspect_sssd(root)
     inspect_kerberos(root, identity, accounts)
     inspect_pam(root)
     cached_passwords(root / "var/lib/sss/db")
     if root == Path("/"):
         domain_status(domains)
+    inspect_platform(root, config, domains, identity, accounts)
 
 
 if __name__ == "__main__":
