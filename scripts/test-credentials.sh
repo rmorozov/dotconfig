@@ -8,7 +8,10 @@ export DOTCONFIG_CREDS_TEST_ROOT="$test_dir/root"
 root="$DOTCONFIG_CREDS_TEST_ROOT"
 stubs="$test_dir/bin"
 calls="$test_dir/calls"
-mkdir -p "$root/etc/sssd/conf.d" "$root/etc/pam.d" "$root/var/lib/sss/db" "$root/var/lib/sss/mc" "$stubs"
+mkdir -p "$root/etc/sssd/conf.d" "$root/etc/pam.d" "$root/var/lib/sss/db" "$root/var/lib/sss/mc" \
+    "$root/var/lib/sss/pipes" "$root/tmp" "$stubs"
+chmod 700 "$root/var/lib/sss/db"
+chmod 1777 "$root/tmp"
 # shellcheck disable=SC2016 # A literal crypt hash, not an expansion.
 hash_value='$6$saltsalt$NotARealHashButMustNeverPrint'
 
@@ -28,7 +31,8 @@ auth	[success=2 default=ignore]	pam_unix.so nullok try_first_pass
 auth	[success=1 default=ignore]	pam_sss.so use_first_pass
 auth	requisite			pam_deny.so
 EOF
-printf '@include common-auth\nauth optional pam_gnome_keyring.so\n' > "$root/etc/pam.d/gdm-password"
+printf '@include common-auth\nauth optional pam_gnome_keyring.so\n@include common-account\n' > "$root/etc/pam.d/gdm-password"
+printf 'account [default=bad success=ok user_unknown=ignore] pam_sss.so\n' > "$root/etc/pam.d/common-account"
 printf 'name\0alice@corp.example\0cachedPassword\0%s\0' "$hash_value" > "$root/var/lib/sss/db/cache_corp.example.ldb"
 printf 'memcache' > "$root/var/lib/sss/mc/passwd"
 
