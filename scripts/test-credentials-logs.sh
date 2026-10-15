@@ -88,11 +88,11 @@ refute() {
 }
 
 bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
-check '^warning: Domain login failed: no domain controller and no usable cached password (2 times'
+check '^warning: Domain login failed: SSSD could not check the password (2 times'
 check '^warning: SSSD had no cached password for an offline login (once'
 check 'e.g. .* gdm-password\]: pam_sss(gdm-password:auth): received for user alice@corp.example: 9'
 check '^warning: cause: cache_credentials is off for corp.example'
-check '^warning: in 2 of 2 boot(s) with login activity, domain login failed before the VPN connected; in 1 of them'
+check '^warning: in 2 of 2 boot(s) with a VPN connection, domain login failed while SSSD was offline before the VPN connected; in 1 of them'
 check '^warning: after the VPN connected .* still could not reach the domain (1 time'
 check '^warning: Kerberos clock skew'
 check '^warning: SSSD crashed, hung, or was restarted (2 times'
@@ -126,6 +126,86 @@ bash "$repo_root/scripts/credentials.sh" check-logs --days 1 > "$test_dir/out" 2
 refute '^warning'
 check '^ok: offline login from cached credentials worked 1 time'
 check '^info: SSSD logged nothing in this window'
+
+# Scenarios below write the journal from "kind|minutes from now|identifier|message" lines.
+cat > "$test_dir/journal.py" <<'EOF'
+import datetime, json, sys
+from pathlib import Path
+
+out, boots, lines = Path(sys.argv[1]), sys.argv[2], sys.argv[3:]
+now = datetime.datetime.now(datetime.timezone.utc)
+def usec(minutes):
+    return int((now + datetime.timedelta(minutes=float(minutes))).timestamp() * 1e6)
+files = {"auth": [], "sssd": [], "vpn": []}
+for number, line in enumerate(lines):
+    kind, minutes, ident, message = line.split("|", 3)
+    entry = {"__CURSOR": f"s{number}", "__REALTIME_TIMESTAMP": str(usec(minutes)), "SYSLOG_IDENTIFIER": ident,
+             "MESSAGE": message}
+    if kind == "auth":
+        entry["SYSLOG_FACILITY"] = "10"
+    files[kind].append(json.dumps(entry) + "\n")
+for kind, entries in files.items():
+    (out / kind).write_text("".join(entries))
+(out / "boots").write_text(json.dumps([{"first_entry": usec(b)} for b in boots.split(",")]))
+EOF
+unavailable='pam_sss(gdm-password:auth): received for user alice@corp.example: 9 (Authentication service cannot retrieve authentication info)'
+unknown='pam_sss(gdm-password:auth): received for user typo@corp.example: 10 (User not known to the underlying authentication module)'
+
+# A reboot ends a VPN episode, so the next boot's pre-VPN failures are not blamed on VPN DNS. The offline failure
+# has no online login in the window, but a password cached before the window may exist.
+python3 "$test_dir/journal.py" "$journal" -180,-177 \
+    'vpn|-179|nm-openconnect-service|Connected as 10.8.0.5, using SSL' \
+    'sssd|-175|sssd_be|Failed to resolve server dc1.corp.example: Timeout' \
+    "auth|-175|gdm-password]|$unavailable"
+bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
+check '^warning: Domain login failed: SSSD could not check the password (once'
+check '^info: no online login through pam_sss is logged in this window, though a password cached earlier may still exist'
+refute 'after the VPN connected'
+refute 'boot(s) with a VPN connection'
+refute '^warning: cause'
+refute 'nothing to cache'
+
+# An online machine with an unknown user and a PAM result 9 does not implicate the cache.
+python3 "$test_dir/journal.py" "$journal" -60 "auth|-59|gdm-password]|$unknown" "auth|-58|gdm-password]|$unavailable"
+bash "$repo_root/scripts/credentials.sh" check-logs > "$test_dir/out" 2>&1
+check '^warning: SSSD did not know the user at login'
+check '^info: pam_sss returned PAM result 9 1 time(s) with no sign that SSSD was offline'
+refute 'boot(s) with a VPN connection'
+refute 'cached earlier'
+
+# ISO auth.log times keep their offset. With no auth entries in the journal the file is read; in a UTC process a
+# +03:00 line from before the window stays out, and a -05:00 line inside it prints in UTC.
+: > "$journal/auth"
+python3 - "$root/var/log/auth.log" > "$test_dir/inside" <<'EOF'
+import datetime, sys
+utc = datetime.timezone.utc
+now = datetime.datetime.now(utc).replace(microsecond=0)
+outside = (now - datetime.timedelta(days=1, hours=2)).astimezone(datetime.timezone(datetime.timedelta(hours=3)))
+inside = (now - datetime.timedelta(hours=2)).astimezone(datetime.timezone(datetime.timedelta(hours=-5)))
+line = "{} laptop gdm-password]: pam_sss(gdm-password:auth): received for user {}@corp.example: 7 (Authentication failure)\n"
+with open(sys.argv[1], "w") as handle:
+    handle.write(line.format(f"{outside:%Y-%m-%dT%H:%M:%S}.000123+03:00", "outside"))
+    handle.write(line.format(f"{inside:%Y-%m-%dT%H:%M:%S}.000123-05:00", "inside"))
+print(inside.astimezone(utc).strftime("%Y-%m-%d %H:%M:%S"))
+EOF
+TZ=UTC bash "$repo_root/scripts/credentials.sh" check-logs --days 1 > "$test_dir/out" 2>&1
+check '/var/log/auth.log: 1 lines'
+check "e.g. $(cat "$test_dir/inside") gdm-password\\]: pam_sss(gdm-password:auth): received for user inside@"
+refute 'outside@corp.example'
+rm "$root/var/log/auth.log"
+
+# Examples hide the whole remainder of a sensitive assignment, quoted or not.
+python3 - "$repo_root/scripts/credentials-logs.py" <<'EOF'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("credentials_logs", sys.argv[1])
+logs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(logs)
+when = datetime.datetime.now(logs.UTC)
+for text in ('Unknown option ldap_default_authtok = "two word secret"', "Unknown option krb5_password = two word secret",
+             "Unknown option ldap_default_authtok='quoted value' trailing"):
+    shown = logs.example(logs.Event(when, "sssd", text))
+    assert shown.split("=", 1)[1].strip() == "<hidden>", shown
+EOF
 
 # Without journal persistence or SSSD log files, the report says what it could not see.
 rmdir "$root/var/log/journal"

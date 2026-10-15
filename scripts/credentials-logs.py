@@ -22,8 +22,10 @@ _spec.loader.exec_module(inspector)
 say = inspector.say
 
 LEVELS = ("warning", "info", "ok")
-# Kerberos and SSSD never log passwords, but a debug line may quote a config value; examples hide these.
-PRIVATE_VALUE = re.compile(r"(\b\w*(?:authtok|password|passwd|secret)\w*\s*=\s*)\S+", re.I)
+UTC = datetime.timezone.utc
+# Kerberos and SSSD never log passwords, but a debug line may quote a config value. A value may be quoted or
+# contain spaces, so examples hide the rest of the line after any sensitive assignment.
+PRIVATE_VALUE = re.compile(r"(\b\w*(?:authtok|password|passwd|secret)\w*\s*=\s*)\S.*$", re.I)
 
 
 @dataclass
@@ -35,9 +37,10 @@ class Rule:
 
 
 RULES = {
-    "pam-offline-failure": Rule(
-        "warning", "Domain login failed: no domain controller and no usable cached password",
-        "the offline-login failure itself; SSSD was offline and had no stored password to check against"),
+    "pam-authinfo-unavail": Rule(
+        "warning", "Domain login failed: SSSD could not check the password",
+        "PAM result 9: SSSD could neither ask a domain controller nor use a cached password. Offline that usually "
+        "means no usable cached password; online it means a backend fault, given in the SSSD lines nearby"),
     "no-cached-password": Rule(
         "warning", "SSSD had no cached password for an offline login",
         "a password is stored only when cache_credentials is on and pam_sss sees the password at an online login",
@@ -140,9 +143,8 @@ RULES = {
 }
 COMPILED = {key: re.compile(rule.pattern, re.I) for key, rule in RULES.items() if rule.pattern}
 PAM_RESULT = re.compile(r"pam_sss\([^)]*\): received for user (\S+): (\d+) \(([^)]*)\)")
-PAM_CODES = {4: "pam-system-error", 6: "pam-denied", 7: "pam-bad-password", 9: "pam-offline-failure",
+PAM_CODES = {4: "pam-system-error", 6: "pam-denied", 7: "pam-bad-password", 9: "pam-authinfo-unavail",
              10: "pam-user-unknown", 12: "password-expired", 13: "account-expired"}
-OFFLINE_FAILURES = ("pam-offline-failure", "no-cached-password", "pam-user-unknown")
 UNREACHABLE = ("kdc-unreachable", "dc-unreachable")
 VPN_SOURCE = re.compile(r"vpn|openconnect", re.I)
 
@@ -190,7 +192,7 @@ def read_journal(root, since):
     events, seen = [], set()
     auth_entries = 0
     for selector in JOURNAL_SELECTORS:
-        command = base + ["-o", "json", "--since", since.strftime("%Y-%m-%d %H:%M:%S")] + selector
+        command = base + ["-o", "json", "--since", f"@{int(since.timestamp())}"] + selector
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         for line in result.stdout.splitlines():
             try:
@@ -207,13 +209,13 @@ def read_journal(root, since):
                 continue
             if entry.get("SYSLOG_FACILITY") in ("4", "10"):
                 auth_entries += 1
-            when = datetime.datetime.fromtimestamp(int(entry.get("__REALTIME_TIMESTAMP", 0)) / 1e6)
+            when = datetime.datetime.fromtimestamp(int(entry.get("__REALTIME_TIMESTAMP", 0)) / 1e6, UTC)
             events.append(Event(when, source, text))
     boots = []
     result = subprocess.run(base + ["--list-boots", "-o", "json"], capture_output=True, text=True, check=False)
     try:
         for boot in json.loads(result.stdout or "[]"):
-            boots.append(datetime.datetime.fromtimestamp(int(boot["first_entry"]) / 1e6))
+            boots.append(datetime.datetime.fromtimestamp(int(boot["first_entry"]) / 1e6, UTC))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         boots = []
     return events, sorted(boots), auth_entries
@@ -227,17 +229,22 @@ def open_log(path):
 
 SSSD_STAMP = re.compile(r"^\((\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})(?:[:.]\d+)?\):?\s*(.*)")
 SSSD_OLD_STAMP = re.compile(r"^\(\w{3} (\w{3} +\d+ \d{2}:\d{2}:\d{2}) (\d{4})\)\s*(.*)")
-SYSLOG_ISO = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\S*\s+\S+\s+([^:\[]+)(?:\[\d+\])?:\s*(.*)")
+SYSLOG_ISO = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s+\S+\s+([^:\[]+)(?:\[\d+\])?:\s*(.*)")
 SYSLOG_OLD = re.compile(r"^(\w{3} +\d+ \d{2}:\d{2}:\d{2})\s+\S+\s+([^:\[]+)(?:\[\d+\])?:\s*(.*)")
+
+
+def local_time(text, layout):
+    """Parse a timestamp written without an offset, which SSSD and classic syslog write in local time."""
+    return datetime.datetime.strptime(text, layout).astimezone(UTC)
 
 
 def parse_sssd_line(line):
     match = SSSD_STAMP.match(line)
     if match:
-        return datetime.datetime.strptime(f"{match.group(1)} {match.group(2)}", "%Y-%m-%d %H:%M:%S"), match.group(3)
+        return local_time(f"{match.group(1)} {match.group(2)}", "%Y-%m-%d %H:%M:%S"), match.group(3)
     match = SSSD_OLD_STAMP.match(line)
     if match:
-        return datetime.datetime.strptime(f"{match.group(1)} {match.group(2)}", "%b %d %H:%M:%S %Y"), match.group(3)
+        return local_time(f"{match.group(1)} {match.group(2)}", "%b %d %H:%M:%S %Y"), match.group(3)
     return None, line
 
 
@@ -262,6 +269,14 @@ def read_sssd_logs(root, since):
     return events, counts
 
 
+def parse_iso(text):
+    """RFC 3339 syslog time; the offset is kept so archived or travelled logs order correctly."""
+    text = re.sub(r"Z$", "+00:00", text)
+    text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+    # A naive value is local time; astimezone() assumes that for naive datetimes.
+    return datetime.datetime.fromisoformat(text).astimezone(UTC)
+
+
 def read_auth_log(root, since):
     events, counts = [], {}
     now = datetime.datetime.now()
@@ -271,7 +286,10 @@ def read_auth_log(root, since):
             for line in handle:
                 match = SYSLOG_ISO.match(line)
                 if match:
-                    when = datetime.datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S")
+                    try:
+                        when = parse_iso(match.group(1))
+                    except ValueError:
+                        continue
                 else:
                     match = SYSLOG_OLD.match(line)
                     if not match:
@@ -279,6 +297,7 @@ def read_auth_log(root, since):
                     when = datetime.datetime.strptime(f"{now.year} {match.group(1)}", "%Y %b %d %H:%M:%S")
                     if when > now:
                         when = when.replace(year=now.year - 1)
+                    when = when.astimezone(UTC)
                 if when < since:
                     continue
                 events.append(Event(when, match.group(2).strip(), match.group(3).strip()))
@@ -316,14 +335,14 @@ def config_facts(root):
 # --- Reporting ------------------------------------------------------------------------------------------------
 
 def stamp(when):
-    return when.strftime("%Y-%m-%d %H:%M")
+    return when.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def example(event, width=220):
     text = PRIVATE_VALUE.sub(r"\1<hidden>", event.text)
     if len(text) > width:
         text = text[:width - 3] + "..."
-    return f"{event.when.strftime('%Y-%m-%d %H:%M:%S')} {event.source}: {text}"
+    return f"{event.when.astimezone().strftime('%Y-%m-%d %H:%M:%S')} {event.source}: {text}"
 
 
 def print_findings(found, examples):
@@ -350,33 +369,50 @@ def boot_of(when, boots):
     return current
 
 
-def assess_boots(found, boots):
+def vpn_down_until_later(when, found, boots):
+    """Whether the VPN was not up at this time but connected later in the same boot."""
+    boot = boot_of(when, boots)
+    same_boot = [(e.when, key) for key in ("vpn-up", "vpn-down") for e in found.get(key, [])
+                 if boot_of(e.when, boots) == boot]
+    before = [key for t, key in sorted(same_boot) if t <= when]
+    later_up = any(t > when and key == "vpn-up" for t, key in same_boot)
+    return later_up and (not before or before[-1] == "vpn-down")
+
+
+def offline_failures(found, boots):
+    """Failed domain logins with evidence that SSSD was offline; PAM result 9 alone does not prove it."""
+    unreachable = [e.when for key in UNREACHABLE for e in found.get(key, [])]
+    failures = list(found.get("no-cached-password", []))
+    for event in found.get("pam-authinfo-unavail", []):
+        near = any(event.when - datetime.timedelta(minutes=10) <= t <= event.when + datetime.timedelta(minutes=2)
+                   and boot_of(t, boots) == boot_of(event.when, boots) for t in unreachable)
+        if near or vpn_down_until_later(event.when, found, boots):
+            failures.append(event)
+    return sorted(failures, key=lambda e: e.when)
+
+
+def assess_boots(found, boots, offline):
     """Per boot: did domain login fail before the VPN came up, and succeed after?"""
     if not boots:
         return False
-    stories = {}
-    for key in OFFLINE_FAILURES + ("vpn-up", "sss-login", "cached-login"):
-        for event in found.get(key, []):
-            boot = boot_of(event.when, boots)
-            if boot:
-                stories.setdefault(boot, {}).setdefault(key, []).append(event.when)
+    with_vpn = {boot_of(e.when, boots) for e in found.get("vpn-up", [])}
     failed_first = recovered = 0
-    for story in stories.values():
-        failures = sorted(t for key in OFFLINE_FAILURES for t in story.get(key, []))
-        vpn = min(story.get("vpn-up", []), default=None)
-        if failures and (vpn is None or failures[0] < vpn):
+    for boot in sorted(b for b in with_vpn if b):
+        first_vpn = min(e.when for e in found["vpn-up"] if boot_of(e.when, boots) == boot)
+        if any(boot_of(e.when, boots) == boot and e.when < first_vpn for e in offline):
             failed_first += 1
-            if vpn and any(t > vpn for t in story.get("sss-login", [])):
+            if any(boot_of(e.when, boots) == boot and e.when > first_vpn for e in found.get("sss-login", [])):
                 recovered += 1
     if failed_first:
-        message = f"in {failed_first} of {len(stories)} boot(s) with login activity, domain login failed before the VPN connected"
+        message = (f"in {failed_first} of {len(with_vpn)} boot(s) with a VPN connection, domain login failed while "
+                   "SSSD was offline before the VPN connected")
         if recovered:
             message += f"; in {recovered} of them it then succeeded once the VPN was up"
-        say("warning", message + ". That is the missing cached password, not a network fault")
+        say("warning", message + ". That points at a missing or unusable cached password, not a network fault")
     return bool(failed_first)
 
 
-def assess_vpn(found):
+def assess_vpn(found, boots):
     """SSSD still unreachable well after the VPN connected points at DNS or routing over the VPN."""
     ups = [e.when for e in found.get("vpn-up", [])]
     downs = [e.when for e in found.get("vpn-down", [])]
@@ -385,7 +421,8 @@ def assess_vpn(found):
     episodes = []
     for up in ups:
         until = min([t for t in downs + ups if t > up], default=up + datetime.timedelta(minutes=30))
-        until = min(until, up + datetime.timedelta(minutes=30))
+        # A reboot ends the connection even when no disconnect was logged.
+        until = min([until, up + datetime.timedelta(minutes=30)] + [b for b in boots if b > up])
         late = [t for t in failures if up + datetime.timedelta(seconds=90) <= t < until]
         if late and not any(up <= t <= late[0] for t in onlines):
             episodes.append(up)
@@ -396,9 +433,8 @@ def assess_vpn(found):
     return bool(episodes)
 
 
-def assess(found, facts, sssd_lines):
+def assess(found, facts, sssd_lines, offline):
     print("Assessment:")
-    offline = sorted((e for key in OFFLINE_FAILURES for e in found.get(key, [])), key=lambda e: e.when)
     sss_logins = found.get("sss-login", [])
     krb5_logins = found.get("krb5-login", [])
     judged = False
@@ -416,13 +452,18 @@ def assess(found, facts, sssd_lines):
             say("warning", f"likely cause: pam_krb5 accepted {len(krb5_logins)} login(s) and pam_sss none, so SSSD "
                 "never saw a password to cache. Check the PAM stack with dotconfig creds status")
         elif not sss_logins:
-            say("warning", "no online login through pam_sss in this window, so SSSD had nothing to cache. Log in to "
-                "the domain account once with the VPN up, then check dotconfig creds status for a cached password")
+            say("info", "no online login through pam_sss is logged in this window, though a password cached "
+                "earlier may still exist. If dotconfig creds status shows no cached password, log in once with "
+                "the VPN up; if it shows one, compare when it was stored with these failures")
         else:
             say("info", f"pam_sss accepted online logins (last at {stamp(sss_logins[-1].when)}) yet offline login "
                 "still found no usable password. Compare the user name in both examples above, and check "
                 "dotconfig creds status for when the password was stored")
-    elif facts and (facts["cache_off"] or facts["pam_bypass"]):
+    elif found.get("pam-authinfo-unavail"):
+        judged = True
+        say("info", f"pam_sss returned PAM result 9 {len(found['pam-authinfo-unavail'])} time(s) with no sign that "
+            "SSSD was offline, so the cache is not implicated; the SSSD lines around those times give the cause")
+    if not offline and facts and (facts["cache_off"] or facts["pam_bypass"]):
         judged = True
         say("info", "the configuration cannot cache passwords (see dotconfig creds status), though no failing "
             "offline login is logged in this window")
@@ -449,7 +490,7 @@ def main():
     if args.days < 1 or args.examples < 1:
         parser.error("--days and --examples must be at least 1")
     root = args.root
-    since = datetime.datetime.now() - datetime.timedelta(days=args.days)
+    since = datetime.datetime.now(UTC) - datetime.timedelta(days=args.days)
 
     print(f"Logs searched since {stamp(since)}:")
     events = []
@@ -486,9 +527,10 @@ def main():
 
     facts = config_facts(root)
     sssd_lines = len(sssd_events) + sum(1 for e in events if e.source.startswith("sssd"))
-    judged = assess(found, facts, sssd_lines)
-    judged = assess_boots(found, boots) or judged
-    judged = assess_vpn(found) or judged
+    offline = offline_failures(found, boots)
+    judged = assess(found, facts, sssd_lines, offline)
+    judged = assess_boots(found, boots, offline) or judged
+    judged = assess_vpn(found, boots) or judged
     if not judged and not any(RULES[key].level == "warning" for key in found):
         say("ok", "no sign of a domain login problem in this window")
 
