@@ -163,3 +163,20 @@ jobs:
             init --apply --promptDefaults
           grep -q 'DOTCONFIG_ROLE="personal"' "$init_home/.zshrc"
           grep -q 'DOTCONFIG_HOST_TYPE="laptop"' "$init_home/.zshrc"
+
+  sssd-live:
+    # The packaged SSSD on a real Ubuntu 26.04 runner: no false permission or capability warnings. Domain logins
+    # are not exercised here; they need a real domain.
+    name: ubuntu-26.04 / sssd live
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
+
+      - name: Check dotconfig creds against packaged SSSD
+        env:
+          DOTCONFIG_CREDS_LIVE_TEST: "1"
+        run: |
+          sudo apt-get update
+          bash scripts/test-credentials-live.sh
