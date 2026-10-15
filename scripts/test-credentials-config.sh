@@ -128,6 +128,15 @@ refute 'cannot read /etc/sssd/sssd.conf'
 rm -r "$root/etc/systemd/system/sssd.service.d"
 chmod 640 "$root/etc/sssd/sssd.conf"
 
+# The [sssd] user option was removed in 2.11: it is reported as stale and does not change the service user.
+cp -p "$root/etc/sssd/sssd.conf" "$root/etc/sssd/sssd.conf.bak"
+python3 -c 'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("[sssd]\n", "[sssd]\nuser = root\n", 1))' \
+    "$root/etc/sssd/sssd.conf"
+status
+check 'service user: sssd (from /usr/lib/systemd/system/sssd.service)'
+check '^info: \[sssd\] user was removed in SSSD 2.11'
+mv "$root/etc/sssd/sssd.conf.bak" "$root/etc/sssd/sssd.conf"
+
 # sssctl's own verdict counts as evidence, with private values hidden.
 printf '#!/usr/bin/env bash\nprintf "Issues identified by validators: 1\\n[rule/allowed_domain_options]: Attribute '"'"'ldap_default_authtok = SecretMustNeverPrint'"'"' is not allowed\\n\\n"\nexit 1\n' \
     > "$stubs/sssctl"

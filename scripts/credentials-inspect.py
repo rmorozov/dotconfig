@@ -85,10 +85,9 @@ def unit_user(root):
 
 def service_identity(root, config, accounts):
     """Who the SSSD daemon runs as, and where that came from; None when the account cannot be resolved."""
-    name, source = config.get("sssd", "user", fallback="").strip(), "[sssd] user"
-    if not name:
-        name, source = unit_user(root)
-        name, source = name or "root", source or "the default"
+    # SSSD 2.11 removed the [sssd] user option; only the systemd unit sets the identity.
+    name, source = unit_user(root)
+    name, source = name or "root", source or "the default"
     if name == "root" or name == "0":
         return Identity("root", root=True), source
     if accounts is None or name not in accounts[0]:
@@ -266,6 +265,9 @@ def check_config(root):
     accounts = read_accounts(root)
     identity, source = service_identity(root, config, accounts)
     findings = sssd_file_findings(root, files, identity, accounts)
+    if config.has_option("sssd", "user"):
+        findings.append(("info", "[sssd] user was removed in SSSD 2.11 and no longer changes the service user; "
+                         "remove it, and set the identity through sssd.service if needed"))
     if identity is None:
         findings.append(("info", f"cannot resolve the SSSD service user set by {source}; its access was not checked"))
     return config, files, identity, source, accounts, findings
