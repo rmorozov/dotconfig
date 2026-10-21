@@ -18,6 +18,7 @@ printf '%s\n' '#!/bin/sh' 'printf "Darwin\n"' > "$tmpdir/bin/uname"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$tmpdir/bin/brew"
 
 printf '%s\n' '#!/bin/bash' \
+    '[[ "${DOTCONFIG_DOWNLOADER:-curl}" == "${DOTCONFIG_TEST_EXPECT_DOWNLOADER:-curl}" ]] || exit 1' \
     'printf "bootstrap:%s\n" "$1" >> "$DOTCONFIG_TEST_LOG"' \
     'mkdir -p "$HOME/.local/bin"' \
     'case "$1" in' \
@@ -46,6 +47,11 @@ printf '%s\n' \
     'shell' \
     > "$tmpdir/expected"
 diff -u "$tmpdir/expected" "$tmpdir/log"
+
+DOTCONFIG_TEST_LOG="$tmpdir/wget-log" DOTCONFIG_TEST_EXPECT_DOWNLOADER=wget HOME="$tmpdir/wget-home" \
+    PATH="$tmpdir/bin:/usr/bin:/bin" \
+    bash "$tmpdir/repo/install.sh" --downloader wget --skip-plugins --skip-shell-change
+diff -u "$tmpdir/expected" "$tmpdir/wget-log"
 
 echo "First-run bootstrap order passed"
 

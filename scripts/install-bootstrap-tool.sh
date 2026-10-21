@@ -9,6 +9,11 @@ set -Eeuo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$REPO_ROOT/versions/bootstrap-tools"
 tool="$1"
+downloader="${DOTCONFIG_DOWNLOADER:-curl}"
+[[ "$downloader" == curl || "$downloader" == wget ]] || {
+    echo 'Downloader must be curl or wget.' >&2; exit 2;
+}
+command -v "$downloader" >/dev/null || { echo "Missing bootstrap downloader: $downloader" >&2; exit 1; }
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -18,6 +23,10 @@ manifest_value() {
 }
 
 download() {
+    echo "Downloading $tool bootstrap with $downloader." >&2
+    if [[ "$downloader" == wget ]]; then
+        wget --https-only --tries=4 --timeout=60 --output-document="$2" "$1"
+    else
     curl \
         --fail \
         --location \
@@ -27,6 +36,7 @@ download() {
         --silent \
         --output "$2" \
         "$1"
+    fi
     test -s "$2"
 }
 

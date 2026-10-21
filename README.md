@@ -157,6 +157,16 @@ The migration saves old files, symlinks, and their readable contents before repl
 
 ### Install for an account without sudo
 
+To compare curl and wget when troubleshooting bootstrap downloads, use `bash install.sh --downloader wget`. Curl remains the default; there is no automatic fallback. This selects the downloader for chezmoi and mise binaries (and the Homebrew installer on macOS), retaining pinned archive checksum verification and TLS certificate checks. It does not change downloads performed internally by mise, Git, Vim or package managers, nor does it fix missing proxy settings. Wget may read its own wgetrc configuration, so a successful comparison does not by itself identify a TLS interception problem.
+
+The switch also works across accounts and with resume:
+
+```sh
+bash install.sh --user 'user@example.com' --resume --skip-shell-change --downloader wget
+```
+
+Wget must already be available to the target user for cross-account installation; install it as the administrator if needed. Without `--user`, Linux bootstrap can install the selected downloader when missing. For direct bootstrap-helper invocations, use `DOTCONFIG_DOWNLOADER=wget bash scripts/install-bootstrap-tool.sh chezmoi` (or `mise`).
+
 On Ubuntu/Debian, run this from an administrator account with sudo access:
 
 ```sh

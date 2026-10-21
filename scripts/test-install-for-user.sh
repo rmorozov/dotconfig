@@ -25,7 +25,7 @@ set -Eeuo pipefail
 [[ -z \${ADMIN_PRIVATE_TOKEN+x} && -z \${DOTCONFIG_TEST_LOG+x} && -z \${PROXY_PRIVATE_TOKEN+x} ]]
 # shellcheck source=/dev/null
 source "\$(dirname -- "\$0")/home/dot_config/zsh/proxy.zsh"
-[[ \$* == '--skip-packages --skip-shell-change --skip-plugins' || \$* == '--skip-packages --skip-shell-change --skip-plugins --verbose' ]]
+[[ \$* == '--skip-packages --skip-shell-change --skip-plugins' || \$* == '--skip-packages --skip-shell-change --skip-plugins --verbose' || \$* == '--skip-packages --skip-shell-change --skip-plugins --downloader wget' ]]
 printf 'user-args:%s\\n' "\$*" >> '$test_dir/log'
 printf 'proxy:%s|%s|%s|%s|%s|%s|%s\\n' \
     "\${http_proxy:-none}" "\${https_proxy:-none}" "\${HTTP_PROXY:-none}" "\${HTTPS_PROXY:-none}" \
@@ -47,6 +47,7 @@ cat > "$test_dir/bin/uname" <<'EOF'
 printf 'Linux\n'
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$test_dir/bin/apt-get"
+printf '#!/bin/sh\nexit 0\n' > "$test_dir/bin/wget"
 cat > "$test_dir/bin/sudo" <<EOF
 #!/usr/bin/env bash
 printf 'sudo:%s\\n' "\$*" >> '$test_dir/log'
@@ -76,7 +77,8 @@ target_repo="$test_dir/target/.local/share/dotconfig"
 test_stage='domain alias with canonical short name and NSS home'
 rm -rf "$target_repo"
 : > "$test_dir/log"
-bash "$test_dir/repo/scripts/install-for-user.sh" --user target@example.com --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1
+bash "$test_dir/repo/scripts/install-for-user.sh" --user target@example.com --skip-packages --skip-plugins --skip-shell-change --downloader wget > "$test_dir/output" 2>&1
+grep -Fxq 'user-args:--skip-packages --skip-shell-change --skip-plugins --downloader wget' "$test_dir/log"
 grep -q '^sudo:-u target@example.com -- ' "$test_dir/log"
 grep -Fxq "user-install:$test_dir/target" "$test_dir/log"
 grep -q 'SUCCESS: dotconfig installation completed successfully for target@example.com' "$test_dir/output"
