@@ -27,7 +27,10 @@ EOF
 cat > "$test_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -eu
+if [[ "${1:-}" == --version ]]; then echo 'fixture TLS downloader 1.0'; exit; fi
 echo "${0##*/}" >> "$DOTCONFIG_TEST_DOWNLOAD_LOG"
+printf '%s\n' "$*" >> "$DOTCONFIG_TEST_DOWNLOAD_LOG.args"
+[[ "${DOTCONFIG_TEST_DOWNLOAD_FAILURE:-0}" == 0 ]] || exit "$DOTCONFIG_TEST_DOWNLOAD_FAILURE"
 destination=
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -63,6 +66,21 @@ for downloader in curl wget; do
         [[ ! -e "$HOME/.local/bin/$tool" ]]
     done
 done
+# Failure diagnostics must preserve the client error and never expose environment values.
+for downloader in curl wget; do
+    status=0
+    DOTCONFIG_DOWNLOADER="$downloader" DOTCONFIG_DOWNLOAD_VERBOSE=true \
+        DOTCONFIG_TEST_DOWNLOAD_FAILURE=35 https_proxy=http://secret-proxy-password@example.test:8080 \
+        CURL_CA_BUNDLE=/private/secret-ca-path \
+        bash "$test_dir/repo/scripts/install-bootstrap-tool.sh" chezmoi > "$test_dir/out" 2>&1 || status=$?
+    [[ "$status" == 35 ]]
+    grep -q 'https_proxy is set' "$test_dir/out"
+    grep -q 'CURL_CA_BUNDLE is set' "$test_dir/out"
+    grep -q 'Download URL: https://github.com/twpayne/chezmoi/releases/download/' "$test_dir/out"
+    grep -q "download failed: $downloader exited 35" "$test_dir/out"
+    if grep -q 'secret-proxy-password\|secret-ca-path' "$test_dir/out"; then exit 1; fi
+done
+grep -q -- '--write-out' "$test_dir/log.args"
 : > "$test_dir/log"
 if DOTCONFIG_DOWNLOADER=invalid bash "$test_dir/repo/scripts/install-bootstrap-tool.sh" chezmoi > "$test_dir/out" 2>&1; then exit 1; fi
 [[ ! -s "$test_dir/log" ]]

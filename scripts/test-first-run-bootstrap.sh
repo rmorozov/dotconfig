@@ -19,6 +19,7 @@ printf '%s\n' '#!/bin/sh' 'exit 0' > "$tmpdir/bin/brew"
 
 printf '%s\n' '#!/bin/bash' \
     '[[ "${DOTCONFIG_DOWNLOADER:-curl}" == "${DOTCONFIG_TEST_EXPECT_DOWNLOADER:-curl}" ]] || exit 1' \
+    '[[ "${DOTCONFIG_DOWNLOAD_VERBOSE:-false}" == "${DOTCONFIG_TEST_EXPECT_VERBOSE:-false}" ]] || exit 1' \
     'printf "bootstrap:%s\n" "$1" >> "$DOTCONFIG_TEST_LOG"' \
     'mkdir -p "$HOME/.local/bin"' \
     'case "$1" in' \
@@ -57,7 +58,7 @@ echo "First-run bootstrap order passed"
 
 # Verbose diagnostics describe stages without tracing private environment values.
 : > "$tmpdir/log"
-DOTCONFIG_TEST_LOG="$tmpdir/log" HOME="$tmpdir/home" \
+DOTCONFIG_TEST_LOG="$tmpdir/log" DOTCONFIG_TEST_EXPECT_VERBOSE=true HOME="$tmpdir/verbose-home" \
     PATH="$tmpdir/bin:/usr/bin:/bin" PRIVATE_INSTALL_SENTINEL=never-print-this \
     bash "$tmpdir/repo/install.sh" --verbose --skip-plugins --skip-shell-change > "$tmpdir/output" 2>&1
 grep -q 'SUCCESS: dotconfig installation completed successfully' "$tmpdir/output"
@@ -67,7 +68,7 @@ if grep -q 'never-print-this' "$tmpdir/output"; then exit 1; fi
 # A failed package stage keeps its exit code and never emits success.
 printf '%s\n' '#!/bin/sh' 'exit 17' > "$tmpdir/repo/packages/install.sh"
 status=0
-DOTCONFIG_TEST_LOG="$tmpdir/log" HOME="$tmpdir/home" \
+DOTCONFIG_TEST_LOG="$tmpdir/log" DOTCONFIG_TEST_EXPECT_VERBOSE=true HOME="$tmpdir/home" \
     PATH="$tmpdir/bin:/usr/bin:/bin" \
     bash "$tmpdir/repo/install.sh" --verbose --skip-plugins --skip-shell-change > "$tmpdir/output" 2>&1 || status=$?
 [[ "$status" == 17 ]]
