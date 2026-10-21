@@ -23,9 +23,28 @@ manifest_value() {
 }
 
 download() {
+    local status=0 setting version
+    local curl_options=()
     echo "Downloading $tool bootstrap with $downloader." >&2
+    if [[ "${DOTCONFIG_DOWNLOAD_VERBOSE:-false}" == true ]]; then
+        printf '[dotconfig] Download URL: %s\n' "$1" >&2
+        printf '[dotconfig] Downloader: %s; uid: %s\n' "$(command -v "$downloader")" "$(id -u)" >&2
+        version="$("$downloader" --version)"
+        printf '[dotconfig] %s\n' "${version%%$'\n'*}" >&2
+        # Show effective environment presence, never proxy credentials or bypass lists.
+        for setting in http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+            CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR WGETRC; do
+            if [[ -n "${!setting:-}" ]]; then
+                printf '[dotconfig] %s is set\n' "$setting" >&2
+            else
+                printf '[dotconfig] %s is unset/empty\n' "$setting" >&2
+            fi
+        done
+        echo '[dotconfig] Client configuration files may also affect proxy and TLS settings.' >&2
+        curl_options+=(--write-out $'\n[dotconfig] HTTP=%{http_code} remote=%{remote_ip} redirects=%{num_redirects} DNS=%{time_namelookup}s connect=%{time_connect}s TLS=%{time_appconnect}s total=%{time_total}s\n')
+    fi
     if [[ "$downloader" == wget ]]; then
-        wget --https-only --tries=4 --timeout=60 --output-document="$2" "$1"
+        wget --https-only --tries=4 --timeout=60 --output-document="$2" "$1" || status=$?
     else
     curl \
         --fail \
@@ -34,8 +53,15 @@ download() {
         --retry 3 \
         --show-error \
         --silent \
+        "${curl_options[@]}" \
         --output "$2" \
-        "$1"
+        "$1" || status=$?
+    fi
+    if ((status != 0)); then
+        printf '[dotconfig] %s download failed: %s exited %s.\n' "$tool" "$downloader" "$status" >&2
+        echo '[dotconfig] Retry with install.sh --verbose (or DOTCONFIG_DOWNLOAD_VERBOSE=true for this helper).' >&2
+        echo '[dotconfig] Compare the same release URL and proxy settings as the target account; GitHub releases redirect to asset hosts.' >&2
+        return "$status"
     fi
     test -s "$2"
 }

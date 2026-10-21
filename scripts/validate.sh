@@ -44,6 +44,7 @@ bash scripts/test-credentials-platform.sh
 bash scripts/test-runtime-versions.sh
 bash scripts/test-node-version.sh
 bash scripts/test-dotconfig-review.sh
+python3 scripts/test-multi-user-sync.py
 bash scripts/test-apt-recovery.sh
 bash scripts/test-package-freshness.sh
 bash scripts/test-update-runtime-versions.sh

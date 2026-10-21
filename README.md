@@ -169,6 +169,10 @@ Wget must already be available to the target user for cross-account installation
 
 For `--resume`, the target checkout must also contain this downloader option: resume deliberately does not update its code. After this change is merged, update an existing clean target checkout to the reviewed default branch before retrying with the new flag.
 
+Add `--verbose` to print the exact release URL, downloader path/version, effective UID, and whether proxy/CA environment variables are set in the downloading process. Curl also reports HTTP status, remote IP, redirects, and DNS/connect/TLS/total timings, including on failure. Environment values are omitted. This does not enable raw HTTP tracing, which can expose credentials. Wget retains its normal connection and TLS error output. For the bootstrap helper or `dotconfig bootstrap`, use `DOTCONFIG_DOWNLOAD_VERBOSE=true` (and optionally `DOTCONFIG_DOWNLOADER=wget`). These diagnostics cover bootstrap downloads; mise's runtime downloads have their own logging.
+
+An OpenSSL unexpected EOF or GnuTLS “TLS connection was non-properly terminated” means the TLS connection ended unexpectedly; it does not identify which endpoint or intermediary closed it. Compare the exact release asset URL under the same account/environment, including the redirect hosts, and correlate failures with proxy and endpoint security logs. An interactive wget request to a different URL or with a different environment is not an equivalent test.
+
 On Ubuntu/Debian, run this from an administrator account with sudo access:
 
 ```sh
@@ -202,6 +206,15 @@ Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor
 ## Normal update workflow
 
 The installer deploys a `dotconfig` maintenance command into `~/.local/bin`.
+
+Each account owns its checkout, reviewed revision, dotfiles, runtimes, and editor dependencies. Run `dotconfig sync` separately as each installed user, including a domain user whose NSS home is `/home/user`. No sudo is required for these per-user updates. From an administrator's terminal you can run:
+
+```sh
+sudo -iu localuser -- /bin/bash -c 'exec "$HOME/.local/bin/dotconfig" sync'
+sudo -iu 'user@example.com' -- /bin/bash -c 'exec "$HOME/.local/bin/dotconfig" sync'
+```
+
+Review and confirm each account's changes at its prompt; keep terminal input attached. Each command uses that account's deployed source path and network configuration. These commands require an already completed installation; for a failed first installation, use `install.sh --user USER --resume` instead. Shared native packages need updating only once by the administrator with `dotconfig packages`. Pinned bootstrap binaries remain a separate `dotconfig bootstrap` operation per user. There is no automatic machine-wide fan-out: updating one user's checkout does not update another's, and `--resume` does not fetch new code.
 
 Inspect a machine without changing it:
 

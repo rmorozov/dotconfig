@@ -17,7 +17,7 @@ Usage: ./install.sh [options]
 Options:
   --downloader TOOL   Use curl (default) or wget for bootstrap downloads.
   --resume            Reuse a verified existing checkout with --user after a failed installation.
-  -v, --verbose       Show platform, tool paths, skip choices, and stage timings.
+  -v, --verbose       Show download diagnostics, platform, tool paths, and stage timings.
   --skip-packages      Do not apply the package baseline.
   --skip-plugins       Do not install or update Vim plugins.
   --skip-shell-change  Do not change the login shell.
@@ -54,6 +54,8 @@ done
     echo 'Downloader must be curl or wget.' >&2; exit 2;
 }
 export DOTCONFIG_DOWNLOADER
+DOTCONFIG_DOWNLOAD_VERBOSE="$install_verbose"
+export DOTCONFIG_DOWNLOAD_VERBOSE
 
 if "$RESUME" && [[ -z "$TARGET_USER" ]]; then
     echo '--resume requires --user USER.' >&2; exit 2
