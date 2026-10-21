@@ -8,12 +8,14 @@ SKIP_PACKAGES=false
 SKIP_PLUGINS=false
 SKIP_SHELL_CHANGE=false
 BOOTSTRAP_INSTALLER="$REPO_ROOT/scripts/install-bootstrap-tool.sh"
+DOTCONFIG_DOWNLOADER=curl
 
 usage() {
     cat <<'EOF'
 Usage: ./install.sh [options]
 
 Options:
+  --downloader TOOL   Use curl (default) or wget for bootstrap downloads.
   --resume            Reuse a verified existing checkout with --user after a failed installation.
   -v, --verbose       Show platform, tool paths, skip choices, and stage timings.
   --skip-packages      Do not apply the package baseline.
@@ -36,6 +38,9 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --resume) RESUME=true ;;
+        --downloader)
+            [[ $# -ge 2 && ( "$2" == curl || "$2" == wget ) ]] || { usage >&2; exit 2; }
+            DOTCONFIG_DOWNLOADER="$2"; shift ;;
         -v|--verbose) install_verbose=true ;;
         --skip-packages) SKIP_PACKAGES=true ;;
         --skip-plugins) SKIP_PLUGINS=true ;;
@@ -45,6 +50,10 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+[[ "$DOTCONFIG_DOWNLOADER" == curl || "$DOTCONFIG_DOWNLOADER" == wget ]] || {
+    echo 'Downloader must be curl or wget.' >&2; exit 2;
+}
+export DOTCONFIG_DOWNLOADER
 
 if "$RESUME" && [[ -z "$TARGET_USER" ]]; then
     echo '--resume requires --user USER.' >&2; exit 2
@@ -87,9 +96,9 @@ install_chezmoi() {
             export PATH="$HOME/.local/bin:$PATH"
             ;;
         Linux)
-            if ! command_exists curl; then
+            if ! command_exists "$DOTCONFIG_DOWNLOADER"; then
                 bash "$REPO_ROOT/scripts/apt-get.sh" update
-                bash "$REPO_ROOT/scripts/apt-get.sh" install -y curl ca-certificates
+                bash "$REPO_ROOT/scripts/apt-get.sh" install -y "$DOTCONFIG_DOWNLOADER" ca-certificates
             fi
             bash "$BOOTSTRAP_INSTALLER" chezmoi
             export PATH="$HOME/.local/bin:$PATH"

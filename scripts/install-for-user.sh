@@ -4,6 +4,7 @@
 set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 target_user=
+downloader=curl
 install_verbose=false
 resume=false
 skip_packages=false
@@ -15,6 +16,9 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$target_user" ]] || { echo 'Expected --user USER.' >&2; exit 2; }
             target_user="$2"; shift ;;
         --resume) resume=true ;;
+        --downloader)
+            [[ $# -ge 2 && ( "$2" == curl || "$2" == wget ) ]] || { echo 'Downloader must be curl or wget.' >&2; exit 2; }
+            downloader="$2"; user_args+=(--downloader "$2"); shift ;;
         -v|--verbose) install_verbose=true; user_args+=(--verbose) ;;
         --skip-packages) skip_packages=true ;;
         --skip-shell-change) skip_shell=true ;;
@@ -116,10 +120,10 @@ if ! "$skip_shell"; then
     fi
 fi
 install_step 'Checking target system tools and login shell'
-# The target must never try to bootstrap curl via its own sudo access.
+# The target must never try to bootstrap its downloader via its own sudo access.
 echo "Using sudo to check the tools available to $target_user." >&2
-as_target /bin/bash -c 'command -v curl >/dev/null && command -v git >/dev/null' || {
-    echo 'curl and git must be installed before user setup; omit --skip-packages.' >&2; exit 1;
+as_target /bin/bash -c 'command -v "$1" >/dev/null && command -v git >/dev/null' bash "$downloader" || {
+    echo "$downloader and git must be installed before user setup; omit --skip-packages or install the selected downloader first." >&2; exit 1;
 }
 if ! "$resume"; then
 install_step 'Transferring committed checkout to target account'
