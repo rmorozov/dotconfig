@@ -60,19 +60,23 @@ git -C "$repo_root" merge-base --is-ancestor HEAD "refs/remotes/origin/$default_
 install_step 'Preparing target network environment'
 target_env=("HOME=$target_home" "USER=$account_name" "LOGNAME=$account_name"
     "PATH=$target_home/.local/bin:/usr/local/bin:/usr/bin:/bin")
-if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
-    [[ "$(cat "$HOME/.config/dotconfig/proxy.mode")" == on ]]; then
-    # Only allow-listed, validated network settings cross the account boundary.
-    # The administrator's private shell profile runs only in this subshell.
-    proxy_assignments="$(
-        # shellcheck source=/dev/null
-        source "$repo_root/home/dot_config/zsh/proxy.zsh" >/dev/null || exit
+# Preserve session network settings even before dotconfig proxy mode is configured.
+# Only allow-listed values cross the boundary; private shell code stays in this subshell.
+proxy_assignments="$(
+    set -e
+    # shellcheck source=/dev/null
+    source "$repo_root/home/dot_config/zsh/proxy.zsh" >/dev/null || exit
+    python3 "$repo_root/scripts/proxy-files.py" session on
+    if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
+        [[ "$(cat "$HOME/.config/dotconfig/proxy.mode")" == on ]]; then
+        # Retain managed profiles' canonical lower/uppercase proxy values.
         python3 "$repo_root/scripts/proxy-files.py" environment on
-    )"
-    while IFS= read -r assignment; do
-        target_env+=("$assignment")
-    done <<< "$proxy_assignments"
-fi
+    fi
+)"
+while IFS= read -r assignment; do
+    [[ -n "$assignment" ]] || continue
+    target_env+=("$assignment")
+done <<< "$proxy_assignments"
 
 as_target() {
     sudo -u "$target_user" -- env -i "${target_env[@]}" "$@"

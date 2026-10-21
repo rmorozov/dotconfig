@@ -12,6 +12,9 @@ from urllib.parse import urlsplit
 START = "# dotconfig proxy begin"
 END = "# dotconfig proxy end"
 ENV_KEYS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY")
+SESSION_PROXY_KEYS = ENV_KEYS + ("all_proxy", "ALL_PROXY", "NODE_USE_ENV_PROXY")
+SESSION_CA_KEYS = ("CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+                   "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "NODE_EXTRA_CA_CERTS")
 ENV_PATTERN = re.compile(r"^\s*(?:export\s+)?(?:http|https|ftp|all|no)_proxy\s*=", re.I | re.M)
 APT_PATTERN = re.compile(r"Acquire\s*::\s*(?:http|https|ftp)\s*::\s*Proxy(?:-Auto-Detect)?\b|\bProxy-Auto-Detect\b", re.I)
 APT_DIRECT_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$")
@@ -137,10 +140,42 @@ def manage_user(home, action, values):
     update(npmrc, action, f"{START}\n{lines}{END}\n", NPM_PATTERN, "npm", delete_owned=True)
 
 
+def session_environment():
+    """Serialize an allow-list without evaluating shell code or exposing values in errors."""
+    assignments = []
+    for key in SESSION_PROXY_KEYS + SESSION_CA_KEYS:
+        if key not in os.environ:
+            continue
+        value = os.environ[key]
+        if any(c in value for c in "\r\n\0"):
+            raise ValueError(f"invalid session {key}")
+        if value and key.lower() in ("http_proxy", "https_proxy", "all_proxy"):
+            try:
+                parts = urlsplit(value)
+                valid = (parts.scheme in ("http", "https", "socks4", "socks4a", "socks5", "socks5h")
+                         and parts.hostname and not parts.username and not parts.password
+                         and parts.path in ("", "/") and not parts.query and not parts.fragment)
+                # Accessing port validates malformed or out-of-range explicit ports.
+                parts.port
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError(f"session {key} must be a credential-free HTTP or SOCKS proxy URL")
+        if value and key in SESSION_CA_KEYS and not Path(value).is_absolute():
+            raise ValueError(f"session {key} must be an absolute CA path readable by the target account")
+        if key == "NODE_USE_ENV_PROXY" and value not in ("", "0", "1"):
+            raise ValueError("session NODE_USE_ENV_PROXY must be 0 or 1")
+        assignments.append(f"{key}={value}")
+    print("\n".join(assignments))
+
+
 def main():
-    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("system", "user", "payload", "environment") or sys.argv[2] not in ("on", "off"):
-        raise ValueError("Usage: proxy-files.py {system|user|payload|environment} {on|off} [test-root]")
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("system", "user", "payload", "environment", "session") or sys.argv[2] not in ("on", "off"):
+        raise ValueError("Usage: proxy-files.py {system|user|payload|environment|session} {on|off} [test-root]")
     scope, action = sys.argv[1:3]
+    if scope == "session":
+        session_environment()
+        return
     if scope == "payload":
         print(json.dumps({k: os.environ.get(k, "") for k in ENV_KEYS}))
         return
