@@ -59,6 +59,9 @@ case "\$1" in
 esac
 EOF
 chmod +x "$test_dir/bin/"*
+# The clean target PATH excludes the administrator's fixture bin directory.
+mkdir -p "$test_dir/target/.local/bin"
+cp "$test_dir/bin/wget" "$test_dir/target/.local/bin/wget"
 git -C "$test_dir/repo" init -q -b master
 git -C "$test_dir/repo" add .
 git -C "$test_dir/repo" -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
