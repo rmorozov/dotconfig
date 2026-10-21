@@ -34,7 +34,10 @@ target_uid="$(id -u -- "$target_user")"
 [[ "$target_uid" != 0 ]] || { echo 'Refusing to install user configuration for root.' >&2; exit 1; }
 account="$(getent passwd "$target_user")"
 IFS=: read -r account_name _password _uid _gid _gecos target_home _shell <<< "$account"
-[[ "$account_name" == "$target_user" && "$target_home" == /* && "$target_home" != / ]] || {
+# NSS/SSSD may return a canonical name different from the requested login alias.
+# Bind the passwd record to the resolved UID, and use its configured home unchanged.
+[[ "$account" != *$'\n'* && -n "$account_name" && "$_uid" == "$target_uid" &&
+    "$target_home" == /* && "$target_home" != / ]] || {
     echo 'Cannot resolve a usable target home directory.' >&2; exit 1;
 }
 target_repo="$target_home/.local/share/dotconfig"
@@ -51,7 +54,7 @@ git -C "$repo_root" merge-base --is-ancestor HEAD "refs/remotes/origin/$default_
 }
 
 install_step 'Preparing target network environment'
-target_env=("HOME=$target_home" "USER=$target_user" "LOGNAME=$target_user"
+target_env=("HOME=$target_home" "USER=$account_name" "LOGNAME=$account_name"
     "PATH=$target_home/.local/bin:/usr/local/bin:/usr/bin:/bin")
 if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
     [[ "$(cat "$HOME/.config/dotconfig/proxy.mode")" == on ]]; then

@@ -34,13 +34,13 @@ printf 'user-install:%s\\n' "\$HOME" >> '$test_dir/log'
 EOF
 cat > "$test_dir/bin/id" <<'EOF'
 #!/usr/bin/env bash
-[[ "$*" == '-u -- target' ]] && { echo 1234; exit; }
+[[ "$*" == '-u -- target' || "$*" == '-u -- target@example.com' ]] && { echo 1234; exit; }
 [[ "$*" == '-u -- root' ]] && { echo 0; exit; }
 exit 1
 EOF
 cat > "$test_dir/bin/getent" <<EOF
 #!/usr/bin/env bash
-printf 'target:x:1234:1234:Target:$test_dir/target:/bin/bash\n'
+printf 'target:x:%s:1234:Target:$test_dir/target:/bin/bash\n' "\${DOTCONFIG_TEST_PASSWD_UID:-1234}"
 EOF
 cat > "$test_dir/bin/uname" <<'EOF'
 #!/usr/bin/env bash
@@ -52,7 +52,7 @@ cat > "$test_dir/bin/sudo" <<EOF
 printf 'sudo:%s\\n' "\$*" >> '$test_dir/log'
 case "\$1" in
     -v) exit 0 ;;
-    -u) [[ \$2 == target && \$3 == -- ]]; shift 3; exec "\$@" ;;
+    -u) [[ ( \$2 == target || \$2 == target@example.com ) && \$3 == -- ]]; shift 3; exec "\$@" ;;
     chsh) exit 0 ;;
     *) exit 1 ;;
 esac
@@ -73,6 +73,24 @@ target_repo="$test_dir/target/.local/share/dotconfig"
 [[ "$(git -C "$target_repo" symbolic-ref --short HEAD)" == master ]]
 [[ "$(git -C "$target_repo" config branch.master.merge)" == refs/heads/master ]]
 [[ "$(git -C "$target_repo" rev-parse HEAD)" == "$(git -C "$test_dir/repo" rev-parse HEAD)" ]]
+test_stage='domain alias with canonical short name and NSS home'
+rm -rf "$target_repo"
+: > "$test_dir/log"
+bash "$test_dir/repo/scripts/install-for-user.sh" --user target@example.com --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1
+grep -q '^sudo:-u target@example.com -- ' "$test_dir/log"
+grep -Fxq "user-install:$test_dir/target" "$test_dir/log"
+grep -q 'SUCCESS: dotconfig installation completed successfully for target@example.com' "$test_dir/output"
+[[ -d "$target_repo/.git" && ! -e "$test_dir/target@example.com" ]]
+test_stage='resume domain alias installation'
+: > "$test_dir/log"
+bash "$test_dir/repo/scripts/install-for-user.sh" --user target@example.com --resume --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1
+grep -q 'Reusing the existing target checkout' "$test_dir/output"
+grep -Fxq "user-install:$test_dir/target" "$test_dir/log"
+test_stage='refuse passwd record for a different UID'
+: > "$test_dir/log"
+if DOTCONFIG_TEST_PASSWD_UID=5678 bash "$test_dir/repo/scripts/install-for-user.sh" --user target@example.com --resume --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1; then exit 1; fi
+grep -q 'Cannot resolve a usable target home directory' "$test_dir/output"
+[[ ! -s "$test_dir/log" ]]
 test_stage='resume clean checkout'
 # Resume reuses the checkout and retains target-local state.
 printf 'keep private settings\n' > "$test_dir/target/.zshrc.local"
