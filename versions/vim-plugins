@@ -10,7 +10,7 @@ grep.vim https://github.com/vim-scripts/grep.vim.git HEAD 852ddb0c6590bbc41c508d
 CSApprox https://github.com/vim-scripts/CSApprox.git HEAD a2958096696f9132ef0ece44b3fab93dac6df8d0
 delimitMate https://github.com/Raimondi/delimitMate.git HEAD becbd2d353a2366171852387288ebb4b33a02487
 tagbar https://github.com/preservim/tagbar.git HEAD 07cb8247487208124978daff8e13624667635457
-ale https://github.com/dense-analysis/ale.git HEAD 422c0e8ef42e2315a5b58dc281fccc59b816c37a
+ale https://github.com/dense-analysis/ale.git HEAD e1789bc54483d76ac9ddb40b633d1645c8281914
 indentLine https://github.com/Yggdroot/indentLine.git HEAD b96a75985736da969ac38b72a7716a8c57bdde98
 vim-bootstrap-updater https://github.com/editor-bootstrap/vim-bootstrap-updater.git HEAD 55d9d5794a391cd23f9c0d76336a30aeac0e9c70
 vim-rhubarb https://github.com/tpope/vim-rhubarb.git HEAD 5496d7c94581c4c9ad7430357449bb57fc59f501
