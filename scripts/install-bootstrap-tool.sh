@@ -24,7 +24,8 @@ manifest_value() {
 
 download() {
     local status=0 setting version
-    local curl_options=()
+    # Bash 3.2 (macOS) treats an empty array as unset under nounset.
+    local curl_options=(--silent)
     echo "Downloading $tool bootstrap with $downloader." >&2
     if [[ "${DOTCONFIG_DOWNLOAD_VERBOSE:-false}" == true ]]; then
         printf '[dotconfig] Download URL: %s\n' "$1" >&2
@@ -52,7 +53,6 @@ download() {
         --proto '=https' \
         --retry 3 \
         --show-error \
-        --silent \
         "${curl_options[@]}" \
         --output "$2" \
         "$1" || status=$?
