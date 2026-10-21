@@ -165,6 +165,14 @@ bash install.sh --user alice
 
 The target account must already exist and have a writable home directory. Use a clean, committed checkout whose HEAD is an ancestor of the fetched default branch (`git fetch origin` first); feature-only commits are refused so the target can fast-forward future updates. The administrator installs the shared APT baseline and changes Alice's login shell to a system zsh listed in `/etc/shells`; Alice does not need sudo. The installer transfers the committed checkout to `~alice/.local/share/dotconfig` and runs all home-directory setup as Alice: chezmoi profile prompts, dotfiles, pinned bootstrap tools, runtimes, Oh My Zsh, and Vim plugins. The checkout retains the original Git remote for later updates.
 
+SSSD/domain accounts can be selected by their qualified login name, even when NSS returns a different canonical name. The installer verifies that both resolve to the same UID and uses the home directory returned by `getent passwd`; it does not construct a path from the login name. For example, `user@example.com` can use `/home/user`:
+
+```sh
+bash install.sh --user 'user@example.com' --skip-shell-change
+```
+
+Use `--skip-shell-change` when the domain or SSSD configuration manages the login shell; the local `chsh` command may not be able to change it. To retry this installation, add `--resume` to the same command. The target environment uses the canonical NSS account name for `USER` and `LOGNAME`, while sudo continues to select the requested login name.
+
 User setup uses Alice's HOME and a clean environment. If the administrator's dotconfig proxy mode is `on`, only validated credential-free loopback HTTP/HTTPS proxy settings, the bypass list in both cases, and `NODE_USE_ENV_PROXY=1` are passed for the installation session. Other administrator variables and private profile files stay private. Alice's own proxy profile, if present, takes precedence; explicit `off` clears these inherited settings. This does not persist a new proxy profile for Alice. Downloads through an inherited Kerberos-authenticated listener use the administrator's corporate identity, including when installing for someone else's account.
 
 The same skip options apply. With `--skip-packages`, curl, Git, and the other required system tools must already be installed. An existing target checkout is refused on first installation. To retry after a failure, run from the administrator account:
