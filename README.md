@@ -167,6 +167,8 @@ bash install.sh --user 'user@example.com' --resume --skip-shell-change --downloa
 
 Wget must already be available to the target user for cross-account installation; install it as the administrator if needed. Without `--user`, Linux bootstrap can install the selected downloader when missing. For direct bootstrap-helper invocations, use `DOTCONFIG_DOWNLOADER=wget bash scripts/install-bootstrap-tool.sh chezmoi` (or `mise`).
 
+For `--resume`, the target checkout must also contain this downloader option: resume deliberately does not update its code. After this change is merged, update an existing clean target checkout to the reviewed default branch before retrying with the new flag.
+
 On Ubuntu/Debian, run this from an administrator account with sudo access:
 
 ```sh
