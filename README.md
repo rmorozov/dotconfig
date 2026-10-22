@@ -207,6 +207,10 @@ Bootstrap trust is recorded in `versions/bootstrap-tools`. The status and doctor
 
 The installer deploys a `dotconfig` maintenance command into `~/.local/bin`.
 
+Oh My Zsh installation prevents group/other-writable completion code, including when the caller uses a permissive umask or Git shared-repository setting. Re-running `dotconfig shell` also removes group/other write permission from current-user-owned managed Oh My Zsh files and directories. It preserves stricter umasks, executable bits, and ownership; it skips Git metadata, the custom plugin tree, and symlinks. A symlinked installation root is refused.
+
+Installation, `dotconfig status`, and `dotconfig doctor` run Zsh's `compaudit` on the standard completion paths plus dotconfig's configured Oh My Zsh plugins and custom overrides, without loading interactive startup files or plugin code. Remaining insecure paths make the check fail and are printed for inspection. For an existing installation, update the checkout to this change, then run `dotconfig shell` (or `bash scripts/install-oh-my-zsh.sh` from the checkout if configuration was not deployed). If the audit still fails, inspect the reported paths and parents with `ls -ld` and, on Linux, `namei -l`; fix only those whose ownership and intended use you have verified. Shared system paths and custom plugins need a targeted administrator or owner decision. Restart Zsh after repair. Keep `ZSH_DISABLE_COMPFIX` unset so the shell continues checking completion security.
+
 Each account owns its checkout, reviewed revision, dotfiles, runtimes, and editor dependencies. Run `dotconfig sync` separately as each installed user, including a domain user whose NSS home is `/home/user`. No sudo is required for these per-user updates. From an administrator's terminal you can run:
 
 ```sh
