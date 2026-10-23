@@ -69,7 +69,7 @@ proxy_assignments="$(
     python3 "$repo_root/scripts/proxy-files.py" session on
     if [[ -f "$HOME/.config/dotconfig/proxy.mode" ]] &&
         [[ "$(cat "$HOME/.config/dotconfig/proxy.mode")" == on ]]; then
-        # Retain managed profiles' canonical lower/uppercase proxy values.
+        # Retain the canonical lower and uppercase values of a managed profile.
         python3 "$repo_root/scripts/proxy-files.py" environment on
     fi
 )"
