@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 test_dir="$(mktemp -d)"
-trap 'rm -rf "$test_dir"' EXIT
+trap 'status=$?; if ((status != 0)) && [[ -f "$test_dir/output" ]]; then cat "$test_dir/output" >&2; fi; rm -rf "$test_dir"' EXIT
+trap 'echo "Zsh completion test failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 mkdir -p "$test_dir/repo/scripts" "$test_dir/repo/versions" "$test_dir/repo/home/dot_config/zsh" \
     "$test_dir/upstream/functions" "$test_dir/upstream/completions" "$test_dir/upstream/plugins/git" "$test_dir/home"
 cp "$repo_root/scripts/install-oh-my-zsh.sh" "$repo_root/scripts/check-zsh-completions.sh" "$test_dir/repo/scripts/"
