@@ -41,6 +41,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl shellcheck zsh
+          # The hosted image leaves system Zsh completion directories insecure for compaudit.
+          ls -ld /usr/share/zsh /usr/share/zsh/vendor-completions
+          sudo chown -R root:root /usr/share/zsh
+          sudo chmod -R go-w /usr/share/zsh
           bash scripts/install-bootstrap-tool.sh mise
           bash scripts/install-bootstrap-tool.sh chezmoi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
