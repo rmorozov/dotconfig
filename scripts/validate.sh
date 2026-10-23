@@ -55,6 +55,7 @@ bash scripts/test-open-refresh-pr.sh
 bash scripts/test-report.sh
 python3 scripts/test-compare-reports.py
 bash scripts/test-update-oh-my-zsh.sh
+bash scripts/test-zsh-completions.sh
 bash scripts/test-refresh-vim-bootstrap.sh
 bash scripts/test-update-vim-plug.sh
 
