@@ -31,6 +31,10 @@ printf 'proxy:%s|%s|%s|%s|%s|%s|%s\\n' \
     "\${http_proxy:-none}" "\${https_proxy:-none}" "\${HTTP_PROXY:-none}" "\${HTTPS_PROXY:-none}" \
     "\${no_proxy:-none}" "\${NO_PROXY:-none}" "\${NODE_USE_ENV_PROXY:-none}" >> '$test_dir/log'
 printf 'user-install:%s\\n' "\$HOME" >> '$test_dir/log'
+printf 'network-extra:%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' \
+    "\${all_proxy:-none}" "\${ALL_PROXY:-none}" "\${CURL_CA_BUNDLE:-none}" \
+    "\${SSL_CERT_FILE:-none}" "\${SSL_CERT_DIR:-none}" "\${REQUESTS_CA_BUNDLE:-none}" \
+    "\${GIT_SSL_CAINFO:-none}" "\${GIT_SSL_CAPATH:-none}" "\${NODE_EXTRA_CA_CERTS:-none}" >> '$test_dir/log'
 EOF
 cat > "$test_dir/bin/id" <<'EOF'
 #!/usr/bin/env bash
@@ -77,10 +81,48 @@ target_repo="$test_dir/target/.local/share/dotconfig"
 [[ "$(git -C "$target_repo" symbolic-ref --short HEAD)" == master ]]
 [[ "$(git -C "$target_repo" config branch.master.merge)" == refs/heads/master ]]
 [[ "$(git -C "$target_repo" rev-parse HEAD)" == "$(git -C "$test_dir/repo" rev-parse HEAD)" ]]
+test_stage='unmanaged session proxy and CA inheritance on resume'
+: > "$test_dir/log"
+http_proxy=http://127.0.0.1:3130 https_proxy=http://127.0.0.1:3131 \
+    HTTP_PROXY=http://127.0.0.1:3132 HTTPS_PROXY=http://127.0.0.1:3133 \
+    no_proxy=localhost,.corp.example NO_PROXY=localhost,.upper.example NODE_USE_ENV_PROXY=1 \
+    all_proxy=socks5h://127.0.0.1:1080 ALL_PROXY=socks5://127.0.0.1:1081 \
+    CURL_CA_BUNDLE='/etc/ssl/corporate bundle.pem' SSL_CERT_FILE=/etc/ssl/corporate.pem \
+    SSL_CERT_DIR=/etc/ssl/certs REQUESTS_CA_BUNDLE=/etc/ssl/requests.pem \
+    GIT_SSL_CAINFO=/etc/ssl/git.pem GIT_SSL_CAPATH=/etc/ssl/certs \
+    NODE_EXTRA_CA_CERTS=/etc/ssl/node.pem \
+    bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1
+grep -Fxq 'proxy:http://127.0.0.1:3130|http://127.0.0.1:3131|http://127.0.0.1:3132|http://127.0.0.1:3133|localhost,.corp.example|localhost,.upper.example|1' "$test_dir/log"
+grep -Fxq 'network-extra:socks5h://127.0.0.1:1080|socks5://127.0.0.1:1081|/etc/ssl/corporate bundle.pem|/etc/ssl/corporate.pem|/etc/ssl/certs|/etc/ssl/requests.pem|/etc/ssl/git.pem|/etc/ssl/certs|/etc/ssl/node.pem' "$test_dir/log"
+test_stage='target profile overrides inherited session proxy'
+mkdir -p "$test_dir/target/.config/dotconfig"
+printf 'on\n' > "$test_dir/target/.config/dotconfig/proxy.mode"
+printf 'export http_proxy=http://127.0.0.1:3140\nexport https_proxy="$http_proxy"\nexport HTTP_PROXY="$http_proxy"\nexport HTTPS_PROXY="$http_proxy"\n' > "$test_dir/target/.config/dotconfig/proxy.local"
+: > "$test_dir/log"
+http_proxy=http://127.0.0.1:3130 https_proxy=http://127.0.0.1:3130 \
+    bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1
+grep -q '^proxy:http://127.0.0.1:3140|http://127.0.0.1:3140|http://127.0.0.1:3140|http://127.0.0.1:3140|' "$test_dir/log"
+test_stage='target off overrides unmanaged session proxy'
+printf 'off\n' > "$test_dir/target/.config/dotconfig/proxy.mode"
+: > "$test_dir/log"
+http_proxy=http://127.0.0.1:3130 https_proxy=http://127.0.0.1:3130 \
+    all_proxy=socks5h://127.0.0.1:1080 CURL_CA_BUNDLE=/etc/ssl/corporate.pem \
+    bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1
+grep -Fxq 'proxy:none|none|none|none|none|none|none' "$test_dir/log"
+grep -q '^network-extra:none|none|/etc/ssl/corporate.pem|' "$test_dir/log"
+rm "$test_dir/target/.config/dotconfig/proxy.mode" "$test_dir/target/.config/dotconfig/proxy.local"
+test_stage='reject inherited credential-bearing proxy without disclosing it'
+: > "$test_dir/log"
+if http_proxy=http://alice:SessionSecretMustNotPrint@127.0.0.1:3128 \
+    bash "$test_dir/repo/scripts/install-for-user.sh" --user target --resume --skip-packages --skip-plugins --skip-shell-change > "$test_dir/output" 2>&1; then exit 1; fi
+[[ ! -s "$test_dir/log" ]]
+if grep -q 'SessionSecretMustNotPrint' "$test_dir/output"; then exit 1; fi
 test_stage='domain alias with canonical short name and NSS home'
 rm -rf "$target_repo"
 : > "$test_dir/log"
-bash "$test_dir/repo/scripts/install-for-user.sh" --user target@example.com --skip-packages --skip-plugins --skip-shell-change --downloader wget > "$test_dir/output" 2>&1
+https_proxy=http://127.0.0.1:3135 HTTPS_PROXY=http://127.0.0.1:3135 \
+    bash "$test_dir/repo/scripts/install-for-user.sh" --user target@example.com --skip-packages --skip-plugins --skip-shell-change --downloader wget > "$test_dir/output" 2>&1
+grep -q '^proxy:[^|]*|http://127.0.0.1:3135|[^|]*|http://127.0.0.1:3135|' "$test_dir/log"
 grep -Fxq 'user-args:--skip-packages --skip-shell-change --skip-plugins --downloader wget' "$test_dir/log"
 grep -q '^sudo:-u target@example.com -- ' "$test_dir/log"
 grep -Fxq "user-install:$test_dir/target" "$test_dir/log"
@@ -197,6 +239,17 @@ if bash "$test_dir/repo/scripts/install-for-user.sh" --user target --skip-packag
 if grep -q 'SecretMustNotPrint' "$test_dir/output"; then exit 1; fi
 # Public option parsing fails cleanly before entering the privileged path.
 if bash "$repo_root/install.sh" --user > "$test_dir/output" 2>&1; then exit 1; fi
+test_stage='session serializer preserves empty values and omits unrelated variables'
+env -i PATH="$PATH" http_proxy= HTTPS_PROXY=http://proxy.example:8080 \
+    CURL_CA_BUNDLE='/etc/ssl/a bundle.pem' ADMIN_PRIVATE_TOKEN=not-network \
+    python3 "$repo_root/scripts/proxy-files.py" session on > "$test_dir/session"
+printf 'http_proxy=\nHTTPS_PROXY=http://proxy.example:8080\nCURL_CA_BUNDLE=/etc/ssl/a bundle.pem\n' > "$test_dir/expected-session"
+diff -u "$test_dir/expected-session" "$test_dir/session"
+test_stage='reject multiline environment assignments'
+if env -i PATH="$PATH" no_proxy=$'localhost\nBASH_ENV=/untrusted' \
+    python3 "$repo_root/scripts/proxy-files.py" session on > "$test_dir/session" 2> "$test_dir/output"; then exit 1; fi
+[[ ! -s "$test_dir/session" ]]
+grep -q 'invalid session no_proxy' "$test_dir/output"
 echo 'Install-for-user orchestration tests passed.'
 
 if bash "$repo_root/install.sh" --resume > "$test_dir/output" 2>&1; then exit 1; fi

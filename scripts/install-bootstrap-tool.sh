@@ -34,7 +34,8 @@ download() {
         printf '[dotconfig] %s\n' "${version%%$'\n'*}" >&2
         # Show effective environment presence, never proxy credentials or bypass lists.
         for setting in http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
-            CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR WGETRC; do
+            CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE \
+            GIT_SSL_CAINFO GIT_SSL_CAPATH NODE_EXTRA_CA_CERTS NODE_USE_ENV_PROXY WGETRC; do
             if [[ -n "${!setting:-}" ]]; then
                 printf '[dotconfig] %s is set\n' "$setting" >&2
             else
