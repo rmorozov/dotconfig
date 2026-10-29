@@ -31,8 +31,10 @@ report() {
 
 id "$user" >/dev/null 2>&1 || sudo useradd --create-home --shell /bin/bash "$user"
 
+# Each failing process lives a moment after it logs: journald reads a sender's unit from its cgroup, and a process
+# that exits first leaves its lines without one.
 sudo systemd-run --unit=dotconfig-live-fail --description='dotconfig live failure' \
-    sh -c 'echo "live failure: cannot read /etc/dotconfig-live.conf" >&2; exit 3'
+    sh -c 'echo "live failure: cannot read /etc/dotconfig-live.conf" >&2; sleep 1; exit 3'
 printf '[Unit]\nDescription=dotconfig live bad setting\n[Service]\nType=simple\n' |
     sudo tee /etc/systemd/system/dotconfig-live-bad.service > /dev/null
 sudo systemctl daemon-reload
@@ -68,7 +70,7 @@ uid="$(id -u "$user")"
 sudo loginctl enable-linger "$user"
 sudo systemctl start "user@$uid.service"
 sudo systemd-run --user -M "$user@" --unit=dotconfig-live-user-fail \
-    sh -c 'echo "user failure: cannot reach sync server" >&2; exit 4'
+    sh -c 'echo "user failure: cannot reach sync server" >&2; sleep 1; exit 4'
 sleep 2
 
 report bash "$repo_root/scripts/machine.sh" status
