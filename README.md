@@ -110,6 +110,31 @@ CI also installs the packaged SSSD on an Ubuntu 26.04 runner and runs both comma
 
 `--purge` asks for confirmation, then moves the SSSD cache to `/var/lib/sss/dotconfig-backup/<timestamp>/` instead of deleting it. After a purge, the next domain login must reach a domain controller, so connect the VPN first. To undo, stop SSSD, move the files back into `/var/lib/sss/db` and `/var/lib/sss/mc`, and start it again.
 
+### Machine health on Ubuntu
+
+`dotconfig machine status` reports what is broken on an Ubuntu 26.04 machine and why, and how long boot and login took:
+
+```sh
+dotconfig machine status              # unprivileged; root-only checks are listed as not checked
+dotconfig machine status --sudo       # everything, through sudo
+dotconfig machine status --boot -1    # the journal of the previous boot, e.g. after a freeze
+```
+
+It never changes anything. Each finding is an `ok`, `info`, `warning`, `not checked` or `check failed` line, followed by quoted log lines (`--examples N` for more). `not checked` is an expected limit: the check needs `--sudo`, or its tool is not installed. `check failed` means a diagnostic that should work did not (it exited with an error or timed out, including the delegated `dotconfig creds` checks, bounded at 300 s), so that part of the machine was not assessed. The summary and exit status keep the three outcomes apart: 1 when problems were found, 3 when nothing wrong was found but the assessment is incomplete, and 0 when the machine is healthy within the checked scope. Sections:
+
+- **System.** `systemctl is-system-running`, decoded kernel taint flags, a pending reboot and the packages that need it, and whether the previous boot shut down cleanly or ended in a crash, freeze, power loss or failed suspend.
+- **Boot and login timing.** Firmware, loader, kernel, initrd and userspace time and the slowest units. For each graphical or console login, from the journal: when the login screen appeared, when the password was accepted, how long the user manager and the desktop session took after that, failed password attempts before it, and the slowest user units when the login took over 30 seconds.
+- **Services.** Failed system and user units with the reason (result, exit status, restarts) and their last log lines. With `--sudo`, the user units of every running user manager (logged-in and lingering accounts, from `loginctl`) are checked, each with that account's own log lines; without it, only yours. Also units with a bad unit file or a deleted one; units referenced but not installed; and services restarted during this boot.
+- **Journal errors.** Error-priority messages grouped by program with counts and examples, coredumps, and Apport reports in `/var/crash`.
+- **Kernel.** OOM kills, unsigned modules refused under Secure Boot, disk I/O, filesystem, NVMe and SATA errors, oopses and stack traces, hung tasks, GPU errors, thermal throttling, machine checks, firmware load failures, segfaults, AppArmor denials, USB enumeration failures and ACPI firmware noise. Other kernel errors are grouped and quoted.
+- **Storage and memory.** Filesystems with less than 20% of space or inodes free, a read-only `/`, `/home`, `/var` or `/boot`, SMART health (with `--sudo`), available memory, swap use, memory pressure, and systemd-oomd kills.
+- **Network and time.** NetworkManager state and connectivity, an active VPN, the default route, DNS servers, and NTP synchronization, which Kerberos needs.
+- **Domain login.** Whether `sssd` runs. With `--sudo`, the output of `dotconfig creds status` and `dotconfig creds check-logs` for the days since boot is included.
+- **Packages and security.** `dpkg --audit`, pending and security updates, held packages, failed snap changes and snap warnings, Secure Boot, AppArmor, the last APT run and the journal size. With `--sudo`, also AppArmor profile modes, `ufw` state and unattended-upgrades errors.
+- **Hardware.** Battery charge, wear against design capacity and cycle count, and thermal zones at 90 °C or more.
+
+Without `--sudo`, an account outside the `adm` group sees only its own journal, so boot timing, the login timeline, system errors and the kernel log need `--sudo` or `sudo usermod -aG adm $USER`. Ubuntu adds the first local user to `adm`, but not domain users. Quoted log lines hide values of settings named like passwords, secrets or tokens, but can include user and host names.
+
 ## Bootstrap
 
 Clone the repository, then run:

@@ -133,6 +133,7 @@ jobs:
           bash -n "$test_home/.local/bin/dotconfig"
           "$test_home/.local/bin/dotconfig" --help | grep -q '^  sync '
           "$test_home/.local/bin/dotconfig" --help | grep -q '^  bootstrap '
+          "$test_home/.local/bin/dotconfig" --help | grep -q '^  machine '
           grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 
           remote_repo="$(mktemp -d)"
@@ -184,3 +185,18 @@ jobs:
         run: |
           sudo apt-get update
           bash scripts/test-credentials-live.sh
+
+  machine-live:
+    # dotconfig machine status on a real Ubuntu 26.04 runner after seeding a failed unit, a bad unit file, journal
+    # and kernel errors, and a PAM login session. No desktop runs here, so the graphical login timeline is fixture-only.
+    name: ubuntu-26.04 / machine live
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
+
+      - name: Check dotconfig machine status against the runner
+        env:
+          DOTCONFIG_MACHINE_LIVE_TEST: "1"
+        run: bash scripts/test-machine-status-live.sh
