@@ -106,6 +106,8 @@ log(0, 400, "Killed /user.slice/user-1000.slice/app-code.scope due to memory pre
     SYSLOG_IDENTIFIER="systemd-oomd")
 log(0, 500, "Sync failed: network unreachable", SYSLOG_IDENTIFIER="sync-agent", PRIORITY=3,
     _SYSTEMD_USER_UNIT="sync-agent.service", _UID=1000)
+log(0, 502, "bob backup: destination full", SYSLOG_IDENTIFIER="bob-backup", _SYSTEMD_USER_UNIT="bob-backup.service",
+    _UID=1001)
 log(0, 501, "root decoy for sync-agent", SYSLOG_IDENTIFIER="sync-agent", _SYSTEMD_USER_UNIT="sync-agent.service",
     _UID=0)
 with open(sys.argv[1], "w") as handle:
@@ -170,6 +172,9 @@ cat > "$stubs/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
     is-system-running) echo degraded ;;
+    *"-M bob@"*"--failed"*) echo "bob-backup.service loaded failed failed Bob backup" ;;
+    *"show"*"bob-backup.service"*) printf 'Description=Bob backup\nResult=exit-code\nExecMainCode=1\nExecMainStatus=2\nLoadState=loaded\n' ;;
+    *"-M bob@"*) ;;
     "is-active sssd.service") echo inactive; exit 3 ;;
     *"--user"*"--failed"*) echo "sync-agent.service loaded failed failed Sync agent" ;;
     *"--failed"*) echo "backupd.service loaded failed failed Backup daemon" ;;
@@ -234,6 +239,7 @@ case "$1" in
     warnings) printf 'last-occurrence:  today at 10:05 UTC\nwarning: |\n  snap "code" has running apps; refresh is inhibited\n' ;;
 esac
 EOF
+printf '#!/usr/bin/env bash\nprintf "1000 alice@corp.example no active\\n1001 bob yes lingering\\n"\n' > "$stubs/loginctl"
 printf '#!/usr/bin/env bash\necho "default via 10.0.0.1 dev wlp0s20f3"\n' > "$stubs/ip"
 printf '#!/usr/bin/env bash\necho "Global:"\necho "Link 3 (wlp0s20f3): 10.0.0.1"\necho "Link 9 (vpn0): 10.8.0.53"\n' \
     > "$stubs/resolvectl"
@@ -288,6 +294,10 @@ check '^    log: Connection to backup.corp.example failed; api_token=<hidden>'
 check '^warning: sync-agent.service failed (Sync agent): it restarted too often and was stopped'
 check '^    log: Sync failed: network unreachable'
 refute 'root decoy'
+check '^  user units of alice@corp.example (uid 1000):'
+check '^  user units of bob (uid 1001):'
+check '^warning: bob-backup.service failed (Bob backup): its main process exited with an error, exited 2 (invalid arguments)'
+check '^    log: bob backup: destination full'
 check '^warning: broken.service did not load: bad-setting (org.freedesktop.systemd1.BadSetting'
 check '^warning: gone.service is active but its unit file is gone'
 check '^warning: refused.service was refused: Service has no ExecStart='

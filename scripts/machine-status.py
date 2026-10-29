@@ -363,26 +363,48 @@ def monotonic(entry):
 
 # --- Services ---------------------------------------------------------------------------------------------------
 
+def user_managers(machine):
+    """(name, uid, systemctl flags) for each user manager to inspect: under sudo every running one, from
+    loginctl (logged-in and lingering accounts); otherwise only the caller's own."""
+    if not machine.privileged:
+        return [(machine.user, machine.uid, ["--user"])]
+    result = run(["loginctl", "list-users", "--no-legend", "--no-pager"])
+    managers = []
+    if result is not None and result.returncode == 0:
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].isdigit():
+                managers.append((parts[1], int(parts[0]), ["--user", "-M", f"{parts[1]}@"]))
+    if not managers and machine.user_flags():
+        managers.append((machine.user, machine.uid, machine.user_flags()))
+    return managers
+
+
 def check_services(machine):
     section("Services")
-    for scope in ("system", "user"):
-        flag = machine.user_flags() if scope == "user" else []
-        if flag is None:
-            say("unchecked", "user units: no invoking user to inspect; run through sudo from your own account")
-            continue
-        result = run(["systemctl"] + flag + ["list-units", "--failed", "--all", "--no-legend", "--plain",
-                                             "--no-pager"])
-        if result is None or result.returncode != 0:
-            say("unchecked" if scope == "user" else "failed", f"failed {scope} units: {failure('systemctl', result)}")
-            continue
-        units = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
-        if not units:
-            say("ok", f"no failed {scope} units")
-        for unit in units:
-            explain_failed(machine, unit, flag)
-        reported = unit_file_problems(machine) if scope == "system" else set()
-        load_problems(scope, flag, reported)
-        restarts(scope, flag)
+    units_of(machine, "system", [], None)
+    managers = user_managers(machine)
+    if not managers:
+        say("unchecked", "user units: no running user manager found; run through sudo from your own account")
+    for name, uid, flags in managers:
+        if machine.privileged:
+            print(f"  user units of {name} (uid {uid}):")
+        units_of(machine, "user", flags, uid)
+
+
+def units_of(machine, scope, flag, uid):
+    result = run(["systemctl"] + flag + ["list-units", "--failed", "--all", "--no-legend", "--plain", "--no-pager"])
+    if result is None or result.returncode != 0:
+        say("unchecked" if scope == "user" else "failed", f"failed {scope} units: {failure('systemctl', result)}")
+        return
+    units = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
+    if not units:
+        say("ok", f"no failed {scope} units")
+    for unit in units:
+        explain_failed(machine, unit, flag, uid)
+    reported = unit_file_problems(machine) if scope == "system" else set()
+    load_problems(scope, flag, reported)
+    restarts(scope, flag)
 
 
 def unit_properties(flag, units, names):
@@ -395,7 +417,7 @@ def unit_properties(flag, units, names):
     return blocks
 
 
-def explain_failed(machine, unit, flag):
+def explain_failed(machine, unit, flag, uid):
     props = (unit_properties(flag, [unit], ["Description", "Result", "ExecMainCode", "ExecMainStatus",
                                             "LoadState", "LoadError", "NRestarts", "InactiveEnterTimestamp"])
              or [{}])[0]
@@ -415,7 +437,7 @@ def explain_failed(machine, unit, flag):
     description = props.get("Description", "")
     say("warning", f"{unit} failed" + (f" ({description})" if description and description != unit else "")
         + (": " + ", ".join(why) if why else ""))
-    for line in unit_log(machine, unit, bool(flag)):
+    for line in unit_log(machine, unit, bool(flag), uid):
         print(f"    log: {line}")
 
 
@@ -430,15 +452,15 @@ EXIT_CODES = {"1": "generic failure", "2": "invalid arguments", "3": "not implem
               "217": "user", "226": "namespace", "227": "no new privileges", "243": "credentials"}
 
 
-def unit_log(machine, unit, user):
+def unit_log(machine, unit, user, uid):
     """The unit's last own log lines in this boot, else systemd's lines about it. A user unit is matched for the
     invoking account explicitly: journalctl --user-unit adds the caller's UID, which is 0 under sudo."""
     if not user:
         entries = machine.journal("-u", unit, "-n", "30") or []
-    elif machine.uid is None:
+    elif uid is None:
         return []
     else:
-        uid = str(machine.uid)
+        uid = str(uid)
         entries = machine.journal("-n", "30", "_SYSTEMD_USER_UNIT=" + unit, "_UID=" + uid, "+",
                                   "USER_UNIT=" + unit, "_UID=" + uid, "+",
                                   "COREDUMP_USER_UNIT=" + unit, "COREDUMP_UID=" + uid,
