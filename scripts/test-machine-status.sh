@@ -171,6 +171,18 @@ log(0, 500, "Sync failed: network unreachable", SYSLOG_IDENTIFIER="sync-agent", 
     _SYSTEMD_USER_UNIT="sync-agent.service", _UID=1000)
 log(0, 502, "bob backup: destination full", SYSLOG_IDENTIFIER="bob-backup", _SYSTEMD_USER_UNIT="bob-backup.service",
     _UID=4001)
+# Domain stages: SSH authenticates but the access rules refuse the account; cockpit authenticates, opens the
+# session, then pam_systemd fails to register it.
+log(0, 600, "pam_sss(sshd:auth): authentication success; logname= uid=0 euid=0 tty=ssh ruser= rhost=10.0.0.7 "
+    "user=alice@corp.example", SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="sshd")
+log(0, 600.1, "pam_sss(sshd:account): Access denied for user alice@corp.example: 6 (Permission denied)",
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="sshd")
+log(0, 700, "pam_sss(cockpit:auth): authentication success; logname= uid=0 user=alice@corp.example",
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session")
+log(0, 700.1, "pam_unix(cockpit:session): session opened for user alice@corp.example(uid=1000) by (uid=0)",
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session")
+log(0, 700.2, "pam_systemd(cockpit:session): Failed to create session: Connection timed out",
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session")
 log(0, 501, "root decoy for sync-agent", SYSLOG_IDENTIFIER="sync-agent", _SYSTEMD_USER_UNIT="sync-agent.service",
     _UID=0)
 with open(sys.argv[1], "w") as handle:
@@ -234,6 +246,7 @@ EOF
 cat > "$stubs/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
+    *"show --no-pager --timestamp=unix"*) exec python3 "$(dirname "$0")/../units.py" "$@" ;;
     is-system-running) echo degraded ;;
     "is-active user@"*) echo active ;;
     *"-M carol@ show-environment") cat "$(dirname "$0")/../manager-env" ;;
@@ -329,6 +342,8 @@ me="$(id -u)"
 real_id="$(command -v id)"
 cat > "$stubs/getent" <<EOF
 #!/usr/bin/env bash
+# Only the domain account comes from SSSD.
+if [[ "\$1" == -s ]]; then [[ "\$2 \$4" == "sss alice@corp.example" ]] || exit 2; shift 2; fi
 case "\$2" in
     alice@corp.example) echo "alice@corp.example:*:1000:1000:Alice:/home/alice:/bin/zsh" ;;
     carol) echo "carol:x:$me:$me:Carol:/home/carol-home:/bin/zsh" ;;
@@ -356,8 +371,17 @@ case "\$1 \$2" in
 esac
 EOF
 printf '#!/usr/bin/env bash\necho "default via 10.0.0.1 dev wlp0s20f3"\n' > "$stubs/ip"
-printf '#!/usr/bin/env bash\necho "Global:"\necho "Link 3 (wlp0s20f3): 10.0.0.1"\necho "Link 9 (vpn0): 10.8.0.53"\n' \
-    > "$stubs/resolvectl"
+cat > "$stubs/resolvectl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+    *"_ldap._tcp.dc._msdcs.corp.example"*)
+        printf '_ldap._tcp.dc._msdcs.corp.example IN SRV 0 100 389 dc1.corp.example\n'
+        printf '_ldap._tcp.dc._msdcs.corp.example IN SRV 0 100 389 dc2.corp.example\n-- link: vpn0\n' ;;
+    *"query"*) echo "_kerberos._tcp.corp.example: resolve call failed: No appropriate name servers or networks for name found" >&2
+        exit 1 ;;
+    *) printf 'Global:\nLink 3 (wlp0s20f3): 10.0.0.1\nLink 9 (vpn0): 10.8.0.53\n' ;;
+esac
+EOF
 printf '#!/usr/bin/env bash\nprintf "NTP=yes\\nNTPSynchronized=no\\n"\n' > "$stubs/timedatectl"
 printf '#!/usr/bin/env bash\necho "The following packages are only half configured:"\necho " libfoo1  library"\n' \
     > "$stubs/dpkg"
@@ -367,12 +391,79 @@ printf '#!/usr/bin/env bash\nprintf "120 profiles are loaded.\\n110 profiles are
     > "$stubs/aa-status"
 printf '#!/usr/bin/env bash\necho "Status: active"\n' > "$stubs/ufw"
 printf '#!/usr/bin/env bash\necho "dmesg: read kernel buffer failed: Operation not permitted" >&2\nexit 1\n' > "$stubs/dmesg"
-printf '#!/usr/bin/env bash\nprintf "Issues identified by validators: 0\\n"\n' > "$stubs/sssctl"
+cat > "$stubs/sssctl" <<'EOF'
+#!/usr/bin/env bash
+state="$(dirname "$0")/.."
+case "$1" in
+    domain-list) echo corp.example ;;
+    domain-status) cat "$state/sssd-state" ;;
+    user-checks) printf 'user: %s\naction: acct\nservice: %s\n' "$2" "$6"; cat "$state/acct" ;;
+    *) printf "Issues identified by validators: 0\n" ;;
+esac
+EOF
 chmod +x "$stubs"/*
 export PATH="$stubs:$PATH"
 export USER=alice@corp.example
 # The test controls every proxy setting it reads.
 unset http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY SSL_CERT_FILE
+
+# Expected units as systemctl would report them, a profile, overrides and fstab mounts.
+python3 - "$test_dir" "$root" <<'EOF'
+import json, sys, time
+from pathlib import Path
+test_dir, root = Path(sys.argv[1]), Path(sys.argv[2])
+now = int(time.time())
+loaded = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active", "SubState": "running",
+          "Type": "simple", "Result": "success", "ConditionResult": "yes", "TriggeredBy": ""}
+def unit(**changes):
+    return dict(loaded, **changes)
+units = {
+    "systemd-timesyncd.service": unit(),
+    "NetworkManager.service": unit(),
+    "display-manager.service": unit(Id="gdm.service", UnitFileState="alias"),
+    "sssd.service": unit(UnitFileState="disabled", ActiveState="inactive", SubState="dead"),
+    "apt-daily.timer": unit(SubState="waiting", LastTriggerUSec=f"@{now - 86400}"),
+    "apt-daily-upgrade.timer": unit(SubState="waiting", LastTriggerUSec=f"@{now - 5 * 86400}"),
+    "e2scrub_all.timer": unit(SubState="waiting", LastTriggerUSec="n/a"),
+    "fstrim.timer": unit(LoadState="masked", UnitFileState="masked", ActiveState="inactive"),
+    "logrotate.timer": unit(SubState="waiting", LastTriggerUSec=f"@{now - 5 * 86400}"),
+    "systemd-tmpfiles-clean.timer": unit(ActiveState="inactive", SubState="dead"),
+    "setup-once.service": unit(Type="oneshot", ActiveState="inactive", SubState="dead"),
+    "on-demand.service": unit(ActiveState="inactive", SubState="dead", TriggeredBy="on-demand.socket"),
+    "needs-dock.service": unit(ActiveState="inactive", SubState="dead", ConditionResult="no"),
+    "user:px.service": unit(ActiveState="inactive", SubState="dead"),
+}
+(test_dir / "units.json").write_text(json.dumps(units))
+(test_dir / "units.py").write_text("""import json, sys
+from pathlib import Path
+units = json.loads((Path(__file__).parent / "units.json").read_text())
+scope = "user:" if "--user" in sys.argv else ""
+names = [arg for arg in sys.argv[1:] if not arg.startswith("-") and arg not in ("show",) and "@" not in arg]
+blocks = []
+for name in names:
+    props = units.get(scope + name) or {"LoadState": "not-found", "ActiveState": "inactive"}
+    blocks.append("\\n".join(f"{key}={value}" for key, value in dict({"Id": name}, **props).items()))
+print("\\n\\n".join(blocks))
+""")
+(test_dir / "sssd-state").write_text("Online status: Offline\n")
+(test_dir / "acct").write_text("pam_acct_mgmt: Permission denied\n")
+home = root / "home/alice"
+(home / ".config/chezmoi").mkdir(parents=True, exist_ok=True)
+(home / ".config/chezmoi/chezmoi.toml").write_text('[data]\n    machineRole = "work"\n    hostType = "laptop"\n')
+(home / ".config/dotconfig").mkdir(parents=True, exist_ok=True)
+(home / ".config/dotconfig/proxy.mode").write_text("on\n")
+(home / ".config/dotconfig/machine-expect").write_text(
+    "require --user px.service\nrequire setup-once.service\nrequire on-demand.service\n"
+    "require needs-dock.service max-age=fortnight\nrequire needs-dock.service\nmount /srv/backup\n")
+(root / "etc/dotconfig").mkdir(parents=True, exist_ok=True)
+(root / "etc/dotconfig/machine-expect").write_text("# Local policy\nignore systemd-timesyncd.service\n"
+                                                    "ignore-mount /mnt/scratch\n")
+(home / "data").mkdir(parents=True, exist_ok=True)
+(root / "etc/fstab").write_text(
+    "/dev/nvme0n1p2 / ext4 defaults 0 1\n/dev/nvme0n1p1 /boot/efi vfat umask=0077 0 1\n"
+    "UUID=1234 /home/alice/data ext4 defaults,nofail 0 2\n//nas/share /mnt/share cifs noauto 0 0\n"
+    "/swapfile none swap sw 0 0\n/dev/sdb1 /mnt/scratch ext4 defaults 0 2\n")
+EOF
 
 check() {
     grep -q -- "$1" "$test_dir/out" || { cat "$test_dir/out" >&2; echo "Missing: $1" >&2; exit 1; }
@@ -390,6 +481,35 @@ export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example SUDO_UID
 run_status --sudo --examples 2
 [[ "$status" == 1 ]] || { cat "$test_dir/out" >&2; echo "expected exit 1, got $status" >&2; exit 1; }
 check '^ok: Ubuntu 26.04.1 LTS'
+check '^info: profile: work laptop (from ~/.config/chezmoi/chezmoi.toml); features: SSSD, dotconfig proxy$'
+check "^warning: ~/.config/dotconfig/machine-expect:4: cannot read 'require needs-dock.service max-age=fortnight'"
+check '^warning: sssd.service is disabled, so it does not start at boot (serves domain accounts and logins); systemctl enable --now sssd.service'
+check '^warning: fstrim.timer is masked, so it never starts'
+check '^warning: systemd-tmpfiles-clean.timer is inactive, so what it schedules never runs'
+check '^warning: logrotate.timer last ran 5 days ago, expected at least every 2 (keeps logs from filling the disk)'
+check '^warning: e2scrub_all.timer has never run although the machine has been up'
+check '^warning: needs-dock.service was skipped: a start condition was not met'
+check '^warning: px.service is inactive (dead) although it is expected to run (required by ~/.config/dotconfig/machine-expect); see: systemctl --user status px.service'
+check '^warning: /home/alice/data is expected to be mounted (/etc/fstab: UUID=1234, ext4, nofail) but is not; its directory is writable, so files written there land on the parent filesystem'
+check '^warning: /srv/backup is expected to be mounted (~/.config/dotconfig/machine-expect) but is not; nothing is mounted there; see: findmnt /srv/backup, journalctl -u srv-backup.mount'
+refute '^warning: apt-daily[a-z-]*.timer \(is\|last\|has\)'
+refute 'setup-once.service'
+refute 'on-demand.service'
+refute 'NetworkManager.service is'
+refute 'display-manager.service'
+refute 'timesyncd'
+refute '/mnt/share is expected'
+refute '/mnt/scratch is expected'
+refute 'no unit is named for the local proxy'
+check '^Domain login (alice@corp.example):'
+check '^ok: SSSD serves alice@corp.example: uid 1000, home /home/alice'
+check '^warning: SSSD is offline for corp.example although VPN corp-vpn is connected; hypotheses: the domain zone is not resolved through'
+check '^warning: alice@corp.example is not authorized to log in through login now: Permission denied'
+check '^ok: last login of alice@corp.example through gdm-password at 1 min 0 s after the kernel started: authentication, authorization and session setup succeeded'
+check '^info: 2 failed attempts through gdm-password before that, the last one 9: SSSD could not reach the domain'
+check '^warning: last login of alice@corp.example through sshd at .*: authentication succeeded, then authorization refused it (6: the access rules'
+check '^warning: last login of alice@corp.example through cockpit at .*: authenticated and authorized, but session setup failed: Failed to create session: Connection timed out'
+refute 'discovery:'
 check '^warning: systemd reports the system degraded'
 check '^warning: kernel tainted: D kernel died recently (oops or BUG); W kernel warning; O out-of-tree module; E unsigned module'
 check '^warning: reboot required by linux-image-6.20.0-15-generic'
@@ -531,8 +651,26 @@ check '^warning: gnome-shell: 1 error (1 critical)'
 check '^warning: sync-agent.service failed'
 refute 'mount.cifs'
 refute 'dotconfig creds check-logs --days'
+check '^not checked: SSSD online state and authorization need root; run: dotconfig machine status --sudo'
+check '^not checked: login stages: needs the system journal (see above)'
+check '^warning: sssd.service is disabled'
 check '^Summary: problems found: [0-9]* warnings; [0-9]* not checked (need --sudo, or not applicable)$'
 refute 'check failed'
+
+# SSSD online and the account authorized; discovery, asked for, finds the controllers through the VPN and reports
+# the Kerberos record that does not resolve.
+printf 'Online status: Online\n' > "$test_dir/sssd-state"
+printf 'pam_acct_mgmt: Success\n' > "$test_dir/acct"
+export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example SUDO_UID=1000
+unset JOURNAL_DENY
+run_status --sudo --probe-domain
+check '^ok: SSSD is online for corp.example$'
+check '^ok: alice@corp.example is authorized to log in through login now (account check, no password)'
+check '^ok: discovery: _ldap._tcp.dc._msdcs.corp.example lists 2 servers (answered through vpn0)'
+check '^warning: discovery: _kerberos._tcp.corp.example does not resolve'
+run_status --sudo --user carol
+check '^info: carol is not a domain account (SSSD does not serve it)'
+refute 'authorized to log in'
 
 # A previous boot is read from the journal; current-only timing is skipped.
 export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example

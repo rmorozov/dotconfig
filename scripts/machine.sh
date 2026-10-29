@@ -6,7 +6,7 @@ checker="$repo_root/scripts/machine-status.py"
 
 usage() {
     cat <<'EOF_USAGE'
-Usage: dotconfig machine status [--sudo] [--user NAME] [--probe HOST[:PORT]]... [--boot N] [--examples N]
+Usage: dotconfig machine status [--sudo] [--user NAME] [--probe HOST[:PORT]]... [--probe-domain] [--boot N] [--examples N]
 
 status  Report the health of this Ubuntu machine: failed and unloadable units and why, boot and
         login timing, journal and kernel errors, crashes, disks, memory, network, time sync,
@@ -21,6 +21,9 @@ status  Report the health of this Ubuntu machine: failed and unloadable units an
 --probe HOST[:PORT]
         Test reaching HOST (port 443 by default) step by step: DNS, TCP, the proxy tunnel,
         and TLS verification. Repeat to probe several endpoints.
+--probe-domain
+        Also look up the DNS records clients use to find the domain controllers, naming the link
+        (Wi-Fi or VPN) whose DNS answered.
 --boot N
         Read the journal of boot N: 0 is this boot (default), -1 the one before.
 --examples N
@@ -41,6 +44,7 @@ case "${1:-}" in
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --sudo) use_sudo=true ;;
+                --probe-domain) options+=(--probe-domain) ;;
                 --user)
                     [[ $# -ge 2 && "$2" =~ ^[A-Za-z0-9._@-]+$ ]] || { usage >&2; exit 2; }
                     options+=(--user "$2")

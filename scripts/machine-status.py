@@ -151,6 +151,7 @@ class Machine:
         self.hinted = False
         self.journal_failures = set()
         self.free_kib = {}
+        self.vpns = None
         self.invoker = self.user
         # The account the user-level checks inspect: --user, else whoever ran the command (through sudo or not).
         self.target = resolve_account(target or self.user)
@@ -1634,6 +1635,241 @@ def probe_endpoint(machine, probe, labels, route):
             say("warning", f"{name}: TLS handshake failed ({clean(str(exc), 120)})")
 
 
+# --- Expected units and mounts ------------------------------------------------------------------------------------
+
+DAY = 86400
+# (alternatives, scope, applies to profile, required, maximum age of a timer's last run in seconds, why). Built-in
+# expectations hold only where the unit is installed; required ones also flag a missing unit.
+EXPECTED_UNITS = (
+    (("systemd-timesyncd.service", "chrony.service"), "system", lambda p: True, False, None,
+     "keeps the clock in sync; Kerberos refuses tickets on a skewed clock"),
+    (("NetworkManager.service",), "system", lambda p: p["hostType"] in ("laptop", "desktop"), False, None,
+     "manages Wi-Fi, wired and VPN connections"),
+    (("display-manager.service",), "system", lambda p: p["hostType"] in ("laptop", "desktop"), False, None,
+     "shows the login screen"),
+    (("ssh.socket", "ssh.service"), "system", lambda p: p["hostType"] == "server", False, None,
+     "accepts remote logins"),
+    (("sssd.service",), "system", lambda p: p["sssd"], True, None, "serves domain accounts and logins"),
+    # Package freshness itself is judged under Packages, from APT's own stamps.
+    (("apt-daily.timer",), "system", lambda p: True, False, None, "refreshes package lists"),
+    (("apt-daily-upgrade.timer",), "system", lambda p: True, False, None, "installs security updates"),
+    (("fstrim.timer",), "system", lambda p: True, False, 8 * DAY, "trims SSDs weekly"),
+    (("logrotate.timer",), "system", lambda p: True, False, 2 * DAY, "keeps logs from filling the disk"),
+    (("systemd-tmpfiles-clean.timer",), "system", lambda p: True, False, 2 * DAY, "cleans temporary files"),
+    (("e2scrub_all.timer",), "system", lambda p: True, False, 8 * DAY, "checks ext4 metadata on LVM weekly"),
+)
+DURATION = re.compile(r"^(\d+)([smhdw])$")
+UNIT_FIELDS = ["Id", "LoadState", "UnitFileState", "ActiveState", "SubState", "Type", "Result", "ConditionResult",
+               "TriggeredBy", "LastTriggerUSec"]
+
+
+def profile(machine):
+    """Machine role and host type from the account's chezmoi data, and the dotconfig features in use."""
+    values = {"machineRole": "unknown", "hostType": "unknown", "source": None}
+    home = home_path(machine) if machine.target and machine.reach else None
+    for config in sorted((home / ".config/chezmoi").glob("chezmoi.*")) if home else []:
+        try:
+            text = config.read_text(errors="replace")
+        except OSError:
+            continue
+        for key in ("machineRole", "hostType"):
+            matched = re.search(rf"""^\s*"?{key}"?\s*[=:]\s*["']?(\w+)""", text, re.M)
+            if matched:
+                values[key], values["source"] = matched.group(1), f"~/.config/chezmoi/{config.name}"
+    values["sssd"] = machine.path("etc/sssd/sssd.conf").exists()
+    try:
+        values["proxy"] = bool(home) and (home / ".config/dotconfig/proxy.mode").read_text().strip() == "on"
+    except OSError:
+        values["proxy"] = False
+    return values
+
+
+def expectation_overrides(machine):
+    """require [--user] UNIT [max-age=7d] | ignore UNIT | mount PATH | ignore-mount PATH, one per line, from
+    /etc/dotconfig/machine-expect and then the account's ~/.config/dotconfig/machine-expect."""
+    files = [("/etc/dotconfig/machine-expect", machine.path("etc/dotconfig/machine-expect"))]
+    if machine.target and machine.reach:
+        files.append(("~/.config/dotconfig/machine-expect", home_path(machine) / ".config/dotconfig/machine-expect"))
+    rules = {"require": [], "ignore": set(), "mount": [], "ignore-mount": set()}
+    for label, path in files:
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            words = line.split("#", 1)[0].split()
+            if not words:
+                continue
+            verb, rest = words[0], words[1:]
+            scope = "user" if "--user" in rest else "system"
+            rest = [word for word in rest if word != "--user"]
+            age = next((word.split("=", 1)[1] for word in rest if word.startswith("max-age=")), None)
+            names = [word for word in rest if not word.startswith("max-age=")]
+            matched = DURATION.match(age) if age else None
+            if verb not in rules or len(names) != 1 or (age and not matched):
+                say("warning", f"{label}:{number}: cannot read '{clean(line, 80)}'; expected require [--user] UNIT "
+                               "[max-age=7d], ignore UNIT, mount PATH or ignore-mount PATH")
+                continue
+            if verb == "require":
+                seconds_ = int(matched.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": DAY, "w": 7 * DAY}[matched.group(2)] \
+                    if matched else None
+                rules["require"].append(((names[0],), scope, seconds_, label))
+            elif verb in ("ignore", "ignore-mount"):
+                rules[verb].add(names[0].rstrip("/") or "/")
+            else:
+                rules["mount"].append((names[0].rstrip("/") or "/", label))
+    return rules
+
+
+def check_expected(machine):
+    section("Expected services, timers and mounts")
+    values = profile(machine)
+    rules = expectation_overrides(machine)
+    say("info", f"profile: {values['machineRole']} {values['hostType']}"
+        + (f" (from {values['source']})" if values["source"] else " (no chezmoi data found)")
+        + "; features: " + (", ".join(name for name, on in (("SSSD", values["sssd"]), ("dotconfig proxy", values["proxy"]))
+                                     if on) or "none"))
+    wanted = [(names, scope, required, age, why) for names, scope, applies, required, age, why in EXPECTED_UNITS
+              if applies(values) and not any(name in rules["ignore"] for name in names)]
+    wanted += [(names, scope, True, age, f"required by {label}") for names, scope, age, label in rules["require"]
+               if names[0] not in rules["ignore"]]
+    if values["proxy"] and not any(scope == "user" or "proxy" in names[0] for names, scope, _, _ in rules["require"]):
+        say("info", "dotconfig proxy is on but no unit is named for the local proxy; to have it checked, add "
+                    "require --user px.service (its real name) to ~/.config/dotconfig/machine-expect")
+    now = time.time()
+    uptime = float((machine.read("proc/uptime") or "0").split()[0] or 0)
+    problems = 0
+    for scope in ("system", "user"):
+        group = [entry for entry in wanted if entry[1] == scope]
+        if not group:
+            continue
+        flags = [] if scope == "system" else machine.user_flags()
+        if flags is None or (scope == "user" and not machine.reach):
+            say("unchecked", f"expected user units of {machine.user}: their user manager is out of reach "
+                             "(another account needs --sudo)")
+            continue
+        names = [name for entry in group for name in entry[0]]
+        result = run(["systemctl"] + flags + ["show", "--no-pager", "--timestamp=unix"]
+                     + ["-p" + name for name in UNIT_FIELDS] + names)
+        if not broken(f"expected {scope} units", "systemctl show", result):
+            continue
+        blocks = [dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+                  for block in result.stdout.strip().split("\n\n")]
+        # By position: an alias such as display-manager.service reports the unit it points to as its Id.
+        if len(blocks) != len(names):
+            say("failed", f"expected {scope} units: systemctl show answered {len(blocks)} of {len(names)} units")
+            continue
+        found = dict(zip(names, blocks))
+        for alternatives, _, required, age, why in group:
+            installed = [found.get(name, {}) for name in alternatives
+                         if found.get(name, {}).get("LoadState") not in (None, "", "not-found")]
+            if not installed:
+                if required:
+                    say("warning", f"{' or '.join(alternatives)} is required ({why}) but not installed")
+                    problems += 1
+                continue
+            problems += unit_expectation(installed[0], why, age, now, uptime, scope)
+    problems += expected_mounts(machine, rules)
+    if not problems:
+        say("ok", "expected services, timers and mounts are in place")
+
+
+def unit_expectation(props, why, age, now, uptime, scope):
+    """Findings for one expected unit; a oneshot that finished, or a unit started on demand, is not inactive."""
+    unit, state, sub = props.get("Id", "?"), props.get("ActiveState", ""), props.get("SubState", "")
+    hint = f"systemctl{' --user' if scope == 'user' else ''} status {unit}"
+    if props.get("LoadState") == "masked" or props.get("UnitFileState") == "masked":
+        say("warning", f"{unit} is masked, so it never starts ({why}); see: {hint}")
+        return 1
+    if state == "failed":
+        return 0  # Reported with its reason under Services.
+    if props.get("UnitFileState") == "disabled" and not props.get("TriggeredBy"):
+        say("warning", f"{unit} is disabled, so it does not start at boot ({why}); "
+                       f"systemctl{' --user' if scope == 'user' else ''} enable --now {unit}")
+        return 1
+    if props.get("ConditionResult") == "no" and state != "active":
+        say("warning", f"{unit} was skipped: a start condition was not met ({why}); see: {hint}")
+        return 1
+    if unit.endswith(".timer"):
+        if state != "active":
+            say("warning", f"{unit} is {state or 'not running'}, so what it schedules never runs ({why})")
+            return 1
+        last = props.get("LastTriggerUSec", "").lstrip("@")
+        # A persistent timer catches up soon after boot, so a long power-off is not a missed run.
+        if age and uptime > min(age, DAY):
+            if not last.isdigit() or int(last) == 0:
+                say("warning", f"{unit} has never run although the machine has been up {seconds(uptime * 1e6)} "
+                               f"({why}); see: {hint}")
+                return 1
+            since = now - int(last)  # --timestamp=unix: seconds, as @N
+            if since > age:
+                say("warning", f"{unit} last ran {since / DAY:.0f} days ago, expected at least every "
+                               f"{age / DAY:.0f} ({why}); see: {hint}")
+                return 1
+        return 0
+    oneshot_done = props.get("Type") == "oneshot" and props.get("Result") == "success"
+    if state not in ("active", "reloading", "activating") and not oneshot_done and not props.get("TriggeredBy"):
+        say("warning", f"{unit} is {state or 'not running'}{f' ({sub})' if sub else ''} although it is expected "
+                       f"to run ({why}); see: {hint}")
+        return 1
+    return 0
+
+
+def fstab_entries(machine):
+    entries = []
+    for line in (machine.read("etc/fstab") or "").splitlines():
+        fields = line.split("#", 1)[0].split()
+        if len(fields) < 4 or fields[2] == "swap" or not fields[1].startswith("/"):
+            continue
+        options = fields[3].split(",")
+        if "noauto" in options and "x-systemd.automount" not in options:
+            continue
+        entries.append((fields[1].replace("\\040", " ").rstrip("/") or "/", fields[0], fields[2], options))
+    return entries
+
+
+def expected_mounts(machine, rules):
+    """A mount that is expected but absent hides nothing: its directory stays writable on the parent filesystem,
+    so programs fill the wrong disk instead of failing."""
+    mounted = {fields[1].replace("\\040", " ") for fields in
+               (line.split() for line in (machine.read("proc/self/mounts") or "").splitlines()) if len(fields) > 2}
+    wanted = [(point, f"/etc/fstab: {spec}, {kind}" + (", nofail" if "nofail" in options else ""))
+              for point, spec, kind, options in fstab_entries(machine)]
+    wanted += [(point, label) for point, label in rules["mount"]]
+    if machine.target:
+        home = machine.target["home"].rstrip("/")
+        auto = machine.read("etc/auto.master") or ""
+        for line in auto.splitlines():
+            fields = line.split("#", 1)[0].split()
+            if fields and fields[0].startswith("/") and (home == fields[0] or home.startswith(fields[0].rstrip("/") + "/")):
+                wanted.append((fields[0].rstrip("/"), f"/etc/auto.master, holds the home of {machine.user}"))
+    problems, seen = 0, set()
+    for point, origin in wanted:
+        if point in seen or point in rules["ignore-mount"] or point in mounted:
+            continue
+        seen.add(point)
+        directory = machine.path(point.lstrip("/"))
+        consequence = "nothing is mounted there"
+        if directory.is_dir():
+            try:
+                writable = directory.stat().st_mode & 0o222
+            except OSError:
+                writable = 0
+            if writable:
+                consequence = "its directory is writable, so files written there land on the parent filesystem"
+        say("warning", f"{point} is expected to be mounted ({origin}) but is not; {consequence}; "
+                       f"see: findmnt {point}, journalctl -u {systemd_escape_path(point)}.mount")
+        problems += 1
+    return problems
+
+
+def systemd_escape_path(path):
+    if path == "/":
+        return "-"
+    return "".join(c if c.isalnum() or c in "_." else "-" if c == "/" else f"\\x{ord(c):02x}"
+                   for c in path.strip("/"))
+
+
 # --- Network, time, and domain login ---------------------------------------------------------------------------
 
 def check_network(machine):
@@ -1655,6 +1891,7 @@ def check_network(machine):
             vpns = [line.split(":")[0] for line in active.stdout.splitlines()
                     if re.search(r":(vpn|wireguard|tun)(:|$)", line)]
             say("info", "VPN active: " + ", ".join(vpns) if vpns else "no VPN connection active")
+            machine.vpns = vpns
     route = run(["ip", "-o", "route", "show", "default"])
     if broken("default route", "ip route", route) and not route.stdout.strip():
         say("warning", "no default route; nothing outside the local network is reachable")
@@ -1707,6 +1944,190 @@ def check_domain(machine):
             say("failed", f"{title} did not finish within {CREDS_TIMEOUT:g} s; domain login health is not assessed")
         elif result.returncode != 0:
             say("failed", f"{title} exited {result.returncode}; its findings above are incomplete")
+
+
+# --- Domain login for the inspected account ------------------------------------------------------------------------
+
+PAM_CODES = {"4": "a system error inside SSSD", "6": "the access rules (access_provider, GPO) refuse this account",
+             "7": "a wrong password or a rejected credential", "9": "SSSD could not reach the domain and has no "
+             "cached password to fall back on", "10": "the domain does not know this account",
+             "13": "the account or its password expired", "17": "Kerberos credentials could not be set up"}
+
+
+def pam_events(machine, name):
+    """The account's PAM events this boot, oldest first, as (entry, service, stage, outcome, detail)."""
+    quoted = re.escape(name)
+    patterns = (
+        ("auth", "ok", re.compile(rf"pam_\w+\(([^:]+):auth\): authentication success;.*\buser={quoted}(?:\s|$)")),
+        ("auth", "failed", re.compile(rf"pam_\w+\(([^:]+):auth\): authentication failure;.*\buser={quoted}(?:\s|$)")),
+        ("auth", "failed", re.compile(rf"pam_sss\(([^:]+):auth\): received for user {quoted}: (?!0 )(\d+) \((.*)\)")),
+        ("account", "denied", re.compile(rf"pam_\w+\(([^:]+):account\): (?:Access denied for user {quoted}: "
+                                         rf"(\d+) \((.*)\)|.*\b{quoted}\b.*(expired|denied).*)")),
+        ("session", "ok", re.compile(rf"pam_unix\(([^:]+):session\): session opened for user {quoted}[(\s]")),
+        ("session", "failed", re.compile(r"pam_(?:systemd|mkhomedir)\(([^:]+):session\): (.*(?:[Ff]ail|[Uu]nable).*)")),
+    )
+    events = []
+    for entry in machine.journal("SYSLOG_FACILITY=10", "SYSLOG_FACILITY=4") or []:
+        for stage, outcome, pattern in patterns:
+            matched = pattern.search(entry["MESSAGE"])
+            if matched:
+                groups = [group for group in matched.groups()[1:] if group]
+                events.append((entry, matched.group(1), stage, outcome, groups))
+                break
+    return events
+
+
+def when(entry):
+    realtime = entry.get("__REALTIME_TIMESTAMP")
+    if realtime and realtime.isdigit():
+        return time.strftime("%H:%M:%S", time.localtime(int(realtime) / 1e6))
+    return f"{seconds(monotonic(entry))} after the kernel started"
+
+
+def login_stages(machine, name):
+    """The latest login attempt per PAM service, split into authentication, authorization (account) and session
+    setup, so a refused account is not mistaken for a wrong password and a failed session for either."""
+    if not machine.sees_system_journal():
+        say("unchecked", "login stages: " + machine.journal_hint())
+        return
+    attempts = {}
+    for entry, service, stage, outcome, detail in pam_events(machine, name):
+        history = attempts.setdefault(service, [])
+        last = history[-1] if history else None
+        if stage == "session" and outcome == "failed":
+            # These lines do not name the account, so they count only right after its own attempt.
+            if (last and monotonic(entry) - monotonic(last["entry"]) < 30e6 and last.get("auth") != "failed"
+                    and last.get("account") != "denied"):
+                last.update(session="failed", session_detail=detail, closed=True)
+            continue
+        # Several modules log one failed password (pam_unix, then pam_sss with its code): one attempt.
+        same_failure = (last and stage == "auth" and outcome == "failed" and last.get("auth") == "failed"
+                        and monotonic(entry) - monotonic(last["entry"]) < 2e6)
+        if not same_failure and (stage == "auth" or last is None or last["closed"]):
+            last = {"entry": entry, "closed": False}
+            history.append(last)
+        last[stage] = outcome
+        last[stage + "_detail"] = last.get(stage + "_detail") or detail
+        last["closed"] = stage == "session" or outcome in ("failed", "denied")
+    attempts = {service: history for service, history in attempts.items() if history}
+    if not attempts:
+        say("info", f"no login of {name} recorded in this boot")
+        return
+    for service, history in attempts.items():
+        attempt = history[-1]
+        failed = [earlier for earlier in history[:-1] if earlier.get("auth") == "failed"
+                  or earlier.get("account") == "denied"]
+        attempt["earlier"] = len(failed)
+        codes = [(earlier.get("auth_detail") or earlier.get("account_detail") or [""])[0] for earlier in failed]
+        attempt["earlier_code"] = codes[-1] if codes else ""
+    for service, attempt in sorted(((service, history[-1]) for service, history in attempts.items()),
+                                   key=lambda item: monotonic(item[1]["entry"])):
+        text = f"last login of {name} through {service} at {when(attempt['entry'])}: "
+        auth, account, session = attempt.get("auth"), attempt.get("account"), attempt.get("session")
+        code = (attempt.get("auth_detail") or attempt.get("account_detail") or [""])[0]
+        if auth == "failed":
+            say("warning", text + "authentication failed" + (f" ({code}: {PAM_CODES[code]})" if code in PAM_CODES
+                                                              else ""))
+        elif account == "denied":
+            say("warning", text + "authentication " + ("succeeded" if auth else "not logged")
+                + ", then authorization refused it" + (f" ({code}: {PAM_CODES[code]})" if code in PAM_CODES else "")
+                + "; see: sudo sssctl user-checks " + name)
+        elif session == "failed":
+            say("warning", text + "authenticated and authorized, but session setup failed: "
+                + clean((attempt.get("session_detail") or [""])[0], 120))
+        elif session == "ok":
+            say("ok", text + ("authentication, authorization and session setup succeeded" if auth
+                              else "session opened (authenticated without a password, e.g. an SSH key)"))
+        else:
+            say("info", text + "authentication succeeded, no session opened after it (still logging in, cancelled, "
+                               "or a screen unlock)")
+        if attempt.get("earlier"):
+            code = attempt["earlier_code"]
+            say("info", f"{plural(attempt['earlier'], 'failed attempt')} through {service} before that"
+                + (f", the last one {code}: {PAM_CODES[code]}" if code in PAM_CODES else ""))
+
+
+def domain_names(machine):
+    if machine.privileged:
+        result = run(["sssctl", "domain-list"], timeout=20)
+        if result is not None and result.returncode == 0:
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    text = machine.read("etc/sssd/sssd.conf") or ""
+    return re.findall(r"^\s*\[domain/([^\]]+)\]", text, re.M)
+
+
+def check_domain_login(machine, probe_domain):
+    configured = machine.path("etc/sssd/sssd.conf").exists() or machine.path("etc/sssd").is_dir()
+    if not configured or not machine.target:
+        return
+    name = machine.target["name"]
+    section(f"Domain login ({name})")
+    source = run(["getent", "-s", "sss", "passwd", name])
+    if source is None or source.returncode != 0:
+        say("info", f"{name} is not a domain account (SSSD does not serve it); the domain stages below do not apply "
+                    "to it" if source is not None else "NSS source: getent is not installed")
+        domain_account = False
+    else:
+        domain_account = True
+        say("ok", f"SSSD serves {name}: uid {machine.target['uid']}, home {machine.target['home']}")
+        if len(machine.target["gids"]) <= 1:
+            say("warning", f"only the primary group of {name} resolves; hypothesis: SSSD is offline without cached "
+                           "group memberships, or group lookups fail (see: id " + name + ", sssctl user-show " + name + ")")
+    domains = domain_names(machine)
+    if not machine.privileged:
+        say("unchecked", "SSSD online state and authorization need root; run: dotconfig machine status --sudo")
+    for domain in domains if machine.privileged else []:
+        status = run(["sssctl", "domain-status", domain, "-o"], timeout=20)
+        if not broken(f"SSSD state of {domain}", "sssctl domain-status", status):
+            continue
+        online = re.search(r"Online status:\s*(\w+)", status.stdout)
+        state = online.group(1).lower() if online else "unknown"
+        if state == "online":
+            say("ok", f"SSSD is online for {domain}")
+        elif state == "offline" and machine.vpns == []:
+            say("info", f"SSSD is offline for {domain} and no VPN is connected, as expected away from the office: "
+                        "logins use cached credentials where cache_credentials is on (see: dotconfig creds status)")
+        elif state == "offline" and machine.vpns:
+            say("warning", f"SSSD is offline for {domain} although VPN {', '.join(machine.vpns)} is connected; "
+                           "hypotheses: the domain zone is not resolved through the VPN's DNS (split DNS), its "
+                           "controllers are not reachable through the tunnel, or SSSD has not retried yet "
+                           "(sudo systemctl kill -s USR2 sssd asks it to go online; see: sssctl domain-status "
+                           f"{domain} -a)")
+        else:
+            say("info", f"SSSD reports {domain} as {state}")
+        if probe_domain:
+            discovery(domain)
+    if probe_domain and not domains:
+        say("unchecked", "domain discovery: no SSSD domain name is readable (sssd.conf needs root)")
+    if domain_account and machine.privileged:
+        service = "gdm-password" if machine.path("etc/pam.d/gdm-password").exists() else "login"
+        check = run(["sssctl", "user-checks", name, "-a", "acct", "-s", service], timeout=30)
+        if broken(f"authorization of {name}", "sssctl user-checks", check):
+            verdict = re.search(r"pam_acct_mgmt:\s*(.+)", check.stdout)
+            if verdict and verdict.group(1).strip().lower() == "success":
+                say("ok", f"{name} is authorized to log in through {service} now (account check, no password)")
+            elif verdict:
+                say("warning", f"{name} is not authorized to log in through {service} now: "
+                               f"{clean(verdict.group(1), 100)}; access_provider or GPO rules refuse it")
+    login_stages(machine, name)
+
+
+def discovery(domain):
+    """The SRV records clients use to find controllers, asked once each and bounded; answering link included,
+    which tells whether the VPN's DNS served them."""
+    for record in (f"_ldap._tcp.dc._msdcs.{domain}", f"_kerberos._tcp.{domain}"):
+        result = run(["resolvectl", "query", "-t", "SRV", "--legend=no", record], timeout=10)
+        if result is None:
+            say("unchecked", "domain discovery: resolvectl is not installed")
+            return
+        if result.returncode != 0:
+            say("warning", f"discovery: {record} does not resolve ({failure('resolvectl', result)}); clients "
+                           "cannot find the domain controllers through the current DNS")
+            continue
+        targets = re.findall(r"IN SRV \d+ \d+ \d+ (\S+)", result.stdout) or re.findall(r"\d+ \d+ \d+ (\S+)", result.stdout)
+        link = re.search(r"-- link: (\S+)", result.stdout)
+        say("ok", f"discovery: {record} lists {plural(len(targets), 'server')}"
+            + (f" (answered through {link.group(1)})" if link else ""))
 
 
 # --- Packages and security --------------------------------------------------------------------------------------
@@ -1953,6 +2374,8 @@ def main():
     parser.add_argument("--user", help="account whose installation, session and environment are inspected")
     parser.add_argument("--probe", action="append", default=[], metavar="HOST[:PORT]",
                         help="also test DNS, connection, proxy and TLS to this endpoint (bounded, verification kept)")
+    parser.add_argument("--probe-domain", action="store_true",
+                        help="also look up the DNS records clients use to find the domain controllers")
     parser.add_argument("root", nargs="?", default="/")
     args = parser.parse_args()
     machine = Machine(args.root, args.boot, args.user)
@@ -1962,12 +2385,14 @@ def main():
     check_account(machine)
     check_timing(machine)
     check_services(machine)
+    check_expected(machine)
     check_journal(machine, args.examples)
     check_kernel(machine, args.examples)
     check_storage(machine)
     check_memory(machine)
     check_load(machine)
     check_network(machine)
+    check_domain_login(machine, args.probe_domain)
     check_proxy(machine, args.probe)
     check_installation(machine)
     check_packages(machine)
