@@ -236,7 +236,7 @@ cat > "$stubs/systemctl" <<'EOF'
 case "$*" in
     is-system-running) echo degraded ;;
     "is-active user@"*) echo active ;;
-    *"-M carol@ show-environment") printf 'LANG=C.UTF-8\nHTTP_PROXY=http://127.0.0.1:3128\nhttp_proxy=http://127.0.0.1:3129\nXDG_CONFIG_HOME=/home/carol-home/.config/\nXDG_CACHE_HOME=/var/tmp/carol-cache\n' ;;
+    *"-M carol@ show-environment") cat "$(dirname "$0")/../manager-env" ;;
     *"-M bob@"*"--failed"*) echo "bob-backup.service loaded failed failed Bob backup" ;;
     *"show"*"bob-backup.service"*) printf 'Description=Bob backup\nResult=exit-code\nExecMainCode=1\nExecMainStatus=2\nLoadState=loaded\n' ;;
     *"-M bob@"*) ;;
@@ -589,6 +589,7 @@ PYEOF
 # The account, its session, installation and proxy environment, for a target named with --user. /etc/environment
 # disagrees with itself and points at a missing CA file; the user manager lacks https_proxy; the configured local
 # proxy is not running.
+printf 'LANG=C.UTF-8\nHTTP_PROXY=http://127.0.0.1:3128\nhttp_proxy=http://127.0.0.1:3129\nXDG_CONFIG_HOME=/home/carol-home/.config/\nXDG_CACHE_HOME=/var/tmp/carol-cache\n' > "$test_dir/manager-env"
 closed_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 python3 - "$root" "$repo_root" "$me" "$closed_port" <<'EOF'
 import importlib.util, os, sys
@@ -619,9 +620,19 @@ os.chmod(runtime, 0o700)
     'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"\n# dotconfig proxy begin\n'
     f'http_proxy="http://127.0.0.1:{port}"\nhttps_proxy="http://127.0.0.1:{port}"\n'
     'HTTPS_PROXY="http://10.0.0.9:8080"\nSSL_CERT_FILE="/etc/ssl/corp-ca.pem"\n# dotconfig proxy end\n')
+(home / ".config/chezmoi").mkdir(parents=True)
+(home / ".config/chezmoi/chezmoi.toml").write_text('sourceDir = "~/code/dotconfig"\n')
+(home / "code/dotconfig/.git").mkdir(parents=True)
+# bob's dotconfig command was rendered from a checkout outside chezmoi's default, which holds a decoy.
 bob = root / "home/bob"
 (bob / ".local/share/chezmoi/.git").mkdir(parents=True)
 (bob / ".local/share/chezmoi/.git/config").write_text("[core]\n")
+(bob / ".local/bin").mkdir(parents=True)
+(bob / ".local/bin/dotconfig").write_text('#!/usr/bin/env bash\nSOURCE_DIR="/home/bob/src/dotconfig/home"\n')
+(bob / "src/dotconfig/home").mkdir(parents=True)
+(bob / "src/dotconfig/.git").mkdir()
+for name in ("config", "HEAD"):
+    (bob / "src/dotconfig/.git" / name).write_text("x\n")
 (bob / ".zshrc").write_text("managed\n")
 EOF
 run_status --sudo --user carol
@@ -635,6 +646,7 @@ check '^info: one user manager and user bus serve all of these sessions'
 refute 'runtime directory'
 refute 'no user D-Bus socket'
 check '^Installation (carol):'
+check '^info: dotconfig checkout: /home/carol-home/code/dotconfig (from ~/.config/chezmoi/chezmoi.toml)$'
 check '^warning: ~/.local/bin/old-tool is a broken symlink'
 check '^warning: ~/.zshrc.local is readable or writable by other users'
 refute 'is owned by'
@@ -654,7 +666,8 @@ run_status --sudo --user bob
 check '^warning: home /home/bob is owned by [a-z0-9 ]*, not bob'
 check '^info: bob has no session and no running user manager'
 check '^warning: ~/.zshrc is owned by [a-z0-9 ]*, not bob; updates as bob cannot replace it'
-check '^warning: 1 file in the dotconfig repository belongs to another account'
+check '^info: dotconfig checkout: /home/bob/src/dotconfig (from ~/.local/bin/dotconfig)$'
+check '^warning: 2 files in the dotconfig repository belong to another account'
 run_status --sudo --user nobody-here
 check '^warning: NSS does not resolve nobody-here'
 export DOTCONFIG_MACHINE_TEST_PRIVILEGED=0
@@ -663,42 +676,120 @@ check '^not checked: bob is another account; its session, files and environment 
 check "^not checked: bob's files need --sudo"
 export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1
 
-# Probes name the stage that failed: the proxy refusing the tunnel, a broken TLS answer, DNS, and TCP.
+# Probes take the route of each inspected environment and name the stage that failed. The fake proxy splits its
+# answer across writes, so a reader that stops at the first one misreads it; in tunnel mode it then serves TLS
+# with a certificate only one environment trusts.
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=localhost \
+    -keyout "$test_dir/tls.key" -out "$test_dir/tls.pem" > /dev/null 2>&1
+mkdir -p "$root/etc/ssl"
+cp "$test_dir/tls.pem" "$root/etc/ssl/test-ca.pem"
 cat > "$test_dir/fake-proxy.py" <<'EOF'
-import socket, sys
-answer = {"407": b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n",
-          "tunnel": b"HTTP/1.1 200 Connection established\r\n\r\n"}[sys.argv[1]]
+import socket, ssl, sys, threading, time
+mode, port_file, cert, key = sys.argv[1:5]
+status = b"HTTP/1.1 407 Proxy Authentication Required" if mode == "407" else b"HTTP/1.1 200 Connection established"
 server = socket.socket()
 server.bind(("127.0.0.1", 0))
 server.listen()
-open(sys.argv[2], "w").write(str(server.getsockname()[1]))
+open(port_file, "w").write(str(server.getsockname()[1]))
+def serve(client):
+    with client:
+        # The listener check connects and leaves without asking anything.
+        if not client.recv(4096):
+            return
+        for part in (status[:10], status[10:] + b"\r\nVia: 1.1 fake\r", b"\n", b"\r\n"):
+            client.sendall(part)
+            time.sleep(0.05)
+        if mode == "tunnel":
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert, key)
+            try:
+                with context.wrap_socket(client, server_side=True) as tls:
+                    tls.recv(1)
+            except (ssl.SSLError, OSError):
+                pass
 while True:
-    client, _ = server.accept()
-    client.recv(4096)
-    client.sendall(answer + (b"not tls at all\r\n" if sys.argv[1] == "tunnel" else b""))
-    client.close()
+    threading.Thread(target=serve, args=(server.accept()[0],), daemon=True).start()
 EOF
 fake_proxy() {
     rm -f "$test_dir/port"
-    python3 "$test_dir/fake-proxy.py" "$1" "$test_dir/port" &
+    python3 "$test_dir/fake-proxy.py" "$1" "$test_dir/port" "$test_dir/tls.pem" "$test_dir/tls.key" &
     proxy_pid=$!
     for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$test_dir/port" ]] && break; sleep 0.2; done
-    printf "export https_proxy='http://127.0.0.1:%s'\n" "$(cat "$test_dir/port")" > "$root/home/carol-home/.config/dotconfig/proxy.local"
+    proxy_port="$(cat "$test_dir/port")"
 }
+dotconfig_state="$root/home/carol-home/.config/dotconfig"
+
+# Every environment and the dotconfig setting agree, so one probe covers them all.
 fake_proxy 407
-run_status --sudo --user carol --probe example.com
+printf 'on\n' > "$dotconfig_state/proxy.mode"
+printf "export https_proxy='http://127.0.0.1:%s'\n" "$proxy_port" > "$dotconfig_state/proxy.local"
+printf 'https_proxy=http://127.0.0.1:%s\n' "$proxy_port" > "$test_dir/manager-env"
+printf 'https_proxy="http://127.0.0.1:%s"\n' "$proxy_port" > "$root/etc/environment"
+run_status --sudo --user carol --probe localhost
 kill "$proxy_pid"
 check '^ok: a proxy listens on 127.0.0.1:'
-check '^warning: probe example.com:443: proxy answered HTTP/1.1 407 Proxy Authentication Required; the proxy wants authentication'
+check '^warning: probe localhost:443 (the user manager, /etc/environment): proxy answered HTTP/1.1 407 Proxy Authentication Required; the proxy wants authentication'
+refute 'which no inspected environment uses'
+
+# Unmanaged by dotconfig, both environments use a proxy of their own; only the user manager trusts the
+# certificate, through its SSL_CERT_FILE. The diagnostic's own SSL_CERT_FILE is not borrowed.
 fake_proxy tunnel
-run_status --sudo --user carol --probe example.com:443
+rm "$dotconfig_state/proxy.mode"
+printf 'https_proxy=http://127.0.0.1:%s\nSSL_CERT_FILE=/etc/ssl/test-ca.pem\nCURL_CA_BUNDLE=/etc/ssl/test-ca.pem\n' "$proxy_port" > "$test_dir/manager-env"
+printf 'https_proxy="http://127.0.0.1:%s"\n' "$proxy_port" > "$root/etc/environment"
+SSL_CERT_FILE="$test_dir/tls.pem" run_status --sudo --user carol --probe localhost
 kill "$proxy_pid"
-check '^warning: probe example.com:443: TLS handshake failed'
-printf 'off\n' > "$root/home/carol-home/.config/dotconfig/proxy.mode"
-run_status --sudo --user carol --probe "127.0.0.1:$closed_port" --probe nonexistent.invalid
-check "^warning: probe 127.0.0.1:$closed_port: TCP connection to 127.0.0.1:$closed_port failed"
-check '^warning: probe nonexistent.invalid:443: DNS for nonexistent.invalid failed'
+check '^info: dotconfig proxy is unmanaged'
+check '^ok: probe localhost:443 (the user manager): TLS verified (TLS.*) through proxy 127.0.0.1$'
+check '^info: probe localhost:443 (the user manager): verified with OpenSSL.s SSL_CERT_FILE and SSL_CERT_DIR; tools that read CURL_CA_BUNDLE=/etc/ssl/test-ca.pem use those instead'
+check '^warning: probe localhost:443 (/etc/environment): certificate not trusted'
+
+# A trust file the account cannot read fails TLS for it. Root reads anything, so this needs an unprivileged runner.
+if [[ "$me" != 0 ]]; then
+    chmod 000 "$root/etc/ssl/test-ca.pem"
+    run_status --sudo --user carol --probe localhost
+    chmod 644 "$root/etc/ssl/test-ca.pem"
+    check '^warning: probe localhost:443 (the user manager): SSL_CERT_FILE=/etc/ssl/test-ca.pem is not readable by carol, so TLS fails here'
+fi
+
+# The dotconfig setting, which no environment uses yet, is probed under its own label with its own bypass list;
+# the user manager connects directly.
+printf 'on\n' > "$dotconfig_state/proxy.mode"
+printf "export https_proxy='http://127.0.0.1:%s'\nexport no_proxy='.invalid'\n" "$closed_port" > "$dotconfig_state/proxy.local"
+printf 'LANG=C.UTF-8\n' > "$test_dir/manager-env"
 rm "$root/etc/environment"
+run_status --sudo --user carol --probe "127.0.0.1:$closed_port" --probe nonexistent.invalid
+check "^warning: probe 127.0.0.1:$closed_port (the user manager): TCP connection to 127.0.0.1:$closed_port failed"
+check "^warning: probe 127.0.0.1:$closed_port (the dotconfig proxy setting, which no inspected environment uses yet): TCP connection to 127.0.0.1:$closed_port failed"
+check '^warning: probe nonexistent.invalid:443 (the user manager): DNS for nonexistent.invalid failed'
+check '^warning: probe nonexistent.invalid:443 (the dotconfig proxy setting, which no inspected environment uses yet): DNS for nonexistent.invalid failed'
+
+# DNS is asked once, within its deadline: connecting reuses those addresses, so a second lookup never happens.
+python3 - "$repo_root" "$root" <<'EOF'
+import contextlib, importlib.util, io, socket, sys, threading
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("machine_status", Path(sys.argv[1]) / "scripts/machine-status.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+server = socket.socket()
+server.bind(("127.0.0.1", 0))
+server.listen()
+threading.Thread(target=lambda: server.accept()[0].close(), daemon=True).start()
+real, calls = socket.getaddrinfo, []
+def lookup(*args, **kwargs):
+    calls.append(args)
+    if len(calls) > 1:
+        raise socket.gaierror("second lookup")
+    return real(*args, **kwargs)
+socket.getaddrinfo = lookup
+machine = module.Machine(sys.argv[2], 0)
+route = dict.fromkeys(module.PROXY_KEYS + module.CA_KEYS, "")
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    module.probe_endpoint(machine, f"localhost:{server.getsockname()[1]}", ["test"], route)
+assert len(calls) == 1, calls
+assert "TLS handshake failed" in out.getvalue(), out.getvalue()
+EOF
 
 # Arguments are validated before anything runs.
 for bad in "--boot 1" "--boot x" "--examples 0" "--bogus" "--user" "--user a;b" "--probe" "--probe http://x"; do

@@ -88,5 +88,5 @@ check '    log: user failure: cannot reach sync server'
 report bash "$repo_root/scripts/machine.sh" status --sudo --user "$user" --probe github.com
 check "^Account and session ($user):"
 check "^info: uid $uid, home "
-check '^ok: probe github.com:443: TLS verified'
+check '^ok: probe github.com:443 (.*): TLS verified'
 echo 'machine status live tests passed'

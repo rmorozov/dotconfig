@@ -15,6 +15,7 @@ import os
 import pwd
 import re
 import importlib.util
+import shlex
 import shutil
 import socket
 import ssl
@@ -64,7 +65,8 @@ def run(command, timeout=60):
         return subprocess.run(command, capture_output=True, text=True, errors="replace", check=False,
                               timeout=timeout, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(command, 124, "", f"timed out after {timeout} s")
+        # The full command, so a stalled query can be rerun by hand.
+        return subprocess.CompletedProcess(command, 124, "", f"timed out after {timeout} s: {shlex.join(command)}")
 
 
 def failure(name, result):
@@ -1241,11 +1243,48 @@ def check_installation(machine):
     completions(machine, home)
 
 
+def checkout(machine, home):
+    """The account's own dotconfig checkout and where that came from: the source directory its installed
+    dotconfig command was rendered with, else chezmoi's sourceDir setting, else chezmoi's default. The same
+    lookup runs on a fixture root and on the real machine."""
+    candidates = []
+    command = home / ".local/bin/dotconfig"
+    try:
+        matched = re.search(r"^SOURCE_DIR=(.+)$", command.read_text(errors="replace"), re.M)
+        if matched:
+            candidates.append((shlex.split(matched.group(1))[0], "~/.local/bin/dotconfig"))
+    except (OSError, ValueError, IndexError):
+        pass
+    for config in sorted((home / ".config/chezmoi").glob("chezmoi.*")):
+        try:
+            matched = re.search(r"""^\s*"?sourceDir"?\s*[=:]\s*["']?([^"'\n,]+)""", config.read_text(errors="replace"), re.M)
+        except OSError:
+            continue
+        if matched:
+            candidates.append((matched.group(1).strip(), f"~/.config/chezmoi/{config.name}"))
+    candidates.append((machine.target["home"].rstrip("/") + "/.local/share/chezmoi", "the chezmoi default"))
+    for value, source in candidates:
+        if value.startswith("~/"):
+            value = machine.target["home"].rstrip("/") + value[1:]
+        if not value.startswith("/"):
+            continue
+        path = machine.path(value.lstrip("/"))
+        # The source directory can sit below the repository root (.chezmoiroot).
+        for repo in [path] + list(path.parents):
+            if repo == machine.root or machine.root not in repo.parents:
+                break
+            if (repo / ".git").exists():
+                return repo, source
+    return None, None
+
+
 def repository(machine, home):
     """Files in the dotconfig checkout that the account cannot rewrite, usually left by a sudo git command."""
-    repo = Path(__file__).resolve().parents[1]
-    if machine.root != Path("/"):
-        repo = home / ".local/share/chezmoi"
+    repo, source = checkout(machine, home)
+    if repo is None:
+        say("info", f"no dotconfig checkout found for {machine.user}")
+        return
+    say("info", f"dotconfig checkout: {inspector.shown(machine.root, repo)} (from {source})")
     if not (repo / ".git").is_dir():
         return
     foreign, examples = 0, []
@@ -1333,7 +1372,7 @@ def proxy_contexts(machine):
 
 def check_proxy(machine, probes):
     section("Proxy and TLS")
-    configured, endpoint = "unmanaged", DEFAULT_PROXY
+    configured, endpoint, bypass = "unmanaged", DEFAULT_PROXY, ""
     if machine.target and machine.reach:
         state = home_path(machine) / ".config/dotconfig"
         mode = (state / "proxy.mode")
@@ -1345,6 +1384,8 @@ def check_proxy(machine, probes):
             local = (state / "proxy.local").read_text()
             matched = re.search(r"https_proxy=[\"']?([^\"'\s]+)", local)
             endpoint = matched.group(1) if matched else endpoint
+            matched = re.search(r"no_proxy=[\"']?([^\"'\s]+)", local)
+            bypass = matched.group(1) if matched else ""
         except OSError:
             pass
         say("info", f"dotconfig proxy is {configured}" + (f" ({redact(endpoint)})" if configured == "on" else ""))
@@ -1375,8 +1416,10 @@ def check_proxy(machine, probes):
         say("info", "environments inspected: " + ", ".join(label for label, _, _ in contexts))
     if configured == "on":
         listener(endpoint)
+    routes = probe_routes(contexts, configured, endpoint, bypass) if probes else []
     for probe in probes:
-        probe_endpoint(probe, endpoint if configured == "on" else None, contexts)
+        for labels, route in routes:
+            probe_endpoint(machine, probe, labels, route)
 
 
 def ca_file(machine, label, key, value):
@@ -1407,13 +1450,14 @@ def listener(endpoint):
                        "connection fails until the local proxy (Px, cntlm-gss) runs")
 
 
-def resolve(host, timeout=5):
-    """getaddrinfo with a deadline; (addresses, error)."""
+def resolve(host, port, timeout=5):
+    """getaddrinfo with a deadline; (addrinfo entries, error). The entries are reused to connect, so DNS is asked
+    once and only within this deadline."""
     found = {}
 
     def lookup():
         try:
-            found["addresses"] = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            found["addresses"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         except OSError as exc:
             found["error"] = exc
     worker = threading.Thread(target=lookup, daemon=True)
@@ -1423,54 +1467,169 @@ def resolve(host, timeout=5):
         return None, f"no answer within {timeout} s"
     if "error" in found:
         return None, str(found["error"])
-    return sorted({item[4][0] for item in found["addresses"]}), None
+    return found["addresses"], None
 
 
-def probe_endpoint(probe, proxy, contexts):
+def connect(addresses, timeout=5):
+    """A TCP connection to the first resolved address that answers, all attempts sharing one deadline."""
+    deadline = time.monotonic() + timeout
+    error = OSError("no address")
+    for index, (family, kind, proto, _, address) in enumerate(addresses):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        sock = socket.socket(family, kind, proto)
+        # Later addresses keep a share of the deadline, so one silent address cannot use it all.
+        sock.settimeout(max(remaining / (len(addresses) - index), 0.5))
+        try:
+            sock.connect(address)
+            return sock, None
+        except OSError as exc:
+            sock.close()
+            error = exc
+    return None, error
+
+
+def response_header(sock, timeout=5, limit=16384):
+    """The proxy's complete response header to CONNECT; tunnel data starts only after its blank line."""
+    deadline, data = time.monotonic() + timeout, b""
+    while b"\r\n\r\n" not in data:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OSError(f"no complete response header within {timeout} s")
+        if len(data) > limit:
+            raise OSError(f"response header longer than {limit} bytes")
+        sock.settimeout(remaining)
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise OSError("connection closed before the response header ended")
+        data += chunk
+    header, _, rest = data.partition(b"\r\n\r\n")
+    return header.decode("latin-1", "replace"), rest
+
+
+def bypassed(host, no_proxy):
+    for entry in no_proxy.split(","):
+        entry = entry.strip().lower()
+        if entry == "*":
+            return True
+        entry = entry[2:] if entry.startswith("*.") else entry.lstrip(".")
+        if entry and (host.lower() == entry or host.lower().endswith("." + entry)):
+            return True
+    return False
+
+
+def probe_routes(contexts, configured, endpoint, bypass):
+    """(labels, values) for each distinct proxy, bypass and trust setting the account's programs would use, so
+    each probe takes the route of a real environment and says which."""
+    routes = []
+    for label, _, values in contexts:
+        route = {key: values.get(key) or values.get(key.upper()) or "" for key in PROXY_KEYS}
+        route.update({key: values.get(key, "") for key in CA_KEYS})
+        for labels, known in routes:
+            if known == route:
+                labels.append(label)
+                break
+        else:
+            routes.append(([label], route))
+    if configured == "on" and not any(route["https_proxy"].rstrip("/") == endpoint.rstrip("/") for _, route in routes):
+        route = dict.fromkeys(PROXY_KEYS + CA_KEYS, "")
+        route.update(https_proxy=endpoint, no_proxy=bypass)
+        routes.append((["the dotconfig proxy setting, which no inspected environment uses yet"], route))
+    if not routes:
+        routes.append((["a direct connection, as no environment was inspected"], dict.fromkeys(PROXY_KEYS + CA_KEYS, "")))
+    return routes
+
+
+def trust(machine, route, name):
+    """A verifying TLS context from this route's own SSL_CERT_FILE and SSL_CERT_DIR (OpenSSL's variables), else
+    OpenSSL's built-in locations, never this diagnostic process's environment. None when the account cannot
+    read what it is told to trust."""
+    defaults = ssl.get_default_verify_paths()
+    cafile = machine.path(route["SSL_CERT_FILE"].lstrip("/")) if route["SSL_CERT_FILE"] else None
+    capath = machine.path(route["SSL_CERT_DIR"].lstrip("/")) if route["SSL_CERT_DIR"] else None
+    for key, path, want in (("SSL_CERT_FILE", cafile, 4), ("SSL_CERT_DIR", capath, 5)):
+        if path is None:
+            continue
+        if not path.exists():
+            say("warning", f"{name}: {key}={route[key]} does not exist, so TLS fails here")
+            return None
+        if machine.target:
+            blocked = inspector.access_check(machine.root, path, path.stat(), identity(machine), want)
+            if blocked and blocked[0] == "warning":
+                say("warning", f"{name}: {key}={route[key]} is not readable by {machine.user}, so TLS fails here")
+                return None
+    if cafile is None and capath is None:
+        cafile = defaults.openssl_cafile if os.path.isfile(defaults.openssl_cafile) else None
+        capath = defaults.openssl_capath if os.path.isdir(defaults.openssl_capath) else None
+    if cafile is None and capath is None:
+        say("unchecked", f"{name}: no trusted certificate locations found to verify with")
+        return None
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    try:
+        context.load_verify_locations(cafile=str(cafile) if cafile else None, capath=str(capath) if capath else None)
+    except (ssl.SSLError, OSError) as exc:
+        say("warning", f"{name}: the trusted certificates cannot be loaded ({clean(str(exc), 120)})")
+        return None
+    return context
+
+
+def probe_endpoint(machine, probe, labels, route):
     """DNS, TCP, proxy CONNECT and a verified TLS handshake, each bounded, so a failure names its stage."""
     host, _, port = probe.rpartition(":") if probe.count(":") == 1 else (probe, "", "443")
     port = int(port) if port.isdigit() else 443
-    name = f"probe {host}:{port}"
-    bypass = next((values.get("no_proxy") or values.get("NO_PROXY") for _, _, values in contexts
-                   if values.get("no_proxy") or values.get("NO_PROXY")), "")
-    if proxy and any(host == entry.strip().lstrip(".") or host.endswith("." + entry.strip().lstrip("."))
-                     for entry in bypass.split(",") if entry.strip()):
-        proxy = None
-    via = urlsplit(proxy) if proxy else None
-    connect_host, connect_port = (via.hostname, via.port or 80) if via else (host, port)
-    addresses, error = resolve(connect_host)
+    name = f"probe {host}:{port} ({', '.join(labels)})"
+    proxy = route["https_proxy"] if not bypassed(host, route["no_proxy"]) else ""
+    try:
+        via = urlsplit(proxy) if proxy else None
+        connect_host, connect_port = (via.hostname, via.port or 80) if via else (host, port)
+    except ValueError:
+        say("warning", f"{name}: the proxy URL {redact(proxy)} cannot be parsed")
+        return
+    if via and via.scheme != "http":
+        say("unchecked", f"{name}: probing through a {via.scheme} proxy is not supported")
+        return
+    others = [f"{key}={route[key]}" for key in CA_KEYS[2:] if route[key]]
+    if others:
+        say("info", f"{name}: verified with OpenSSL's SSL_CERT_FILE and SSL_CERT_DIR; tools that read "
+                    f"{', '.join(others)} use those instead, which this probe does not exercise")
+    context = trust(machine, route, name)
+    if context is None:
+        return
+    addresses, error = resolve(connect_host, connect_port)
     if error:
         say("warning", f"{name}: DNS for {connect_host} failed ({error})")
         return
-    try:
-        raw = socket.create_connection((connect_host, connect_port), timeout=5)
-    except OSError as exc:
-        say("warning", f"{name}: TCP connection to {connect_host}:{connect_port} failed ({exc.strerror or exc})")
+    raw, error = connect(addresses)
+    if raw is None:
+        say("warning", f"{name}: TCP connection to {connect_host}:{connect_port} failed ({error.strerror or error})")
         return
     with raw:
-        raw.settimeout(5)
         if via:
             try:
                 raw.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
-                reply = raw.recv(4096).decode("latin-1", "replace")
+                header, early = response_header(raw)
             except OSError as exc:
                 say("warning", f"{name}: the proxy did not answer CONNECT ({exc.strerror or exc})")
                 return
-            status = reply.split("\r\n", 1)[0]
+            status = header.split("\r\n", 1)[0]
             code = status.split()[1] if len(status.split()) > 1 else "?"
-            if code != "200":
+            if not code.startswith("2"):
                 hint = {"407": "the proxy wants authentication: a Kerberos ticket (kinit) or its own credentials",
                         "403": "the proxy policy refuses this destination",
                         "502": "the proxy could not reach the destination"}.get(code, "the proxy refused the tunnel")
                 say("warning", f"{name}: proxy answered {clean(status, 80)}; {hint}")
                 return
-        context = ssl.create_default_context()
+            if early:
+                say("warning", f"{name}: the proxy sent data before the TLS handshake began; it does not tunnel")
+                return
+        raw.settimeout(5)
         try:
             with context.wrap_socket(raw, server_hostname=host) as tls:
                 say("ok", f"{name}: TLS verified ({tls.version()})" + (f" through proxy {via.hostname}" if via else ""))
         except ssl.SSLCertVerificationError as exc:
-            say("warning", f"{name}: certificate not trusted here ({exc.verify_message}); hypotheses: a "
-                           "TLS-inspecting proxy whose CA is not installed, or a server misconfiguration")
+            say("warning", f"{name}: certificate not trusted ({exc.verify_message}); hypotheses: a TLS-inspecting "
+                           "proxy whose CA this environment does not trust, or a server misconfiguration")
         except (ssl.SSLError, OSError) as exc:
             say("warning", f"{name}: TLS handshake failed ({clean(str(exc), 120)})")
 
