@@ -624,7 +624,7 @@ def check_kernel(machine, examples):
     if other:
         top = sorted(other.values(), key=lambda item: -item[0])
         say("info", f"{plural(sum(count for count, _ in top), 'other kernel error')}")
-        for count, message in top[:max(examples, 3)]:
+        for count, message in top[:max(examples, 5)]:
             print(f"    e.g. {clean(message, 160)}" + (f" (x{count})" if count > 1 else ""))
     if not found and not other:
         say("ok", "no kernel errors or known problems this boot")

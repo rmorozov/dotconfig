@@ -42,7 +42,9 @@ for count in 1 2 3; do
     logger -p user.err -t dotconfig-live "injected journal error $count"
 done
 logger -p user.crit -t dotconfig-live-crit 'injected critical error'
-printf '<3>dotconfig-live: injected kernel error\n' | sudo tee /dev/kmsg > /dev/null
+for count in 1 2 3; do
+    printf '<3>dotconfig-live: injected kernel error %s\n' "$count" | sudo tee /dev/kmsg > /dev/null
+done
 printf '<3>Out of memory: Killed process 4242 (dotconfig-live) total-vm:1000kB\n' | sudo tee /dev/kmsg > /dev/null
 logger -p authpriv.notice -t login \
     "pam_unix(login:auth): authentication failure; logname= uid=0 euid=0 tty=/dev/tty3 ruser= rhost=  user=$user"
@@ -64,7 +66,7 @@ check '^warning: dotconfig-live-bad.service was refused: Service has no ExecStar
 check '^info: dotconfig-live: 3 errors'
 check '^warning: dotconfig-live-crit: 1 error (1 critical)'
 check '^warning: the kernel OOM killer ended processes .*dotconfig-live'
-check '    e.g. dotconfig-live: injected kernel error'
+check '    e.g. dotconfig-live: injected kernel error 3 (x3)'
 check "^info: $user logged in through login .*; user services started in "
 check "^warning: 1 failed password attempt through login before $user logged in"
 check '^ok: no half-installed packages'
