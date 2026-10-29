@@ -2253,6 +2253,419 @@ def discovery(domain):
     return listed
 
 
+# --- Desktop session and keyring --------------------------------------------------------------------------------
+
+GRAPHICAL_PATHS = {"gdm-password": "password", "gdm-smartcard": "smart card", "gdm-fingerprint": "fingerprint",
+                   "gdm-autologin": "automatic login"}
+SESSION_CLOSED = re.compile(r"pam_unix\(([^:]+):session\): session closed for user ([^\s(]+)")
+QUICK_EXIT_SECONDS = 60
+
+
+def pam_stack(machine, service, depth=0, seen=None):
+    """The PAM lines a service runs, with @include, include and substack followed, as (type, control, module,
+    file). Order is kept; whether a jump skips a line is not evaluated."""
+    seen = set() if seen is None else seen
+    if depth > 8 or service in seen:
+        return []
+    seen.add(service)
+    # Linux-PAM reads /etc/pam.d first, then the vendor directory packages may install to instead.
+    text = machine.read(f"etc/pam.d/{service}")
+    text = text if text is not None else machine.read(f"usr/lib/pam.d/{service}")
+    if text is None:
+        return []
+    lines = []
+    for raw in text.splitlines():
+        words = raw.split("#", 1)[0].split()
+        if not words:
+            continue
+        if words[0] == "@include" and len(words) > 1:
+            lines += pam_stack(machine, words[1], depth + 1, seen)
+            continue
+        kind = words[0].lstrip("-")
+        if len(words) < 3:
+            continue
+        control = words[1]
+        if control.startswith("["):
+            # A bracketed control can span words: [success=1 default=ignore]
+            end = next((i for i, word in enumerate(words[1:], 1) if word.endswith("]")), 1)
+            control, words = " ".join(words[1:end + 1]), [words[0], " ".join(words[1:end + 1])] + words[end + 1:]
+        if control in ("include", "substack"):
+            lines += [line for line in pam_stack(machine, words[2], depth + 1, seen) if line[0] == kind]
+            continue
+        lines.append((kind, control, Path(words[2]).name, service))
+    return lines
+
+
+def modules(stack, kind):
+    return [module for line_kind, _, module, _ in stack if line_kind == kind]
+
+
+def greeter_uids(entries):
+    return {opened.group(3) for opened in (SESSION_OPENED.search(e["MESSAGE"]) for e in entries)
+            if opened and opened.group(1) == "gdm-launch-environment" and opened.group(3)}
+
+
+def check_desktop(machine):
+    """Login screen, the account's graphical logins and its keyring, told apart: the greeter's failures are not
+    the user's, and authentication succeeding does not mean a desktop came up."""
+    manager = run(["systemctl", "show", "-p", "Id", "-p", "ActiveState", "-p", "NRestarts", "--no-pager",
+                   "display-manager.service"])
+    values = dict(line.split("=", 1) for line in (manager.stdout if manager else "").splitlines() if "=" in line)
+    if not manager or manager.returncode != 0 or values.get("Id", "display-manager.service") == "display-manager.service":
+        return
+    section(f"Desktop session ({machine.user})")
+    restarts = int(values.get("NRestarts") or 0)
+    say("warning" if restarts else "info", f"display manager: {values['Id']}, {values.get('ActiveState', '?')}"
+        + (f", restarted {plural(restarts, 'time')} this boot; the login screen went away each time" if restarts else ""))
+    session_definitions(machine)
+    if not machine.sees_system_journal():
+        say("unchecked", "graphical logins: " + machine.journal_hint())
+    else:
+        graphical_logins(machine)
+    keyring(machine)
+
+
+def session_definitions(machine):
+    """Each installed desktop session's program: a missing one returns to the login screen when chosen."""
+    chosen = None
+    if machine.target and machine.privileged:
+        account = machine.read(f"var/lib/AccountsService/users/{machine.target['name']}") or ""
+        matched = re.search(r"^(?:Session|XSession)=(\S+)", account, re.M)
+        chosen = matched.group(1) if matched else None
+    names = []
+    for directory in ("usr/share/wayland-sessions", "usr/share/xsessions"):
+        for entry in sorted(glob.glob(str(machine.path(directory) / "*.desktop"))):
+            text = Path(entry).read_text(errors="replace")
+            name = Path(entry).stem
+            names.append(name)
+            program = re.search(r"^(?:TryExec|Exec)=(\S+)", text, re.M)
+            if program and not executable(machine, program.group(1)):
+                say("warning", f"session {name}: its program {program.group(1)} is missing; choosing it at the "
+                               "login screen returns straight to it")
+    if chosen and chosen not in names:
+        say("warning", f"{machine.user} last chose session {chosen}, which is no longer installed; the login screen "
+                       "falls back or fails (installed: " + ", ".join(names or ["none"]) + ")")
+    elif chosen:
+        say("info", f"{machine.user} logs in to session {chosen}")
+
+
+def executable(machine, program):
+    if program.startswith("/"):
+        return machine.path(program.lstrip("/")).exists()
+    return any(machine.path(f"{directory}/{program}".lstrip("/")).exists()
+               for directory in ("/usr/bin", "/usr/sbin", "/bin", "/usr/local/bin", "/usr/libexec"))
+
+
+def graphical_logins(machine):
+    """Per graphical login of the account: which path (password, smart card, fingerprint, automatic), whether
+    the session lasted, and screen-unlock failures while a session was open."""
+    name, uid = machine.user, str(machine.uid)
+    auth = machine.journal("SYSLOG_FACILITY=10", "SYSLOG_FACILITY=4") or []
+    greeters = greeter_uids(auth)
+    ready = [e for e in machine.journal("MESSAGE_ID=" + UNIT_STARTED, "USER_UNIT=graphical-session.target") or []
+             if e.get("_UID") == uid]
+    opened, quick, unlock_failures = [], [], {}
+    for entry in auth:
+        message = entry["MESSAGE"]
+        started = SESSION_OPENED.search(message)
+        if started and started.group(1) in GRAPHICAL_PATHS and started.group(2) == name:
+            opened.append([entry, started.group(1), None])
+            continue
+        closed = SESSION_CLOSED.search(message)
+        if closed and closed.group(1) in GRAPHICAL_PATHS and closed.group(2) == name:
+            for login in reversed(opened):
+                if login[1] == closed.group(1) and login[2] is None:
+                    login[2] = entry
+                    break
+            continue
+        failed = AUTH_FAILURE.search(message)
+        if failed and failed.group(1) in GRAPHICAL_PATHS and re.search(rf"\buser[= ]{re.escape(name)}\b", message):
+            # A failure while one of the account's graphical sessions is open is a screen unlock.
+            if any(login[2] is None for login in opened):
+                unlock_failures[failed.group(1)] = unlock_failures.get(failed.group(1), 0) + 1
+    for entry, service, closed in opened:
+        start = monotonic(entry)
+        lasted = (monotonic(closed) - start) / 1e6 if closed else None
+        desktop = any(start <= monotonic(e) and (closed is None or monotonic(e) <= monotonic(closed)) for e in ready)
+        if lasted is not None and lasted < QUICK_EXIT_SECONDS and not desktop:
+            quick.append((entry, service, lasted))
+    for entry, service, lasted in quick:
+        say("warning", f"{name} logged in by {GRAPHICAL_PATHS[service]} at {when(entry)}, but the session ended "
+                       f"{lasted:.0f} s later before the desktop was ready, back to the login screen; see: "
+                       f"journalctl -b _UID={uid} --since around then, and the Shell crashes below")
+    for service, count in sorted(unlock_failures.items()):
+        say("warning" if count > 2 else "info",
+            f"{plural(count, 'failed screen unlock')} by {GRAPHICAL_PATHS[service]} while {name} was logged in")
+    if opened and not quick:
+        paths = sorted({GRAPHICAL_PATHS[service] for _, service, _ in opened})
+        say("ok", f"{plural(len(opened), 'graphical login')} of {name} by {', '.join(paths)} this boot; none ended "
+                  "before the desktop was ready")
+    elif not opened:
+        say("info", f"no graphical login of {name} recorded in this boot")
+    shell_crashes(machine, uid, greeters)
+
+
+def shell_crashes(machine, uid, greeters):
+    """Shell crashes split by whose they were: the login screen's (a greeter account) or the user's session."""
+    dumps = [e for e in machine.journal("MESSAGE_ID=" + COREDUMP) or []
+             if (e.get("COREDUMP_COMM") or "") in ("gnome-shell", "mutter", "Xwayland", "gdm-session-wor")]
+    mine = [e for e in dumps if e.get("COREDUMP_UID") == uid]
+    login_screen = [e for e in dumps if e.get("COREDUMP_UID") in greeters]
+    if mine:
+        times = [monotonic(e) for e in mine]
+        loop = len(mine) >= 3 and times[-1] - times[-3] < 600e6
+        say("warning", f"{machine.user}'s desktop crashed {plural(len(mine), 'time')} this boot"
+            + (", three within ten minutes: a crash loop" if loop else "") + f", last at {when(mine[-1])} "
+            f"({mine[-1].get('COREDUMP_COMM')}); see: coredumpctl info {mine[-1].get('COREDUMP_PID', '')}".rstrip())
+    if login_screen:
+        say("warning", f"the login screen's Shell crashed {plural(len(login_screen), 'time')} this boot (greeter "
+                       "account, not a user session); see: coredumpctl list gnome-shell")
+
+
+def keyring(machine):
+    """The Secret Service in the account's session: who provides it, whether its default collection is unlocked,
+    whether the login path unlocks it, and whether its storage is usable. No secret is read and nothing is unlocked
+    or started: queries never auto-start a service."""
+    flags = machine.user_flags() if machine.reach else None
+    if not flags:
+        say("unchecked", f"keyring of {machine.user}: their session bus needs --sudo")
+        return
+    bus = ["busctl"] + flags + ["--no-pager"]
+    names = run(bus + ["list", "--no-legend"], timeout=10)
+    if names is None:
+        say("unchecked", "keyring: busctl is not installed")
+        return
+    if names.returncode != 0:
+        say("info", f"keyring: no session bus for {machine.user} ({failure('busctl', names)}); not applicable while "
+                    "they are logged out")
+        return
+    row = next((line.split() for line in names.stdout.splitlines()
+                if line.split() and line.split()[0] == "org.freedesktop.secrets"), None)
+    if row is None:
+        say("warning", "no Secret Service provider (org.freedesktop.secrets) on the session bus: browsers, VPN "
+                       "and mail clients cannot store passwords (gnome-keyring or KeePassXC provide it)")
+        return
+    if len(row) < 3 or row[1] == "-":
+        say("info", "the Secret Service is not running yet; it starts on first use (not started here)")
+        return
+    provider = row[2]
+    locked = run(bus + ["--auto-start=no", "get-property", "org.freedesktop.secrets",
+                        "/org/freedesktop/secrets/aliases/default", "org.freedesktop.Secret.Collection", "Locked"],
+                 timeout=10)
+    if locked is None or locked.returncode != 0:
+        say("info", f"the Secret Service ({provider}) has no default collection; the first application that stores a "
+                    "secret asks to create one")
+        state = None
+    else:
+        state = locked.stdout.strip().endswith("true")
+    login = last_graphical_login(machine)
+    stack = pam_stack(machine, login) if login else []
+    unlocks = "pam_gnome_keyring.so" in modules(stack, "auth")
+    if state is False:
+        say("ok", f"the Secret Service ({provider}) is running and its default collection is unlocked")
+    elif state:
+        if login in ("gdm-smartcard", "gdm-fingerprint", "gdm-autologin"):
+            say("info", f"the default keyring is locked, as expected after a {GRAPHICAL_PATHS[login]} login (no "
+                        "password was given to unlock it); it unlocks on first use with its own password")
+        elif login and not unlocks:
+            say("warning", f"the default keyring is locked and the {login} PAM path does not include "
+                           "pam_gnome_keyring in auth, so a password login cannot unlock it")
+        else:
+            say("warning", "the default keyring stayed locked after a password login; hypotheses: its password "
+                           "differs from the login password (common after a domain password change made "
+                           "elsewhere), or the unlock failed (see: journalctl --user -b -u gnome-keyring-daemon)")
+    if login and login not in ("gdm-smartcard", "gdm-fingerprint", "gdm-autologin") and not unlocks and state is not True:
+        say("info", f"the {login} PAM path has no pam_gnome_keyring auth line; the keyring is unlocked separately "
+                    "(control flow inside the stack is not evaluated)")
+    keyring_storage(machine)
+
+
+def last_graphical_login(machine):
+    """The PAM service of the account's newest graphical session, from loginctl."""
+    user = run(["loginctl", "show-user", str(machine.uid), "-p", "Sessions"])
+    services = []
+    for session in (user.stdout.partition("=")[2].split() if user and user.returncode == 0 else []):
+        result = run(["loginctl", "show-session", session, "-p", "Service", "-p", "Type"])
+        info = dict(line.split("=", 1) for line in (result.stdout if result else "").splitlines() if "=" in line)
+        if info.get("Service") in GRAPHICAL_PATHS:
+            services.append(info["Service"])
+    return services[-1] if services else None
+
+
+def keyring_storage(machine):
+    home = machine.target["home"].rstrip("/")
+    data = (proxy_values_env(machine).get("XDG_DATA_HOME") or f"{home}/.local/share").rstrip("/")
+    path = machine.path(f"{data}/keyrings".lstrip("/"))
+    try:
+        st = path.stat()
+    except OSError:
+        say("info", f"no keyring storage yet at {data}/keyrings; it is created with the first keyring")
+        return
+    if st.st_uid != machine.uid:
+        say("warning", f"{data}/keyrings is owned by {owner_label(st.st_uid)}, not {machine.user}: the keyring cannot "
+                       f"save or open its files (sudo chown {machine.user} {data}/keyrings and the files inside)")
+        return
+    blocked = inspector.access_check(machine.root, path, st, identity(machine), 7)
+    if blocked and blocked[0] == "warning":
+        say("warning", f"{machine.user} cannot read and write {data}/keyrings, so keyrings cannot be opened or saved")
+    foreign = [entry.name for entry in path.iterdir() if entry.lstat().st_uid != machine.uid]
+    if foreign:
+        say("warning", f"{plural(len(foreign), 'keyring file')} in {data}/keyrings belong to another account, e.g. "
+                       f"{foreign[0]}; that keyring cannot be opened")
+
+
+def proxy_values_env(machine):
+    """The account's user-manager environment, for the XDG paths its session uses."""
+    flags = machine.user_flags()
+    result = run(["systemctl"] + flags + ["show-environment"]) if flags else None
+    if result is None or result.returncode != 0:
+        return {}
+    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+
+# --- Authorization (polkit) -------------------------------------------------------------------------------------
+
+POLKIT_AGENT = re.compile(r"(Registered|Unregistered) Authentication Agent for unix-session:(\S+)")
+POLKIT_OUTCOME = re.compile(r"Operator of unix-session:(\S+) (successfully authenticated|FAILED to authenticate)"
+                            r".* for action ([\w.-]+)")
+POLKIT_RULE_ERROR = re.compile(r"(Error (?:compiling|evaluating|loading)[^:]*:?.*|.*\b(?:TypeError|ReferenceError|"
+                               r"SyntaxError)\b.*)")
+ADMIN_IDENTITY = re.compile(r"unix-(group|user):([A-Za-z0-9._@\\-]+)")
+
+
+def check_polkit(machine):
+    """Administrator prompts: the authority, the session's agent, who may authenticate as administrator, the PAM
+    path polkit uses, rule errors, and recent outcomes. Nothing is checked by asking polkit for a decision."""
+    unit = run(["systemctl", "show", "-p", "LoadState", "-p", "ActiveState", "-p", "NRestarts", "--no-pager",
+                "polkit.service"])
+    values = dict(line.split("=", 1) for line in (unit.stdout if unit else "").splitlines() if "=" in line)
+    if not unit or values.get("LoadState") in (None, "not-found"):
+        return
+    section(f"Administrator authorization (polkit, for {machine.user})")
+    state, restarts = values.get("ActiveState", "?"), int(values.get("NRestarts") or 0)
+    if state == "active":
+        say("warning" if restarts else "ok", "polkit is running" + (f" but restarted {plural(restarts, 'time')} "
+                                                                    "this boot" if restarts else ""))
+    elif state == "failed":
+        say("warning", "polkit has failed: no prompt for administrator actions can appear (see Services)")
+    else:
+        say("info", f"polkit is {state}; it starts on the first authorization request")
+    admins(machine)
+    stack = pam_stack(machine, "polkit-1")
+    if machine.path("etc/pam.d/polkit-1").exists() or machine.path("usr/lib/pam.d/polkit-1").exists():
+        auth = modules(stack, "auth")
+        say("info", "polkit authenticates through: " + (", ".join(dict.fromkeys(auth)) or "no auth modules")
+            + (" (domain accounts through pam_sss)" if "pam_sss.so" in auth else ""))
+        if not auth:
+            say("warning", "the polkit-1 PAM service has no auth lines, so no administrator can authenticate")
+    else:
+        say("warning", "no polkit-1 PAM service (/etc/pam.d or /usr/lib/pam.d): polkit falls back to PAM's 'other' "
+                       "service, which usually denies")
+    pkla(machine)
+    if not machine.sees_system_journal():
+        say("unchecked", "polkit agents, rule errors and outcomes: " + machine.journal_hint())
+        return
+    entries = machine.journal("SYSLOG_IDENTIFIER=polkitd", "+", "_COMM=polkitd") or []
+    agents(machine, entries)
+    errors = [e for e in entries if POLKIT_RULE_ERROR.search(e["MESSAGE"])]
+    if errors:
+        say("warning", f"polkit reported {plural(len(errors), 'rule error')} this boot; a rule that fails to load or "
+                       "throws stops applying, and later rules decide instead")
+        print(f"    e.g. {clean(errors[-1]['MESSAGE'], 160)}")
+    outcomes = {}
+    for entry in entries:
+        matched = POLKIT_OUTCOME.search(entry["MESSAGE"])
+        if matched:
+            key = ("authorized" if matched.group(2).startswith("success") else "authentication failed", matched.group(3))
+            outcomes[key] = outcomes.get(key, 0) + 1
+    for (outcome, action), count in sorted(outcomes.items()):
+        say("warning" if outcome == "authentication failed" else "info",
+            f"{action}: {outcome} {plural(count, 'time')} this boot")
+
+
+def admins(machine):
+    """Who polkit asks for when an action needs an administrator, resolved through NSS like polkit does."""
+    identities = []
+    for directory in ("etc/polkit-1/rules.d", "usr/share/polkit-1/rules.d"):
+        for rule in sorted(glob.glob(str(machine.path(directory) / "*.rules"))):
+            text = Path(rule).read_text(errors="replace")
+            for block in re.findall(r"addAdminRule\s*\(\s*function[^{]*\{(.*?)\}\s*\)", text, re.S):
+                identities += [(kind, name, Path(rule).name) for kind, name in ADMIN_IDENTITY.findall(block)]
+    if not identities:
+        say("info", "no administrator rule found; polkit then asks for root's password")
+        return
+    gids = set(machine.target["gids"]) if machine.target else set()
+    member, offered, unresolved = False, [], []
+    for kind, name, rule in dict.fromkeys(identities):
+        result = run(["getent", "group" if kind == "group" else "passwd", name])
+        if result is None or result.returncode != 0:
+            # Ubuntu's default rule names groups that many machines never create; a domain name that does not
+            # resolve is the case that loses administrators.
+            domain = "@" in name or "\\" in name
+            unresolved.append(name)
+            say("warning" if domain else "info", f"administrator identity unix-{kind}:{name} (from {rule}) does not "
+                "resolve through NSS" + (": nobody can be offered for it; is SSSD offline?" if domain else
+                                         "; it offers nobody"))
+            continue
+        fields = result.stdout.strip().split(":")
+        if kind == "group":
+            if len(fields) > 2 and fields[2].isdigit() and int(fields[2]) in gids:
+                member = True
+            offered += [user for user in (fields[3].split(",") if len(fields) > 3 else []) if user]
+        else:
+            member = member or name == machine.user
+            offered.append(name)
+    if len(unresolved) == len(dict.fromkeys(identities)):
+        say("warning", "no administrator identity resolves, so administrator prompts cannot be answered")
+    elif member:
+        say("ok", f"{machine.user} is an administrator for polkit and authenticates with their own password")
+    else:
+        say("info", f"{machine.user} is not a polkit administrator; prompts offer "
+            + (", ".join(sorted(set(offered))[:5]) if offered else "the members of "
+               + ", ".join(f"unix-{kind}:{name}" for kind, name, _ in dict.fromkeys(identities))
+               + " (members not listed by NSS, e.g. with ignore_group_members)"))
+
+
+def pkla(machine):
+    files = glob.glob(str(machine.path("etc/polkit-1/localauthority") / "**" / "*.pkla"), recursive=True)
+    files += glob.glob(str(machine.path("var/lib/polkit-1/localauthority") / "**" / "*.pkla"), recursive=True)
+    if not files:
+        return
+    if machine.path("var/lib/dpkg/info/polkitd-pkla.list").exists():
+        say("info", f"{plural(len(files), 'legacy .pkla file')} applied through polkitd-pkla")
+    else:
+        say("warning", f"{plural(len(files), 'legacy .pkla file')} (e.g. {Path(files[0]).name}) without polkitd-pkla "
+                       "installed: polkit reads only JavaScript rules, so these are ignored")
+
+
+def agents(machine, entries):
+    """Per session of the account: the last agent event. A session without one is unknown, not agent-less:
+    registrations are not always logged."""
+    user = run(["loginctl", "show-user", str(machine.uid), "-p", "Sessions"])
+    sessions = user.stdout.partition("=")[2].split() if user and user.returncode == 0 else []
+    if not sessions:
+        say("info", f"{machine.user} has no session, so no authentication agent applies")
+        return
+    last = {}
+    for entry in entries:
+        matched = POLKIT_AGENT.search(entry["MESSAGE"])
+        if matched:
+            last.setdefault(matched.group(2), []).append((matched.group(1), entry))
+    for session in sessions:
+        events = last.get(session, [])
+        if not events:
+            say("info", f"session {session}: no authentication agent event logged; whether prompts can appear "
+                        "there is unknown")
+        elif events[-1][0] == "Unregistered":
+            say("warning", f"session {session}: its authentication agent unregistered at {when(events[-1][1])} and did "
+                           "not register again; administrator prompts cannot appear there (the Shell provides the "
+                           "agent; logging out and in restores it)")
+        else:
+            recovered = any(kind == "Unregistered" for kind, _ in events)
+            say("ok", f"session {session}: an authentication agent is registered"
+                + (" (it re-registered after going away)" if recovered else ""))
+
+
 # --- Packages and security --------------------------------------------------------------------------------------
 
 def check_packages(machine):
@@ -2516,6 +2929,8 @@ def main():
     check_load(machine)
     check_network(machine)
     check_domain_login(machine, args.probe_domain)
+    check_desktop(machine)
+    check_polkit(machine)
     check_proxy(machine, args.probe)
     check_installation(machine)
     check_packages(machine)

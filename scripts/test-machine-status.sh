@@ -133,6 +133,8 @@ log(0, 20, "pam_unix(gdm-launch-environment:session): session opened for user gd
 # A first login whose desktop never came up; the later login reaches graphical-session.target.
 log(0, 30, "pam_unix(gdm-password:session): session opened for user alice@corp.example(uid=1000) by (uid=0)",
     SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="gdm-password]")
+log(0, 35, "pam_unix(gdm-password:session): session closed for user alice@corp.example",
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="gdm-password]")
 for second in (40, 45):
     log(0, second, "pam_sss(gdm-password:auth): received for user alice@corp.example: 9 (Authentication service "
         "cannot retrieve authentication info)", SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="gdm-password]")
@@ -164,7 +166,24 @@ log(0, 260, "W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/resolute/
     "resolving 'archive.ubuntu.com'", _SYSTEMD_UNIT="apt-daily.service", PRIORITY=4, SYSLOG_IDENTIFIER="apt.systemd.daily")
 log(0, 300, "kernel panic in compositor", SYSLOG_IDENTIFIER="gnome-shell", PRIORITY=2, _UID=1000)
 log(0, 301, "Process 5555 (gnome-shell) of user 1000 dumped core.", MESSAGE_ID="fc2e22bc6ee647b6b90729ab34a250b1",
-    COREDUMP_COMM="gnome-shell", PRIORITY=2, SYSLOG_IDENTIFIER="systemd-coredump")
+    COREDUMP_COMM="gnome-shell", COREDUMP_UID=1000, COREDUMP_PID=5555, PRIORITY=2,
+    SYSLOG_IDENTIFIER="systemd-coredump")
+log(0, 25, "Process 4444 (gnome-shell) of user 60578 dumped core.", MESSAGE_ID="fc2e22bc6ee647b6b90729ab34a250b1",
+    COREDUMP_COMM="gnome-shell", COREDUMP_UID=60578, PRIORITY=2, SYSLOG_IDENTIFIER="systemd-coredump")
+for second, message in (
+        (61, "Registered Authentication Agent for unix-session:2 (system bus name :1.50 [/usr/bin/gnome-shell])"),
+        (62, "Registered Authentication Agent for unix-session:3 (system bus name :1.51 [/usr/bin/gnome-shell])"),
+        (300, "Unregistered Authentication Agent for unix-session:2 (system bus name :1.50)"),
+        (301, "Unregistered Authentication Agent for unix-session:3 (system bus name :1.51)"),
+        (302, "Registered Authentication Agent for unix-session:3 (system bus name :1.52 [/usr/bin/gnome-shell])"),
+        (310, "Error compiling script /etc/polkit-1/rules.d/60-broken.rules: SyntaxError: unterminated string"),
+        (320, "Operator of unix-session:3 FAILED to authenticate to gain authorization for action "
+              "org.freedesktop.NetworkManager.settings.modify.system for unix-process:4242:1234 [nm-connection-editor] "
+              "(owned by unix-user:alice@corp.example)"),
+        (330, "Operator of unix-session:3 successfully authenticated as unix-user:alice@corp.example to gain "
+              "TEMPORARY authorization for action org.freedesktop.packagekit.package-install for "
+              "system-bus-name::1.101 [/usr/bin/gnome-software] (owned by unix-user:alice@corp.example)")):
+    log(0, second, message, SYSLOG_IDENTIFIER="polkitd", PRIORITY=5)
 log(0, 400, "Killed /user.slice/user-1000.slice/app-code.scope due to memory pressure",
     SYSLOG_IDENTIFIER="systemd-oomd")
 log(0, 500, "Sync failed: network unreachable", SYSLOG_IDENTIFIER="sync-agent", PRIORITY=3,
@@ -263,6 +282,8 @@ EOF
 cat > "$stubs/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
+    *"show -p Id -p ActiveState -p NRestarts --no-pager display-manager.service") printf 'Id=gdm.service\nActiveState=active\nNRestarts=1\n' ;;
+    *"show -p LoadState -p ActiveState -p NRestarts --no-pager polkit.service") printf 'LoadState=loaded\nActiveState=active\nNRestarts=0\n' ;;
     *"show --no-pager --timestamp=unix"*) exec python3 "$(dirname "$0")/../units.py" "$@" ;;
     is-system-running) echo degraded ;;
     "is-active user@"*) echo active ;;
@@ -366,6 +387,7 @@ case "\$2" in
     alice@corp.example) echo "alice@corp.example:*:1000:1000:Alice:/home/alice:/bin/zsh" ;;
     carol) echo "carol:x:$me:$me:Carol:/home/carol-home:/bin/zsh" ;;
     bob) echo "bob:x:4001:4001::/home/bob:/bin/bash" ;;
+    sudo) echo "sudo:x:27:dave" ;;
     *) exit 2 ;;
 esac
 EOF
@@ -382,6 +404,10 @@ cat > "$stubs/loginctl" <<EOF
 #!/usr/bin/env bash
 case "\$1 \$2" in
     "list-users "*) printf "1000 alice@corp.example no active\\n4001 bob yes lingering\\n" ;;
+    "show-user 1000") if [[ "\$*" == "show-user 1000 -p Sessions" ]]; then echo "Sessions=2 3"
+        else echo "Failed to get user: User ID 1000 is not logged in or lingering" >&2; exit 1; fi ;;
+    "show-session 2") printf "Service=gdm-password\nType=wayland\n" ;;
+    "show-session 3") printf "Service=%s\nType=wayland\n" "\$(cat "$test_dir/session3")" ;;
     "show-user $me") printf "Sessions=4 7\\nState=active\\nLinger=no\\nRuntimePath=/run/user/$me\\n" ;;
     "show-user "*) echo "Failed to get user: User ID \$2 is not logged in or lingering" >&2; exit 1 ;;
     "show-session 4") printf "Type=wayland\\nClass=user\\nState=active\\nActive=yes\\nRemote=no\\nService=gdm-password\\nSeat=seat0\\n" ;;
@@ -389,6 +415,17 @@ case "\$1 \$2" in
 esac
 EOF
 printf '#!/usr/bin/env bash\necho "default via 10.0.0.1 dev wlp0s20f3"\n' > "$stubs/ip"
+cat > "$stubs/busctl" <<'EOF'
+#!/usr/bin/env bash
+state="$(dirname "$0")/.."
+case "$*" in
+    *" list "*) [[ -e "$state/no-bus" ]] && { echo "Failed to connect to bus: No such file or directory" >&2; exit 1; }
+        echo "org.freedesktop.DBus 1 systemd alice - - - -"
+        echo "org.freedesktop.secrets 2345 gnome-keyring-d alice :1.20 user@1000.service - -" ;;
+    *"--auto-start=no get-property org.freedesktop.secrets"*) cat "$state/keyring-locked" ;;
+    *) exit 1 ;;
+esac
+EOF
 cat > "$stubs/resolvectl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -494,6 +531,34 @@ home = root / "home/alice"
 (root / "etc/dotconfig/machine-expect").write_text("# Local policy\nignore ignored.service\n"
                                                     "ignore-mount /mnt/scratch\n")
 (home / "data").mkdir(parents=True, exist_ok=True)
+for directory, name, program in (("usr/share/wayland-sessions", "ubuntu", "/usr/bin/gnome-session"),
+                                 ("usr/share/xsessions", "oldwm", "/usr/bin/oldwm")):
+    (root / directory).mkdir(parents=True, exist_ok=True)
+    (root / directory / f"{name}.desktop").write_text(f"[Desktop Entry]\nName={name}\nExec={program}\n")
+(root / "usr/bin").mkdir(parents=True, exist_ok=True)
+(root / "usr/bin/gnome-session").write_text("")
+(root / "var/lib/AccountsService/users").mkdir(parents=True, exist_ok=True)
+(root / "var/lib/AccountsService/users/alice@corp.example").write_text("[User]\nSession=plasma\n")
+pam = root / "etc/pam.d"
+pam.mkdir(parents=True, exist_ok=True)
+(pam / "common-auth").write_text("auth [success=2 default=ignore] pam_unix.so nullok\n"
+                                 "auth [success=1 default=ignore] pam_sss.so use_first_pass\n"
+                                 "auth requisite pam_deny.so\nauth required pam_permit.so\n")
+(pam / "common-session").write_text("session required pam_unix.so\nsession optional pam_sss.so\n")
+(pam / "gdm-password").write_text("@include common-auth\nauth optional pam_gnome_keyring.so\n"
+                                  "@include common-session\nsession optional pam_gnome_keyring.so auto_start\n")
+(pam / "polkit-1").write_text("@include common-auth\n@include common-session\n")
+for directory, name, body in (("usr/share/polkit-1/rules.d", "40-ubuntu.rules", '"unix-group:sudo", "unix-group:admin"'),
+                              ("etc/polkit-1/rules.d", "50-corp.rules", '"unix-group:linux-admins@corp.example"')):
+    (root / directory).mkdir(parents=True, exist_ok=True)
+    (root / directory / name).write_text("polkit.addAdminRule(function(action, subject) {\n    return [" + body
+                                         + "];\n});\n")
+(root / "etc/polkit-1/localauthority/50-local.d").mkdir(parents=True, exist_ok=True)
+(root / "etc/polkit-1/localauthority/50-local.d/old.pkla").write_text("[old]\nIdentity=unix-user:*\n")
+(root / "home/alice/.local/share/keyrings").mkdir(parents=True, exist_ok=True)
+(root / "home/alice/.local/share/keyrings/login.keyring").write_text("")
+(test_dir / "keyring-locked").write_text("b true\n")
+(test_dir / "session3").write_text("gdm-smartcard\n")
 (root / "etc/nsswitch.conf").write_text("passwd: files sss\ngroup: files sss\nsudoers: files sss\n")
 (root / "etc/fstab").write_text(
     "/dev/nvme0n1p2 / ext4 defaults 0 1\n/dev/nvme0n1p1 /boot/efi vfat umask=0077 0 1\n"
@@ -545,7 +610,7 @@ refute 'proxydetox'
 check '^Domain login (alice@corp.example):'
 check '^ok: SSSD serves alice@corp.example: uid 1000, home /home/alice'
 check '^warning: SSSD is offline for corp.example although vpn0 routes its DNS; hypotheses: the controllers are not reachable'
-check '^warning: alice@corp.example is not authorized to log in through login now: Permission denied'
+check '^warning: alice@corp.example is not authorized to log in through gdm-password now: Permission denied'
 check '^ok: last login of alice@corp.example through gdm-password at 1 min 0 s after the kernel started: authentication, authorization and session setup succeeded'
 check '^info: 2 failed attempts through gdm-password before that, the last one 9: SSSD could not reach the domain'
 check '^warning: last login of alice@corp.example through sshd at .*: authentication succeeded, then authorization refused it (6: the access rules'
@@ -558,6 +623,29 @@ refute 'discovery:'
 check "^warning: SSSD's in-memory group cache filled up 2 times this boot, so lookups fall back to the slower SSSD socket; raise memcache_size_group in \\[nss\\] of sssd.conf and set ignore_group_members = True"
 check '^info: sudo also asks SSSD for its rules (nsswitch: sudoers: files sss); if the domain defines none, sudo_provider = none'
 refute 'resolving the groups of'
+check '^Desktop session (alice@corp.example):'
+check '^warning: display manager: gdm.service, active, restarted 1 time this boot; the login screen went away each time'
+check '^warning: session oldwm: its program /usr/bin/oldwm is missing; choosing it at the login screen returns straight to it'
+refute 'session ubuntu: its program'
+check '^warning: alice@corp.example last chose session plasma, which is no longer installed'
+check '^warning: alice@corp.example logged in by password at 30.0 s after the kernel started, but the session ended 5 s later before the desktop was ready'
+check "^warning: alice@corp.example's desktop crashed 1 time this boot, last at .* (gnome-shell); see: coredumpctl info 5555"
+check "^warning: the login screen's Shell crashed 1 time this boot (greeter account, not a user session)"
+check '^info: the default keyring is locked, as expected after a smart card login'
+check '^warning: /home/alice/.local/share/keyrings is owned by [a-z0-9 ]*, not alice@corp.example'
+check '^Administrator authorization (polkit, for alice@corp.example):'
+check '^ok: polkit is running$'
+check '^info: administrator identity unix-group:admin (from 40-ubuntu.rules) does not resolve through NSS; it offers nobody'
+check '^warning: administrator identity unix-group:linux-admins@corp.example (from 50-corp.rules) does not resolve through NSS: nobody can be offered for it; is SSSD offline?'
+check '^ok: alice@corp.example is an administrator for polkit and authenticates with their own password'
+check '^info: polkit authenticates through: pam_unix.so, pam_sss.so, pam_deny.so, pam_permit.so (domain accounts through pam_sss)'
+check '^warning: 1 legacy .pkla file (e.g. old.pkla) without polkitd-pkla installed'
+check '^warning: session 2: its authentication agent unregistered at .* and did not register again'
+check '^ok: session 3: an authentication agent is registered (it re-registered after going away)'
+check '^warning: polkit reported 1 rule error this boot'
+check '^warning: org.freedesktop.NetworkManager.settings.modify.system: authentication failed 1 time this boot'
+check '^info: org.freedesktop.packagekit.package-install: authorized 1 time this boot'
+refute 'failed screen unlock'
 check '^warning: systemd reports the system degraded'
 check '^warning: kernel tainted: D kernel died recently (oops or BUG); W kernel warning; O out-of-tree module; E unsigned module'
 check '^warning: reboot required by linux-image-6.20.0-15-generic'
@@ -594,7 +682,7 @@ refute 'cups.service was restarted'
 check '^warning: gnome-shell: 1 error (1 critical)'
 check '^info: mount.cifs: 3 errors'
 check '    e.g. Failed to mount /mnt/share202: Permission denied (x3)'
-check '^warning: gnome-shell crashed 1 time this boot; see: coredumpctl info gnome-shell'
+check '^warning: gnome-shell crashed 2 times this boot; see: coredumpctl info gnome-shell'
 check '^info: 1 crash report in /var/crash: _usr_bin_gnome-shell.1000.crash'
 check '^warning: the kernel OOM killer ended processes (1 time): chrome'
 check '^warning: the kernel refused to load an unsigned or untrusted module'
@@ -701,6 +789,8 @@ refute 'mount.cifs'
 refute 'dotconfig creds check-logs --days'
 check '^not checked: SSSD online state and authorization need root; run: dotconfig machine status --sudo'
 check '^not checked: login stages: needs the system journal (see above)'
+check '^not checked: graphical logins: needs the system journal (see above)'
+check '^not checked: polkit agents, rule errors and outcomes: needs the system journal (see above)'
 check '^warning: sssd.service is disabled'
 check '^Summary: problems found: [0-9]* warnings; [0-9]* not checked (need --sudo, or not applicable)$'
 refute 'check failed'
@@ -713,9 +803,24 @@ export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example SUDO_UID
 unset JOURNAL_DENY
 run_status --sudo --probe-domain
 check '^ok: SSSD is online for corp.example$'
-check '^ok: alice@corp.example is authorized to log in through login now (account check, no password)'
+check '^ok: alice@corp.example is authorized to log in through gdm-password now (account check, no password)'
 check '^ok: discovery: _ldap._tcp.dc._msdcs.corp.example lists 2 servers (answered through vpn0)'
 check '^warning: discovery: _kerberos._tcp.corp.example does not resolve'
+printf 'gdm-password\n' > "$test_dir/session3"
+run_status --sudo
+check '^warning: the default keyring stayed locked after a password login; hypotheses: its password differs from the login password'
+cp "$root/etc/pam.d/gdm-password" "$test_dir/gdm-password.saved"
+printf '@include common-auth\n@include common-session\n' > "$root/etc/pam.d/gdm-password"
+run_status --sudo
+check '^warning: the default keyring is locked and the gdm-password PAM path does not include pam_gnome_keyring in auth'
+mv "$test_dir/gdm-password.saved" "$root/etc/pam.d/gdm-password"
+printf 'b false\n' > "$test_dir/keyring-locked"
+run_status --sudo
+check '^ok: the Secret Service (gnome-keyring-d) is running and its default collection is unlocked'
+touch "$test_dir/no-bus"
+run_status --sudo
+check '^info: keyring: no session bus for alice@corp.example'
+rm "$test_dir/no-bus"
 DOTCONFIG_MACHINE_SLOW_GROUPS=0 run_status --sudo
 check '^warning: resolving the groups of alice@corp.example took [0-9.]* s; sudo and logins wait that long'
 DOTCONFIG_MACHINE_SLOW_GROUPS=0 run_status --sudo --user carol
