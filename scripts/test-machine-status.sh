@@ -44,7 +44,7 @@ chmod 600 "$root/etc/sssd/sssd.conf"
 # Update and next-boot readiness: stale lists, a stalled unattended-upgrades stamp, two kernels, a nearly full /boot.
 # Load and limits: CPU and I/O pressure, cgroup memory and task limit events, a nearly full file table.
 python3 - "$root" <<'EOF'
-import os, sys, time
+import email.utils, os, sys, time
 from pathlib import Path
 
 root = Path(sys.argv[1])
@@ -58,7 +58,20 @@ def write(relative, text="", days_old=0, size=0):
     stamp = time.time() - days_old * 86400
     os.utime(path, (stamp, stamp))
 
-write("var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_resolute_InRelease", days_old=10)
+def released(days_ago, valid_days=None):
+    def stamp(days):
+        return email.utils.formatdate(time.time() - days * 86400, usegmt=True)
+    text = f"Origin: Ubuntu\nDate: {stamp(days_ago)}\n"
+    if valid_days is not None:
+        text += f"Valid-Until: {stamp(-valid_days)}\n"
+    return text + "\nsignature\n"
+# File times of lists are publication dates, so they are set old on purpose; only the stamps record refreshes.
+write("var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_resolute_InRelease", released(40), days_old=40)
+write("var/lib/apt/lists/security.ubuntu.com_ubuntu_dists_resolute-security_InRelease", released(1), days_old=1)
+write("var/lib/apt/lists/ppa.launchpadcontent.net_team_tool_ubuntu_dists_resolute_InRelease", released(10, -3),
+      days_old=10)
+write("var/lib/apt/periodic/update-success-stamp", days_old=10)
+write("var/lib/apt/periodic/update-stamp", days_old=2)
 write("var/lib/apt/periodic/unattended-upgrades-stamp", days_old=5)
 write("etc/apt/apt.conf.d/20auto-upgrades", 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n')
 for kernel in ("6.20.0-14-generic", "6.20.0-15-generic"):
@@ -66,9 +79,21 @@ for kernel in ("6.20.0-14-generic", "6.20.0-15-generic"):
 write("boot/initrd.img-6.20.0-14-generic", size=90 * 1024 * 1024)
 write("proc/pressure/cpu", "some avg10=50.00 avg60=45.00 avg300=42.00 total=1\n")
 write("proc/pressure/io", "some avg10=9.00 avg60=8.00 avg300=7.00 total=1\nfull avg10=6.00 avg60=6.00 avg300=6.00 total=1\n")
-write("sys/fs/cgroup/system.slice/backupd.service/memory.events", "low 0\nhigh 0\nmax 4\noom 1\noom_kill 1\n")
-write("sys/fs/cgroup/system.slice/cups.service/memory.events", "low 0\nhigh 0\nmax 2\noom 0\noom_kill 0\n")
+# memory.events adds up the subtree, so slices repeat their children; the .local files count each cgroup once.
+def cgroup(relative, local, total=None):
+    write(f"sys/fs/cgroup/{relative}/memory.events.local", local)
+    write(f"sys/fs/cgroup/{relative}/memory.events", total or local)
+cgroup("system.slice", "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n", "max 6\noom 1\noom_kill 1\n")
+cgroup("system.slice/backupd.service", "low 0\nhigh 0\nmax 4\noom 1\noom_kill 1\n")
+cgroup("system.slice/cups.service", "low 0\nhigh 0\nmax 2\noom 0\noom_kill 0\n")
+# A victim of the global OOM killer: no limit of its own was reached.
+cgroup("user.slice", "max 0\noom 0\noom_kill 0\n", "max 0\noom 0\noom_kill 1\n")
+cgroup("user.slice/user-1000.slice/user@1000.service/app.slice/app-code.scope", "max 0\noom 0\noom_kill 1\n")
+# Kernels without .local files: only the leaf is counted, not its parent again.
+write("sys/fs/cgroup/legacy.slice/memory.events", "max 0\noom 0\noom_kill 1\n")
+write("sys/fs/cgroup/legacy.slice/old.service/memory.events", "max 0\noom 0\noom_kill 1\n")
 write("sys/fs/cgroup/system.slice/cups.service/pids.events", "max 0\n")
+write("sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/pids.events", "max 3\n")
 write("sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build.scope/pids.events", "max 3\n")
 write("proc/sys/fs/file-nr", "900000\t0\t1000000\n")
 write("proc/loadavg", "0.50 0.40 0.30 2/1200 9999\n")
@@ -275,11 +300,17 @@ case "$*" in
     *) echo "unexpected smartctl $*" >&2; exit 1 ;;
 esac
 EOF
+# quota -p: grace as a number, 0 when not in grace, so each row has eight numeric fields after the filesystem.
 cat > "$stubs/quota" <<'EOF'
 #!/usr/bin/env bash
+[[ " $* " == *" -p "* ]] || { echo "quota called without -p: $*" >&2; exit 3; }
 echo "Disk quotas for user alice@corp.example (uid 1000):"
 echo "     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace"
-echo " /dev/nvme0n1p4  950000*  900000 1000000  6days     100       0       0"
+echo " /dev/nvme0n1p4  950000*  900000 1000000 1793500000     100       0       0       0"
+echo "      /dev/sda1      100    1000    2000       0     950*     900    1000 1793500000"
+echo "      /dev/sdb1      100    1000    2000       0      10     100     200       0"
+echo "      /dev/sdc1    1900*    1000    2000 1793500000    950*     900    1000 1793500000"
+echo "   server:/home  950000*  900000 1000000 1793500000     100       0       0       0"
 exit 1
 EOF
 printf '#!/usr/bin/env bash\nprintf "nvidia/580.95, 6.20.0-14-generic, x86_64: installed\\nnvidia/580.95: added\\n"\n' > "$stubs/dkms"
@@ -380,6 +411,13 @@ check '^warning: /run: 99% of space in memory (tmpfs) used'
 refute '/dev/shm:'
 refute '/sys/fs/cgroup:'
 check '^warning: quota for alice@corp.example on /dev/nvme0n1p4: space over its soft limit'
+check '^warning: quota for alice@corp.example on /dev/sda1: files over its soft limit'
+refute 'on /dev/sda1: space'
+refute '/dev/sdb1'
+check '^warning: quota for alice@corp.example on /dev/sdc1: space over its soft limit'
+check '^warning: quota for alice@corp.example on /dev/sdc1: files over its soft limit'
+check '^warning: quota for alice@corp.example on server:/home: space over its soft limit'
+refute 'quota called without -p'
 check '^warning: /dev/nvme0: NVMe critical warning: reliability degraded by media or internal errors'
 check '^info: /dev/nvme0: 97% of its rated endurance used'
 check '^warning: /dev/nvme0: available spare 12% (threshold 10%)'
@@ -391,13 +429,22 @@ check '^info: /dev/sda: overall SMART health still reads passed'
 refute 'unexpected smartctl'
 check '^warning: runnable tasks waited for a CPU 42.00% of the last 5 minutes'
 check '^info: all non-idle tasks waited for I/O 6.00% of the last 5 minutes'
-check '^warning: system.slice/backupd.service: the kernel killed 1 process at its memory limit (MemoryMax)'
+check '^warning: system.slice/backupd.service: the kernel killed 1 process at its own memory limit (MemoryMax)'
 check '^info: system.slice/cups.service reached its memory limit 2 times'
-check '^warning: user.slice/user-1000.slice/user@1000.service/app.slice/build.scope: 3 process starts refused at its task limit (TasksMax)'
+check '^warning: user.slice/user-1000.slice/user@1000.service/app.slice/app-code.scope: the OOM killer ended 1 process here; it did not reach its own limit'
+check '^warning: legacy.slice/old.service: the OOM killer ended 1 process here'
+refute '^warning: system.slice: '
+refute '^warning: user.slice: '
+refute '^warning: legacy.slice: '
+check '^warning: user.slice/user-1000.slice/user@1000.service/app.slice/build.scope: 3 process starts refused at its task limit (TasksMax) or an enclosing one'
+refute '^warning: user.slice/user-1000.slice/user@1000.service/app.slice: 3 process'
 check '^warning: 90% of the kernel file handle table (fs.file-max) in use'
 check '^warning: the kernel ran out of file handles (fs.file-max) (1 time)'
 refute 'process and thread limit'
-check '^warning: APT package lists are 10 days old'
+check '^warning: APT last refreshed its package lists successfully 10 days ago but tried 2 days ago: refreshes are failing'
+check '^info: repository archive.ubuntu.com/ubuntu/dists/resolute: last published 40 days ago'
+check '^warning: repository ppa.launchpadcontent.net/team/tool/ubuntu/dists/resolute: metadata expired 3 days ago (Valid-Until)'
+refute 'repository security.ubuntu.com'
 check '^warning: the daily APT refresh failed to fetch 1 time this boot'
 check '^warning: unattended upgrades last ran 5 days ago'
 check '^warning: DKMS module nvidia is not installed for kernel 6.20.0-15-generic; that kernel boots without it'
@@ -463,10 +510,17 @@ refute 'slowest units this boot'
 
 # Within a day of boot, stale lists and an old unattended-upgrades stamp are expected: the daily jobs have not run yet.
 printf '3600.00 1000.00\n' > "$root/proc/uptime"
+cp -p "$root/var/lib/apt/periodic/update-success-stamp" "$root/var/lib/apt/periodic/update-stamp"
 run_status --sudo
-check '^info: APT package lists are 10 days old; the daily refresh runs within hours of boot'
+check '^info: APT last refreshed its package lists successfully 10 days ago; the daily refresh runs within hours of boot'
 check '^info: unattended upgrades last ran 5 days ago; they run within hours of boot'
 printf '95400.25 20000.00\n' > "$root/proc/uptime"
+
+# A fresh successful refresh is not contradicted by old, unchanged repository metadata.
+touch "$root/var/lib/apt/periodic/update-success-stamp" "$root/var/lib/apt/periodic/update-stamp"
+run_status --sudo
+refute 'APT last refreshed'
+check '^info: repository archive.ubuntu.com/ubuntu/dists/resolute: last published 40 days ago'
 
 # A diagnostic that is installed but fails, and a delegated credential check that times out, leave the
 # assessment incomplete instead of reading as healthy.

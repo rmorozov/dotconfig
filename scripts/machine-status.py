@@ -8,6 +8,7 @@ settings named like passwords or secrets hidden, but they can include user and h
 """
 
 import argparse
+import email.utils
 import glob
 import json
 import os
@@ -787,9 +788,14 @@ def check_storage(machine):
     smart(machine)
 
 
+QUOTA_FIELD = re.compile(r"^\d+\*?$")
+
+
 def quotas(machine):
     """Disk quotas of the invoking account: a user over quota cannot write even on a filesystem with room."""
-    command = ["quota", "-w", "-v"] + (["-u", machine.user] if machine.privileged and machine.user else [])
+    # -p prints grace times as numbers (0 when not in grace), so every row has the same eight numeric fields
+    # after the filesystem, which may be a local device or an NFS export such as server:/home.
+    command = ["quota", "-w", "-v", "-p"] + (["-u", machine.user] if machine.privileged and machine.user else [])
     result = run(command)
     if result is None:
         return
@@ -798,19 +804,17 @@ def quotas(machine):
         return
     for line in result.stdout.splitlines():
         parts = line.split()
-        if len(parts) < 4 or not parts[0].startswith("/"):
+        if len(parts) != 9 or not all(QUOTA_FIELD.match(part) for part in parts[1:]):
             continue
-        for what, offset in (("space", 1), ("files", 5 if len(parts) >= 8 else 4)):
-            values = parts[offset:offset + 3]
-            if len(values) < 3:
-                continue
-            used, soft, hard = (re.sub(r"[^\d]", "", value) or "0" for value in values)
-            over = values[0].endswith("*")
-            limit = int(hard) or int(soft)
-            if over or (limit and int(used) * 100 // limit >= 90):
+        for what, offset in (("space", 1), ("files", 5)):
+            used, soft, hard = parts[offset:offset + 3]
+            over = used.endswith("*")
+            used, limit = int(used.rstrip("*")), int(hard) or int(soft)
+            percent = used * 100 // limit if limit else 0
+            if over or percent >= 90:
                 say("warning", f"quota for {machine.user or 'this account'} on {parts[0]}: {what} "
-                               f"{'over its soft limit' if over else 'at ' + str(int(used) * 100 // limit) + '% of its limit'}"
-                               "; writes there will fail at the hard limit")
+                    + ("over its soft limit" if over else f"at {percent}% of its limit")
+                    + "; writes there will fail at the hard limit")
 
 
 def smart(machine):
@@ -926,22 +930,26 @@ def check_load(machine):
             stalled = "runnable tasks waited for a CPU" if resource == "cpu" else "all non-idle tasks waited for I/O"
             say("warning" if float(matched.group(1)) >= warn else "info",
                 f"{stalled} {matched.group(1)}% of the last 5 minutes")
-    found = False
-    for events in sorted(glob.glob(str(machine.path("sys/fs/cgroup/**/memory.events")), recursive=True)):
-        found = True
-        counts = cgroup_counts(events)
-        unit = cgroup_name(machine, events)
-        if counts.get("oom_kill", "0") != "0":
-            say("warning", f"{unit}: the kernel killed {plural(int(counts['oom_kill']), 'process')} at its memory "
-                           "limit (MemoryMax)")
+    memory = cgroup_events(machine, "memory")
+    for unit, counts in memory:
+        killed = int(counts.get("oom_kill", "0"))
+        # "max" and "oom" count this cgroup's own limit; oom_kill alone also counts victims of the global OOM
+        # killer or of an enclosing slice's limit.
+        own = int(counts.get("oom", "0")) or int(counts.get("max", "0"))
+        if killed and own:
+            say("warning", f"{unit}: the kernel killed {plural(killed, 'process')} at its own memory limit "
+                           "(MemoryMax)")
+        elif killed:
+            say("warning", f"{unit}: the OOM killer ended {plural(killed, 'process')} here; it did not reach its "
+                           "own limit, so system memory or an enclosing slice ran out")
         elif counts.get("max", "0") != "0":
             say("info", f"{unit} reached its memory limit {plural(int(counts['max']), 'time')}")
-    for events in sorted(glob.glob(str(machine.path("sys/fs/cgroup/**/pids.events")), recursive=True)):
-        counts = cgroup_counts(events)
+    for unit, counts in cgroup_events(machine, "pids"):
         if counts.get("max", "0") != "0":
-            say("warning", f"{cgroup_name(machine, events)}: {plural(int(counts['max']), 'process start')} refused "
-                           "at its task limit (TasksMax)")
-    if not found and machine.path("sys/fs/cgroup").is_dir():
+            say("warning", f"{unit}: {plural(int(counts['max']), 'process start')} refused at its task limit "
+                           "(TasksMax) or an enclosing one")
+    if not memory and not glob.glob(str(machine.path("sys/fs/cgroup/**/memory.events")), recursive=True) and \
+            machine.path("sys/fs/cgroup").is_dir():
         say("info", "no cgroup memory accounting found")
     files = (machine.read("proc/sys/fs/file-nr") or "").split()
     if len(files) == 3 and files[0].isdigit() and files[2].isdigit() and int(files[2]):
@@ -956,6 +964,25 @@ def check_load(machine):
         used = int(tasks[3].split("/")[1]) * 100 // limit
         if used >= 80:
             say("warning", f"{used}% of the process and thread limit in use")
+
+
+def cgroup_events(machine, controller):
+    """(cgroup name, counters) with events counted once. memory.events and pids.events add up a whole subtree,
+    so the per-cgroup .local files are used where the kernel has them; without them, only leaf cgroups count."""
+    events = sorted(glob.glob(str(machine.path(f"sys/fs/cgroup/**/{controller}.events")), recursive=True))
+    found = []
+    for path in events:
+        directory = Path(path).parent
+        local = directory / f"{controller}.events.local"
+        if local.exists():
+            counts = cgroup_counts(local)
+        elif any(other != path and Path(other).parent.is_relative_to(directory) for other in events):
+            continue
+        else:
+            counts = cgroup_counts(path)
+        if any(value != "0" for value in counts.values()):
+            found.append((cgroup_name(machine, path), counts))
+    return found
 
 
 def cgroup_counts(path):
@@ -1121,14 +1148,23 @@ def check_readiness(machine):
     uptime = (machine.read("proc/uptime") or "").split()
     # The daily jobs run within hours of boot, so a machine just back from days powered off is stale but fine.
     settled = not uptime or float(uptime[0]) >= 86400
-    lists = glob.glob(str(machine.path("var/lib/apt/lists/*_InRelease"))) + \
-        glob.glob(str(machine.path("var/lib/apt/lists/*_Release")))
-    if lists:
-        age = (now - max(os.path.getmtime(path) for path in lists)) / 86400
-        if age >= 7:
-            say("warning" if settled else "info", f"APT package lists are {age:.0f} days old; "
-                + ("refreshes are failing or disabled (see: systemctl status apt-daily.service)" if settled
-                   else "the daily refresh runs within hours of boot"))
+    # apt.systemd.daily touches update-stamp when it tries a refresh and update-success-stamp when it succeeds.
+    # The lists' own file times are the servers' publication dates, so they say nothing about refreshes.
+    attempted, succeeded = (stamp_age(machine, f"var/lib/apt/periodic/{name}", now)
+                            for name in ("update-stamp", "update-success-stamp"))
+    if succeeded is not None and succeeded >= 7:
+        text = f"APT last refreshed its package lists successfully {succeeded:.0f} days ago"
+        if attempted is not None and attempted < succeeded - 1:
+            say("warning", f"{text} but tried {attempted:.0f} days ago: refreshes are failing "
+                           "(see: systemctl status apt-daily.service)")
+        elif settled:
+            say("warning", f"{text}; refreshes are failing or disabled (see: systemctl status apt-daily.timer)")
+        else:
+            say("info", f"{text}; the daily refresh runs within hours of boot")
+    elif succeeded is None and attempted is not None:
+        say("info", "APT has no record of a successful automatic refresh")
+    for path in sorted(glob.glob(str(machine.path("var/lib/apt/lists/*InRelease")))):
+        repository_dates(path, now)
     refresh = [e for e in machine.journal("_SYSTEMD_UNIT=apt-daily.service", "-p", "0..4") or []
                if re.search(r"Failed to fetch|Some index files failed|Temporary failure resolving|"
                             r"Could not (connect|resolve)|NO_PUBKEY|is not signed", e["MESSAGE"])]
@@ -1166,6 +1202,34 @@ def check_readiness(machine):
             say("warning", f"/boot has {machine.free_kib['/boot'] // 1024} MiB free but a kernel and its initrd "
                            f"take about {need // 1024} MiB; the next kernel update may fail "
                            "(sudo apt autoremove --purge removes old kernels)")
+
+
+def stamp_age(machine, relative, now):
+    path = machine.path(relative)
+    return (now - path.stat().st_mtime) / 86400 if path.exists() else None
+
+
+def repository_dates(path, now):
+    """Each repository on its own: an expired Valid-Until makes APT refuse it, and a long-unchanged Date means
+    the source or mirror stopped publishing (or the repository is simply frozen)."""
+    try:
+        header = Path(path).read_text(errors="replace").split("\n\n", 1)[0]
+    except OSError:
+        return
+    name = Path(path).name.replace("_InRelease", "").replace("_", "/")
+    fields = dict(re.findall(r"^(Date|Valid-Until): (.+)$", header, re.M))
+    dates = {}
+    for key, value in fields.items():
+        try:
+            dates[key] = email.utils.parsedate_to_datetime(value.strip()).timestamp()
+        except (TypeError, ValueError):
+            continue
+    if dates.get("Valid-Until") and dates["Valid-Until"] < now:
+        say("warning", f"repository {name}: metadata expired {(now - dates['Valid-Until']) / 86400:.0f} days ago "
+                       "(Valid-Until); APT refuses it until a refresh succeeds")
+    elif dates.get("Date") and (now - dates["Date"]) / 86400 >= 30:
+        say("info", f"repository {name}: last published {(now - dates['Date']) / 86400:.0f} days ago (a frozen "
+                    "repository, or a source or mirror that stopped updating)")
 
 
 def largest(machine, pattern):
