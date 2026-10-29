@@ -62,24 +62,6 @@ jobs:
           bash scripts/validate.sh
           bash scripts/check-bootstrap-tools.sh
 
-      - name: Run machine status on the runner
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          # The runner is not a laptop, so warnings are expected; the command must finish with a summary.
-          for mode in "" --sudo; do
-            set +e
-            bash scripts/machine.sh status $mode > machine-status.out 2>&1
-            status=$?
-            set -e
-            cat machine-status.out
-            test "$status" -le 1
-            grep -q '^Summary: ' machine-status.out
-            ! grep -q 'Traceback' machine-status.out
-          done
-          sudo bash scripts/machine.sh status --sudo > machine-status.out 2>&1 || test "$?" -eq 1
-          ! grep -q '^not checked: SMART health needs root' machine-status.out
-
       - name: Verify installation for a real non-sudo account
         if: runner.os == 'Linux'
         run: bash scripts/test-install-for-user-live.sh
@@ -203,3 +185,18 @@ jobs:
         run: |
           sudo apt-get update
           bash scripts/test-credentials-live.sh
+
+  machine-live:
+    # dotconfig machine status on a real Ubuntu 26.04 runner after seeding a failed unit, a bad unit file, journal
+    # and kernel errors, and a PAM login session. No desktop runs here, so the graphical login timeline is fixture-only.
+    name: ubuntu-26.04 / machine live
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
+
+      - name: Check dotconfig machine status against the runner
+        env:
+          DOTCONFIG_MACHINE_LIVE_TEST: "1"
+        run: bash scripts/test-machine-status-live.sh
