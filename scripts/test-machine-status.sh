@@ -174,15 +174,29 @@ log(0, 502, "bob backup: destination full", SYSLOG_IDENTIFIER="bob-backup", _SYS
 # Domain stages: SSH authenticates but the access rules refuse the account; cockpit authenticates, opens the
 # session, then pam_systemd fails to register it.
 log(0, 600, "pam_sss(sshd:auth): authentication success; logname= uid=0 euid=0 tty=ssh ruser= rhost=10.0.0.7 "
-    "user=alice@corp.example", SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="sshd")
+    "user=alice@corp.example", SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="sshd", _PID=100)
 log(0, 600.1, "pam_sss(sshd:account): Access denied for user alice@corp.example: 6 (Permission denied)",
-    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="sshd")
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="sshd", _PID=100)
 log(0, 700, "pam_sss(cockpit:auth): authentication success; logname= uid=0 user=alice@corp.example",
-    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session")
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session", _PID=300)
 log(0, 700.1, "pam_unix(cockpit:session): session opened for user alice@corp.example(uid=1000) by (uid=0)",
-    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session")
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session", _PID=300)
 log(0, 700.2, "pam_systemd(cockpit:session): Failed to create session: Connection timed out",
-    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session")
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="cockpit-session", _PID=300)
+# Two concurrent remote-desktop logins of alice (processes 500 and 501) and another account's failure (600) in
+# between: neither of alice's logins failed. vnc logs without a process, so its failure stays unattributed.
+for second, pid, message in (
+        (800, 500, "pam_sss(grd:auth): authentication success; logname= uid=0 user=alice@corp.example"),
+        (800.05, 501, "pam_sss(grd:auth): authentication success; logname= uid=0 user=alice@corp.example"),
+        (800.1, 501, "pam_unix(grd:session): session opened for user alice@corp.example(uid=1000) by (uid=0)"),
+        (800.15, 500, "pam_unix(grd:session): session opened for user alice@corp.example(uid=1000) by (uid=0)"),
+        (800.2, 600, "pam_systemd(grd:session): Failed to create session: Connection timed out")):
+    log(0, second, message, SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="grd", _PID=pid)
+for second, message in (
+        (900, "pam_sss(vnc:auth): authentication success; logname= uid=0 user=alice@corp.example"),
+        (900.1, "pam_unix(vnc:session): session opened for user alice@corp.example(uid=1000) by (uid=0)"),
+        (900.2, "pam_systemd(vnc:session): Failed to create session: Connection timed out")):
+    log(0, second, message, SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="vnc")
 log(0, 501, "root decoy for sync-agent", SYSLOG_IDENTIFIER="sync-agent", _SYSTEMD_USER_UNIT="sync-agent.service",
     _UID=0)
 with open(sys.argv[1], "w") as handle:
@@ -303,7 +317,8 @@ cat > "$stubs/nmcli" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
     *general*) echo "connected (site only):limited" ;;
-    *--active*) printf 'corp-wifi:802-11-wireless:wlp0s20f3\ncorp-vpn:vpn:wlp0s20f3\n' ;;
+    *--active*) printf 'corp-wifi:802-11-wireless:wlp0s20f3\n'
+        [[ -e "$(dirname "$0")/../no-vpn" ]] || printf 'corp-vpn:vpn:wlp0s20f3\n' ;;
 esac
 EOF
 cat > "$stubs/smartctl" <<'EOF'
@@ -377,6 +392,7 @@ case "$*" in
     *"_ldap._tcp.dc._msdcs.corp.example"*)
         printf '_ldap._tcp.dc._msdcs.corp.example IN SRV 0 100 389 dc1.corp.example\n'
         printf '_ldap._tcp.dc._msdcs.corp.example IN SRV 0 100 389 dc2.corp.example\n-- link: vpn0\n' ;;
+    domain) cat "$(dirname "$0")/../link-domains" ;;
     *"query"*) echo "_kerberos._tcp.corp.example: resolve call failed: No appropriate name servers or networks for name found" >&2
         exit 1 ;;
     *) printf 'Global:\nLink 3 (wlp0s20f3): 10.0.0.1\nLink 9 (vpn0): 10.8.0.53\n' ;;
@@ -397,7 +413,8 @@ state="$(dirname "$0")/.."
 case "$1" in
     domain-list) echo corp.example ;;
     domain-status) cat "$state/sssd-state" ;;
-    user-checks) printf 'user: %s\naction: acct\nservice: %s\n' "$2" "$6"; cat "$state/acct" ;;
+    user-checks) printf 'user: %s\naction: acct\nservice: %s\n\ntesting pam_acct_mgmt\n\n' "$2" "$6"
+        cat "$state/acct" >&2 ;;
     *) printf "Issues identified by validators: 0\n" ;;
 esac
 EOF
@@ -418,7 +435,18 @@ loaded = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "act
 def unit(**changes):
     return dict(loaded, **changes)
 units = {
-    "systemd-timesyncd.service": unit(),
+    "systemd-timesyncd.service": unit(LoadState="masked", UnitFileState="masked", ActiveState="inactive"),
+    "chrony.service": unit(),
+    "on-demand.socket": unit(SubState="listening"),
+    "dead.socket": unit(ActiveState="inactive", SubState="dead"),
+    "masked.socket": unit(LoadState="masked", UnitFileState="masked", ActiveState="inactive"),
+    "dead-socket.service": unit(ActiveState="inactive", SubState="dead", TriggeredBy="dead.socket"),
+    "masked-trigger.service": unit(UnitFileState="disabled", ActiveState="inactive", SubState="dead",
+                                   TriggeredBy="masked.socket"),
+    "disabled-by-socket.service": unit(UnitFileState="disabled", ActiveState="inactive", SubState="dead",
+                                       TriggeredBy="on-demand.socket"),
+    "ssh.socket": unit(UnitFileState="disabled", ActiveState="inactive", SubState="dead"),
+    "ssh.service": unit(),
     "NetworkManager.service": unit(),
     "display-manager.service": unit(Id="gdm.service", UnitFileState="alias"),
     "sssd.service": unit(UnitFileState="disabled", ActiveState="inactive", SubState="dead"),
@@ -432,6 +460,7 @@ units = {
     "on-demand.service": unit(ActiveState="inactive", SubState="dead", TriggeredBy="on-demand.socket"),
     "needs-dock.service": unit(ActiveState="inactive", SubState="dead", ConditionResult="no"),
     "user:px.service": unit(ActiveState="inactive", SubState="dead"),
+    "user:proxydetox.service": unit(),
 }
 (test_dir / "units.json").write_text(json.dumps(units))
 (test_dir / "units.py").write_text("""import json, sys
@@ -447,6 +476,7 @@ print("\\n\\n".join(blocks))
 """)
 (test_dir / "sssd-state").write_text("Online status: Offline\n")
 (test_dir / "acct").write_text("pam_acct_mgmt: Permission denied\n")
+(test_dir / "link-domains").write_text("Global: \nLink 3 (wlp0s20f3): \nLink 9 (vpn0): ~corp.example\n")
 home = root / "home/alice"
 (home / ".config/chezmoi").mkdir(parents=True, exist_ok=True)
 (home / ".config/chezmoi/chezmoi.toml").write_text('[data]\n    machineRole = "work"\n    hostType = "laptop"\n')
@@ -454,9 +484,11 @@ home = root / "home/alice"
 (home / ".config/dotconfig/proxy.mode").write_text("on\n")
 (home / ".config/dotconfig/machine-expect").write_text(
     "require --user px.service\nrequire setup-once.service\nrequire on-demand.service\n"
+    "require dead-socket.service\nrequire masked-trigger.service\nrequire disabled-by-socket.service\n"
+    "require ignored.service\n"
     "require needs-dock.service max-age=fortnight\nrequire needs-dock.service\nmount /srv/backup\n")
 (root / "etc/dotconfig").mkdir(parents=True, exist_ok=True)
-(root / "etc/dotconfig/machine-expect").write_text("# Local policy\nignore systemd-timesyncd.service\n"
+(root / "etc/dotconfig/machine-expect").write_text("# Local policy\nignore ignored.service\n"
                                                     "ignore-mount /mnt/scratch\n")
 (home / "data").mkdir(parents=True, exist_ok=True)
 (root / "etc/fstab").write_text(
@@ -482,7 +514,7 @@ run_status --sudo --examples 2
 [[ "$status" == 1 ]] || { cat "$test_dir/out" >&2; echo "expected exit 1, got $status" >&2; exit 1; }
 check '^ok: Ubuntu 26.04.1 LTS'
 check '^info: profile: work laptop (from ~/.config/chezmoi/chezmoi.toml); features: SSSD, dotconfig proxy$'
-check "^warning: ~/.config/dotconfig/machine-expect:4: cannot read 'require needs-dock.service max-age=fortnight'"
+check "^warning: ~/.config/dotconfig/machine-expect:8: cannot read 'require needs-dock.service max-age=fortnight'"
 check '^warning: sssd.service is disabled, so it does not start at boot (serves domain accounts and logins); systemctl enable --now sssd.service'
 check '^warning: fstrim.timer is masked, so it never starts'
 check '^warning: systemd-tmpfiles-clean.timer is inactive, so what it schedules never runs'
@@ -498,16 +530,25 @@ refute 'on-demand.service'
 refute 'NetworkManager.service is'
 refute 'display-manager.service'
 refute 'timesyncd'
+refute 'chrony'
+refute 'ignored.service'
+refute 'disabled-by-socket.service'
+check '^warning: dead-socket.service is inactive and what would start it on demand is not running: dead.socket (inactive)'
+check '^warning: masked-trigger.service is disabled, so it does not start at boot, and what would start it is not running: masked.socket (masked)'
 refute '/mnt/share is expected'
 refute '/mnt/scratch is expected'
-refute 'no unit is named for the local proxy'
+refute 'proxydetox'
 check '^Domain login (alice@corp.example):'
 check '^ok: SSSD serves alice@corp.example: uid 1000, home /home/alice'
-check '^warning: SSSD is offline for corp.example although VPN corp-vpn is connected; hypotheses: the domain zone is not resolved through'
+check '^warning: SSSD is offline for corp.example although vpn0 routes its DNS; hypotheses: the controllers are not reachable'
 check '^warning: alice@corp.example is not authorized to log in through login now: Permission denied'
 check '^ok: last login of alice@corp.example through gdm-password at 1 min 0 s after the kernel started: authentication, authorization and session setup succeeded'
 check '^info: 2 failed attempts through gdm-password before that, the last one 9: SSSD could not reach the domain'
 check '^warning: last login of alice@corp.example through sshd at .*: authentication succeeded, then authorization refused it (6: the access rules'
+check '^ok: last login of alice@corp.example through grd at .*: authentication, authorization and session setup succeeded'
+check '^ok: last login of alice@corp.example through vnc at .*: authentication, authorization and session setup succeeded'
+check '^info: a session failure through vnc at .* names no account and process, so it may or may not belong to this login'
+refute 'through grd at .*session setup failed'
 check '^warning: last login of alice@corp.example through cockpit at .*: authenticated and authorized, but session setup failed: Failed to create session: Connection timed out'
 refute 'discovery:'
 check '^warning: systemd reports the system degraded'
@@ -671,6 +712,29 @@ check '^warning: discovery: _kerberos._tcp.corp.example does not resolve'
 run_status --sudo --user carol
 check '^info: carol is not a domain account (SSSD does not serve it)'
 refute 'authorized to log in'
+printf 'Online status: Offline\n' > "$test_dir/sssd-state"
+: > "$test_dir/acct"
+touch "$test_dir/no-vpn"
+printf 'Link 3 (wlp0s20f3): corp.example\n' > "$test_dir/link-domains"
+run_status --sudo
+check '^warning: SSSD is offline for corp.example although wlp0s20f3 routes its DNS'
+check '^check failed: authorization of alice@corp.example: sssctl user-checks printed no pam_acct_mgmt verdict'
+rm "$test_dir/no-vpn"
+printf 'pam_acct_mgmt: Success\n' > "$test_dir/acct"
+printf 'Link 9 (vpn0): other.example\n' > "$test_dir/link-domains"
+run_status --sudo
+check '^warning: SSSD is offline for corp.example and no connected network routes its DNS; connected VPN: corp-vpn, which does not route it either'
+cp "$root/etc/dotconfig/machine-expect" "$test_dir/machine-expect.saved"
+printf 'offline-ok corp.example\n' >> "$root/etc/dotconfig/machine-expect"
+run_status --sudo
+check '^info: SSSD is offline for corp.example, which machine-expect allows (offline-ok)'
+mv "$test_dir/machine-expect.saved" "$root/etc/dotconfig/machine-expect"
+sed -i.bak 's/"laptop"/"server"/' "$root/home/alice/.config/chezmoi/chezmoi.toml"
+run_status --sudo
+check '^info: profile: work server'
+refute 'ssh.socket'
+refute 'ssh.service'
+mv "$root/home/alice/.config/chezmoi/chezmoi.toml.bak" "$root/home/alice/.config/chezmoi/chezmoi.toml"
 
 # A previous boot is read from the journal; current-only timing is skipped.
 export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example
