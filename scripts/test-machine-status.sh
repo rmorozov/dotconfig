@@ -197,6 +197,9 @@ for second, message in (
         (900.1, "pam_unix(vnc:session): session opened for user alice@corp.example(uid=1000) by (uid=0)"),
         (900.2, "pam_systemd(vnc:session): Failed to create session: Connection timed out")):
     log(0, second, message, SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="vnc")
+for second in (950, 951):
+    log(0, second, "mmap cache of type group is full, if you see this message often please consider increasing "
+        "of cache size", SYSLOG_IDENTIFIER="sssd_nss", PRIORITY=2)
 log(0, 501, "root decoy for sync-agent", SYSLOG_IDENTIFIER="sync-agent", _SYSTEMD_USER_UNIT="sync-agent.service",
     _UID=0)
 with open(sys.argv[1], "w") as handle:
@@ -491,6 +494,7 @@ home = root / "home/alice"
 (root / "etc/dotconfig/machine-expect").write_text("# Local policy\nignore ignored.service\n"
                                                     "ignore-mount /mnt/scratch\n")
 (home / "data").mkdir(parents=True, exist_ok=True)
+(root / "etc/nsswitch.conf").write_text("passwd: files sss\ngroup: files sss\nsudoers: files sss\n")
 (root / "etc/fstab").write_text(
     "/dev/nvme0n1p2 / ext4 defaults 0 1\n/dev/nvme0n1p1 /boot/efi vfat umask=0077 0 1\n"
     "UUID=1234 /home/alice/data ext4 defaults,nofail 0 2\n//nas/share /mnt/share cifs noauto 0 0\n"
@@ -551,6 +555,9 @@ check '^info: a session failure through vnc at .* names no account and process, 
 refute 'through grd at .*session setup failed'
 check '^warning: last login of alice@corp.example through cockpit at .*: authenticated and authorized, but session setup failed: Failed to create session: Connection timed out'
 refute 'discovery:'
+check "^warning: SSSD's in-memory group cache filled up 2 times this boot, so lookups fall back to the slower SSSD socket; raise memcache_size_group in \\[nss\\] of sssd.conf and set ignore_group_members = True"
+check '^info: sudo also asks SSSD for its rules (nsswitch: sudoers: files sss); if the domain defines none, sudo_provider = none'
+refute 'resolving the groups of'
 check '^warning: systemd reports the system degraded'
 check '^warning: kernel tainted: D kernel died recently (oops or BUG); W kernel warning; O out-of-tree module; E unsigned module'
 check '^warning: reboot required by linux-image-6.20.0-15-generic'
@@ -709,8 +716,11 @@ check '^ok: SSSD is online for corp.example$'
 check '^ok: alice@corp.example is authorized to log in through login now (account check, no password)'
 check '^ok: discovery: _ldap._tcp.dc._msdcs.corp.example lists 2 servers (answered through vpn0)'
 check '^warning: discovery: _kerberos._tcp.corp.example does not resolve'
-run_status --sudo --user carol
+DOTCONFIG_MACHINE_SLOW_GROUPS=0 run_status --sudo
+check '^warning: resolving the groups of alice@corp.example took [0-9.]* s; sudo and logins wait that long'
+DOTCONFIG_MACHINE_SLOW_GROUPS=0 run_status --sudo --user carol
 check '^info: carol is not a domain account (SSSD does not serve it)'
+refute 'resolving the groups of'
 refute 'authorized to log in'
 printf 'Online status: Offline\n' > "$test_dir/sssd-state"
 : > "$test_dir/acct"
