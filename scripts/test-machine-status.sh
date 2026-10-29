@@ -353,7 +353,8 @@ check '^info: firewall (ufw): active'
 check '^warning: unattended-upgrades logged 1 error or warning'
 check '^warning: BAT0: 71% discharging, holds 56% of its design capacity, 412 cycles'
 check '^warning: running hot: x86_pkg_temp 93 °C'
-check '^Summary: [0-9]* warnings$'
+check '^Summary: problems found: [0-9]* warnings$'
+refute 'check failed'
 refute 'MustNeverPrint'
 refute 'not checked'
 
@@ -372,7 +373,8 @@ check '^warning: gnome-shell: 1 error (1 critical)'
 check '^warning: sync-agent.service failed'
 refute 'mount.cifs'
 refute 'dotconfig creds check-logs --days'
-check '^Summary: [0-9]* warnings, [0-9]* not checked$'
+check '^Summary: problems found: [0-9]* warnings; [0-9]* not checked (need --sudo, or not applicable)$'
+refute 'check failed'
 
 # A previous boot is read from the journal; current-only timing is skipped.
 export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example
@@ -382,6 +384,35 @@ check '^Journal sections read boot -1'
 check '^info: no earlier boot in the journal'
 check '^info: no graphical or console login recorded in this boot'
 refute 'slowest units this boot'
+
+# A diagnostic that is installed but fails, and a delegated credential check that times out, leave the
+# assessment incomplete instead of reading as healthy.
+cp "$stubs/timedatectl" "$test_dir/timedatectl"
+printf '#!/usr/bin/env bash\necho "Failed to query server: Connection timed out" >&2\nexit 1\n' > "$stubs/timedatectl"
+export DOTCONFIG_MACHINE_CREDS_TIMEOUT=0.01
+run_status --sudo
+unset DOTCONFIG_MACHINE_CREDS_TIMEOUT
+check '^check failed: clock synchronization: timedatectl exited 1: Failed to query server: Connection timed out'
+check '^check failed: dotconfig creds status did not finish within 0.01 s; domain login health is not assessed'
+check '^check failed: dotconfig creds check-logs --days 1 did not finish within 0.01 s'
+check '^Summary: problems found: [0-9]* warnings; assessment incomplete: 3 checks failed$'
+cp "$test_dir/timedatectl" "$stubs/timedatectl"
+
+# The verdict keeps problems, failed diagnostics, and expected limits apart.
+verdict() {
+    python3 - "$repo_root/scripts/machine-status.py" "$1" <<'PYEOF'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("machine_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+text, status = module.summary(json.loads(sys.argv[2]))
+print(f"{status} {text}")
+PYEOF
+}
+[[ "$(verdict '{}')" == '0 healthy within the checked scope' ]]
+[[ "$(verdict '{"unchecked": 2, "ok": 5}')" == '0 healthy within the checked scope; 2 not checked (need --sudo, or not applicable)' ]]
+[[ "$(verdict '{"failed": 1}')" == '3 assessment incomplete: 1 check failed; no problems found in what was checked' ]]
+[[ "$(verdict '{"warning": 2, "failed": 1, "unchecked": 1}')" == '1 problems found: 2 warnings; assessment incomplete: 1 check failed; 1 not checked (need --sudo, or not applicable)' ]]
 
 # Arguments are validated before anything runs.
 for bad in "--boot 1" "--boot x" "--examples 0" "--bogus"; do

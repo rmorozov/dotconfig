@@ -120,7 +120,7 @@ dotconfig machine status --sudo       # everything, through sudo
 dotconfig machine status --boot -1    # the journal of the previous boot, e.g. after a freeze
 ```
 
-It never changes anything. Each finding is an `ok`, `info`, `warning` or `not checked` line, followed by quoted log lines (`--examples N` for more), and the command exits 1 when any warning is found. Sections:
+It never changes anything. Each finding is an `ok`, `info`, `warning`, `not checked` or `check failed` line, followed by quoted log lines (`--examples N` for more). `not checked` is an expected limit: the check needs `--sudo`, or its tool is not installed. `check failed` means a diagnostic that should work did not (it exited with an error or timed out, including the delegated `dotconfig creds` checks, bounded at 300 s), so that part of the machine was not assessed. The summary and exit status keep the three outcomes apart: 1 when problems were found, 3 when nothing wrong was found but the assessment is incomplete, and 0 when the machine is healthy within the checked scope. Sections:
 
 - **System.** `systemctl is-system-running`, decoded kernel taint flags, a pending reboot and the packages that need it, and whether the previous boot shut down cleanly or ended in a crash, freeze, power loss or failed suspend.
 - **Boot and login timing.** Firmware, loader, kernel, initrd and userspace time and the slowest units. For each graphical or console login, from the journal: when the login screen appeared, when the password was accepted, how long the user manager and the desktop session took after that, failed password attempts before it, and the slowest user units when the login took over 30 seconds.

@@ -21,7 +21,7 @@ report() {
     local status=0
     "$@" > "$out" 2>&1 || status=$?
     cat "$out"
-    [[ "$status" -le 1 ]] || { echo "machine status exited $status" >&2; exit 1; }
+    [[ "$status" == 0 || "$status" == 1 || "$status" == 3 ]] || { echo "machine status exited $status" >&2; exit 1; }
     check '^Summary: '
     if grep -q 'Traceback' "$out"; then
         echo 'machine status crashed' >&2

@@ -32,6 +32,7 @@ COREDUMP = "fc2e22bc6ee647b6b90729ab34a250b1"
 
 GRAPHICAL_PAM = re.compile(r"^(gdm-(?!launch-environment)\S+|login|sddm|lightdm)$")
 SLOW_LOGIN_SECONDS = 30
+CREDS_TIMEOUT = float(os.environ.get("DOTCONFIG_MACHINE_CREDS_TIMEOUT", "300"))
 
 
 def say(level, message):
@@ -59,6 +60,17 @@ def failure(name, result):
         return f"{name} is not installed"
     lines = [line.strip() for line in (result.stderr + "\n" + result.stdout).splitlines() if line.strip()]
     return f"{name} exited {result.returncode}: {clean(lines[0]) if lines else 'no output'}"
+
+
+def broken(what, name, result, ok=(0,)):
+    """Report a diagnostic that is installed but did not work, so the assessment is marked incomplete. True when
+    result is usable; False when the tool is missing (not applicable here) or failed."""
+    if result is None:
+        return False
+    if result.returncode in ok:
+        return True
+    say("failed", f"{what}: {failure(name, result)}")
+    return False
 
 
 def clean(text, limit=200):
@@ -99,6 +111,7 @@ class Machine:
         self.uid = invoking_uid(self.user) if self.privileged else os.getuid()
         self.kernel_entries = None
         self.hinted = False
+        self.journal_failures = set()
 
     def path(self, relative):
         return self.root / relative
@@ -112,8 +125,15 @@ class Machine:
     def journal(self, *args, user=False):
         """Journal entries as dicts for this boot, oldest first; None when journalctl is missing or fails."""
         command = ["journalctl", "--no-pager", "-q", "-o", "json", "-b", str(self.boot)]
-        result = run(command + (["--user"] if user else []) + list(args))
-        if result is None or (result.returncode not in (0, 1) and not result.stdout):
+        result = run(command + (["--user"] if user else []) + list(args), timeout=120)
+        if result is None:
+            return None
+        if result.returncode not in (0, 1) and not result.stdout:
+            if "No such boot" not in result.stderr and "not available" not in result.stderr:
+                key = failure("journalctl", result)
+                if key not in self.journal_failures:
+                    self.journal_failures.add(key)
+                    say("failed", "journal query: " + key)
             return None
         entries = []
         for line in result.stdout.splitlines():
@@ -188,8 +208,10 @@ def check_system(machine):
         pending_jobs()
     elif state == "degraded":
         say("warning", "systemd reports the system degraded: at least one unit failed (see Services)")
+    elif not state:
+        say("failed", "systemd state: " + failure("systemctl", result))
     else:
-        say("warning", f"systemd reports the system {state or 'in an unknown state'}")
+        say("warning", f"systemd reports the system {state}")
 
     tainted = (machine.read("proc/sys/kernel/tainted") or "0").strip()
     if tainted.isdigit() and int(tainted):
@@ -370,7 +392,7 @@ def user_managers(machine):
         return [(machine.user, machine.uid, ["--user"])]
     result = run(["loginctl", "list-users", "--no-legend", "--no-pager"])
     managers = []
-    if result is not None and result.returncode == 0:
+    if broken("running user managers", "loginctl", result):
         for line in result.stdout.splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[0].isdigit():
@@ -395,7 +417,9 @@ def check_services(machine):
 def units_of(machine, scope, flag, uid):
     result = run(["systemctl"] + flag + ["list-units", "--failed", "--all", "--no-legend", "--plain", "--no-pager"])
     if result is None or result.returncode != 0:
-        say("unchecked" if scope == "user" else "failed", f"failed {scope} units: {failure('systemctl', result)}")
+        # Unprivileged, a missing user bus means no user manager to ask, not a broken check.
+        expected = scope == "user" and not machine.privileged
+        say("unchecked" if expected else "failed", f"failed {scope} units: {failure('systemctl', result)}")
         return
     units = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
     if not units:
@@ -409,7 +433,7 @@ def units_of(machine, scope, flag, uid):
 
 def unit_properties(flag, units, names):
     result = run(["systemctl"] + flag + ["show", "--no-pager"] + ["-p" + name for name in names] + list(units))
-    if result is None or result.returncode != 0:
+    if not broken("unit properties", "systemctl show", result):
         return []
     blocks = []
     for block in result.stdout.strip().split("\n\n"):
@@ -473,7 +497,7 @@ def unit_log(machine, unit, user, uid):
 def pending_jobs():
     """The start jobs that hold up the end of boot: the running ones are what the waiting ones wait for."""
     result = run(["systemctl", "list-jobs", "--no-legend", "--plain", "--no-pager"])
-    if result is None or result.returncode != 0:
+    if not broken("pending jobs", "systemctl list-jobs", result):
         return
     rows = [line.split() for line in result.stdout.splitlines() if len(line.split()) >= 4]
     running = [row[1] for row in rows if row[3] == "running"]
@@ -509,13 +533,13 @@ def unit_file_problems(machine):
 def load_problems(scope, flag, reported=()):
     result = run(["systemctl"] + flag + ["list-units", "--all", "--no-legend", "--plain", "--no-pager",
                                          "--state=bad-setting,error,not-found"])
-    if result is None or result.returncode != 0:
+    if not broken(f"{scope} units that did not load", "systemctl list-units", result):
         return
     rows = [line.split(None, 4) for line in result.stdout.splitlines() if line.split()]
-    broken = [row[0] for row in rows if len(row) > 1 and row[1] in ("bad-setting", "error")]
+    unloaded = [row[0] for row in rows if len(row) > 1 and row[1] in ("bad-setting", "error")]
     missing = [row[0] for row in rows if len(row) > 3 and row[1] == "not-found" and row[2] != "inactive"]
     absent = [row[0] for row in rows if len(row) > 1 and row[1] == "not-found" and row[0] not in missing]
-    for unit in [unit for unit in broken if unit not in reported]:
+    for unit in [unit for unit in unloaded if unit not in reported]:
         props = (unit_properties(flag, [unit], ["LoadState", "LoadError"]) or [{}])[0]
         say("warning", f"{unit} did not load: {props.get('LoadState', 'error')}"
             + (f" ({props['LoadError']})" if props.get("LoadError") else "") + f"; run: systemd-analyze verify {unit}")
@@ -528,7 +552,7 @@ def load_problems(scope, flag, reported=()):
 
 def restarts(scope, flag):
     result = run(["systemctl"] + flag + ["list-units", "--type=service", "--no-legend", "--plain", "--no-pager"])
-    if result is None or result.returncode != 0:
+    if not broken(f"{scope} service restarts", "systemctl list-units", result):
         return
     units = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
     if not units:
@@ -759,11 +783,15 @@ def smart(machine):
     if scan is None:
         say("unchecked", "SMART health: smartctl is not installed (sudo apt install smartmontools)")
         return
+    if not broken("SMART device scan", "smartctl --scan", scan):
+        return
     for line in scan.stdout.splitlines():
-        device = line.split()[0] if line.split() else ""
+        # Keep the scan's device type (-d nvme, -d sat, ...): some devices answer only with it.
+        words = line.split("#")[0].split()
+        device = words[0] if words else ""
         if not device.startswith("/dev/"):
             continue
-        result = run(["smartctl", "-H", "-j", device])
+        result = run(["smartctl", "-H", "-j"] + words[1:] + [device])
         try:
             passed = json.loads(result.stdout).get("smart_status", {}).get("passed")
         except (ValueError, AttributeError):
@@ -772,8 +800,11 @@ def smart(machine):
             say("ok", f"{device}: SMART health passed")
         elif passed is False:
             say("warning", f"{device}: SMART health FAILED; back up now and see: sudo smartctl -a {device}")
+        elif result is not None and result.returncode & 3:
+            # Bits 0 and 1: the command line was rejected or the device could not be opened.
+            say("failed", f"{device}: SMART health: {failure('smartctl', result)}")
         else:
-            say("unchecked", f"{device}: SMART health unknown ({failure('smartctl', result)})")
+            say("unchecked", f"{device}: does not report SMART health ({failure('smartctl', result)})")
 
 
 def check_memory(machine):
@@ -809,9 +840,11 @@ def check_memory(machine):
 def check_network(machine):
     section("Network and time")
     result = run(["nmcli", "-t", "-f", "STATE,CONNECTIVITY", "general"])
-    if result is None or result.returncode != 0:
-        say("unchecked", "NetworkManager state: " + failure("nmcli", result))
-    else:
+    if result is None:
+        say("unchecked", "NetworkManager state: nmcli is not installed")
+    elif result.returncode == 8:
+        say("warning", "NetworkManager is not running; Wi-Fi, VPN and connectivity are unmanaged")
+    elif broken("NetworkManager state", "nmcli", result):
         state, _, connectivity = result.stdout.strip().partition(":")
         if state.startswith("connected") and connectivity in ("full", "unknown", ""):
             say("ok", f"NetworkManager {state}" + (f", connectivity {connectivity}" if connectivity else ""))
@@ -819,20 +852,20 @@ def check_network(machine):
             say("warning", f"NetworkManager {state or 'unknown'}, connectivity {connectivity or 'unknown'}"
                 + ("; a captive portal may need a login" if connectivity == "portal" else ""))
         active = run(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])
-        if active is not None and active.returncode == 0:
+        if broken("active connections", "nmcli", active):
             vpns = [line.split(":")[0] for line in active.stdout.splitlines()
                     if re.search(r":(vpn|wireguard|tun)(:|$)", line)]
             say("info", "VPN active: " + ", ".join(vpns) if vpns else "no VPN connection active")
     route = run(["ip", "-o", "route", "show", "default"])
-    if route is not None and route.returncode == 0 and not route.stdout.strip():
+    if broken("default route", "ip route", route) and not route.stdout.strip():
         say("warning", "no default route; nothing outside the local network is reachable")
     dns = run(["resolvectl", "dns"])
-    if dns is not None and dns.returncode == 0:
+    if broken("DNS servers", "resolvectl", dns):
         servers = sorted({server for line in dns.stdout.splitlines() for server in line.partition(":")[2].split()})
         say("info" if servers else "warning", "DNS servers: " + ", ".join(servers) if servers else
             "no DNS servers configured")
     time = run(["timedatectl", "show", "-p", "NTPSynchronized", "-p", "NTP"])
-    if time is not None and time.returncode == 0:
+    if broken("clock synchronization", "timedatectl", time):
         values = dict(line.split("=", 1) for line in time.stdout.splitlines() if "=" in line)
         if values.get("NTPSynchronized") == "yes":
             say("ok", "clock synchronized with NTP")
@@ -863,13 +896,18 @@ def check_domain(machine):
                            (f"dotconfig creds check-logs --days {days}",
                             [scripts / "credentials-logs.py", "--days", str(days)])):
         print(f"  {title}:")
-        result = subprocess.run(["python3"] + [str(part) for part in command] + [str(machine.root)],
-                                capture_output=True, text=True, errors="replace", check=False)
+        result = run(["python3"] + [str(part) for part in command] + [str(machine.root)], timeout=CREDS_TIMEOUT)
+        levels = {"warning": "warning", "possible cause": "warning", "check failed": "failed",
+                  "not checked": "unchecked"}
         for line in (result.stdout + result.stderr).splitlines():
-            level = line.partition(":")[0]
-            if level in ("warning", "possible cause"):
-                COUNTS["warning"] = COUNTS.get("warning", 0) + 1
+            level = levels.get(line.partition(":")[0])
+            if level:
+                COUNTS[level] = COUNTS.get(level, 0) + 1
             print(f"    {line}" if line.strip() else "")
+        if result.returncode == 124:
+            say("failed", f"{title} did not finish within {CREDS_TIMEOUT:g} s; domain login health is not assessed")
+        elif result.returncode != 0:
+            say("failed", f"{title} exited {result.returncode}; its findings above are incomplete")
 
 
 # --- Packages and security --------------------------------------------------------------------------------------
@@ -877,7 +915,7 @@ def check_domain(machine):
 def check_packages(machine):
     section("Packages and security")
     audit = run(["dpkg", "--audit"])
-    if audit is not None and audit.returncode == 0:
+    if broken("package consistency", "dpkg --audit", audit):
         if audit.stdout.strip():
             names = [line.split()[0] for line in audit.stdout.splitlines() if line[:1].isspace() and line.split()]
             say("warning", "dpkg reports half-installed or unconfigured packages"
@@ -885,9 +923,11 @@ def check_packages(machine):
         else:
             say("ok", "no half-installed packages")
     updates = run([str(machine.path("usr/lib/update-notifier/apt-check"))])
-    if updates is not None:
+    if broken("pending updates", "apt-check", updates):
         matched = re.search(r"(\d+);(\d+)", updates.stderr + updates.stdout)
-        if matched:
+        if not matched:
+            say("failed", "pending updates: apt-check printed no update counts")
+        else:
             pending, security = int(matched.group(1)), int(matched.group(2))
             if pending:
                 say("info", f"{plural(pending, 'package update')} pending, {security} of them security updates")
@@ -911,7 +951,8 @@ def check_packages(machine):
                          "dotconfig machine status --sudo")
         return
     profiles = run(["aa-status"])
-    if profiles is not None and profiles.returncode in (0, 2, 3):
+    # aa-status exits 1 when AppArmor is off and 2 when no policy is loaded; both are reported above or below.
+    if broken("AppArmor profiles", "aa-status", profiles, ok=(0, 1, 2)) and profiles.returncode == 0:
         counts = dict((what, int(number)) for number, what in
                       re.findall(r"^(\d+) (profiles are in complain mode|profiles are in enforce mode|"
                                  r"processes are unconfined but have a profile defined|profiles are loaded)",
@@ -924,7 +965,7 @@ def check_packages(machine):
             say("info", f"{unconfined} process{'es' if unconfined != 1 else ''} started before their AppArmor "
                         "profile loaded; restarting them confines them")
     firewall = run(["ufw", "status"])
-    if firewall is not None and firewall.returncode == 0:
+    if broken("firewall", "ufw status", firewall):
         say("info", "firewall (ufw): " + firewall.stdout.strip().splitlines()[0].partition(":")[2].strip())
     log = machine.read("var/log/unattended-upgrades/unattended-upgrades.log")
     if log is not None:
@@ -949,7 +990,9 @@ def check_history(machine):
 
 def check_snaps():
     changes = run(["snap", "changes"])
-    if changes is None or changes.returncode != 0:
+    if changes is None or "no changes found" in changes.stderr + changes.stdout:
+        return
+    if not broken("snap changes", "snap changes", changes):
         return
     lines = changes.stdout.splitlines()
     summary = lines[0].find("Summary") if lines else -1
@@ -1027,10 +1070,23 @@ def main():
     check_network(machine)
     check_packages(machine)
     check_hardware(machine)
-    warnings = COUNTS.get("warning", 0)
-    unchecked = COUNTS.get("unchecked", 0) + COUNTS.get("failed", 0)
-    print(f"\nSummary: {plural(warnings, 'warning')}" + (f", {unchecked} not checked" if unchecked else ""))
-    return 1 if warnings else 0
+    text, status = summary(COUNTS)
+    print(f"\nSummary: {text}")
+    return status
+
+
+def summary(counts):
+    """The verdict and exit status: 1 problems found, 3 assessment incomplete (a diagnostic failed) without
+    problems, 0 healthy within the checked scope. Not checked items are expected limits, not failures."""
+    warnings, failed, unchecked = (counts.get(level, 0) for level in ("warning", "failed", "unchecked"))
+    incomplete = f"assessment incomplete: {plural(failed, 'check')} failed" if failed else ""
+    limits = f"{unchecked} not checked (need --sudo, or not applicable)" if unchecked else ""
+    if warnings:
+        return "; ".join(part for part in (f"problems found: {plural(warnings, 'warning')}", incomplete, limits)
+                         if part), 1
+    if failed:
+        return "; ".join(part for part in (incomplete, "no problems found in what was checked", limits) if part), 3
+    return "; ".join(part for part in ("healthy within the checked scope", limits) if part), 0
 
 
 if __name__ == "__main__":
