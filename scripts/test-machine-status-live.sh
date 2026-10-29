@@ -107,4 +107,9 @@ report bash "$repo_root/scripts/machine.sh" status --sudo --user "$user" --probe
 check "^Account and session ($user):"
 check "^info: uid $uid, home "
 check '^ok: probe github.com:443 (.*): TLS verified'
+# polkit ships on the hosted image: its section reads the real rules, PAM service and journal format.
+if systemctl cat polkit.service > /dev/null 2>&1; then
+    check '^Administrator authorization (polkit, for '
+    check '^info: polkit authenticates through: '
+fi
 echo 'machine status live tests passed'
