@@ -41,6 +41,7 @@ bash scripts/test-credentials.sh
 bash scripts/test-credentials-logs.sh
 bash scripts/test-credentials-config.sh
 bash scripts/test-credentials-platform.sh
+bash scripts/test-machine-status.sh
 bash scripts/test-runtime-versions.sh
 bash scripts/test-node-version.sh
 bash scripts/test-dotconfig-review.sh

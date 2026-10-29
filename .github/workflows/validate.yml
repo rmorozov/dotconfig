@@ -62,6 +62,24 @@ jobs:
           bash scripts/validate.sh
           bash scripts/check-bootstrap-tools.sh
 
+      - name: Run machine status on the runner
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The runner is not a laptop, so warnings are expected; the command must finish with a summary.
+          for mode in "" --sudo; do
+            set +e
+            bash scripts/machine.sh status $mode > machine-status.out 2>&1
+            status=$?
+            set -e
+            cat machine-status.out
+            test "$status" -le 1
+            grep -q '^Summary: ' machine-status.out
+            ! grep -q 'Traceback' machine-status.out
+          done
+          sudo bash scripts/machine.sh status --sudo > machine-status.out 2>&1 || test "$?" -eq 1
+          ! grep -q '^not checked: SMART health needs root' machine-status.out
+
       - name: Verify installation for a real non-sudo account
         if: runner.os == 'Linux'
         run: bash scripts/test-install-for-user-live.sh
@@ -133,6 +151,7 @@ jobs:
           bash -n "$test_home/.local/bin/dotconfig"
           "$test_home/.local/bin/dotconfig" --help | grep -q '^  sync '
           "$test_home/.local/bin/dotconfig" --help | grep -q '^  bootstrap '
+          "$test_home/.local/bin/dotconfig" --help | grep -q '^  machine '
           grep -Eq '^[0-9a-f]{40}$' versions/oh-my-zsh
 
           remote_repo="$(mktemp -d)"
