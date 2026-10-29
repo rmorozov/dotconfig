@@ -15,6 +15,7 @@ import pwd
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 LABELS = {"unchecked": "not checked", "failed": "check failed"}
@@ -112,6 +113,7 @@ class Machine:
         self.kernel_entries = None
         self.hinted = False
         self.journal_failures = set()
+        self.free_kib = {}
 
     def path(self, relative):
         return self.root / relative
@@ -654,6 +656,7 @@ KERNEL_RULES = (
     ("apparmor", "info", "AppArmor denied access", r'apparmor="DENIED"'),
     ("usb", "info", "USB devices failed to enumerate",
      r"usb \S+: (device descriptor read|device not accepting address|unable to enumerate|can't set config)"),
+    ("files", "warning", "the kernel ran out of file handles (fs.file-max)", r"VFS: file-max limit \d+ reached"),
     ("acpi", "info", "ACPI firmware errors (usually harmless BIOS bugs)", r"ACPI (BIOS )?(Error|Warning)"),
 )
 KERNEL_PATTERNS = tuple((key, level, title, re.compile(pattern)) for key, level, title, pattern in KERNEL_RULES)
@@ -737,7 +740,9 @@ def kernel_detail(key, lines):
 
 # --- Storage and memory ----------------------------------------------------------------------------------------
 
-SKIP_FS = ("tmpfs", "devtmpfs", "squashfs", "overlay", "efivarfs", "ramfs", "fuse.snapfuse", "nsfs", "fuse.portal")
+SKIP_FS = ("devtmpfs", "squashfs", "overlay", "efivarfs", "ramfs", "fuse.snapfuse", "nsfs", "fuse.portal")
+# A full tmpfs here breaks logins, sockets, shared memory or temporary files even when every disk has room.
+TMPFS_WATCHED = re.compile(r"^(/run|/run/user/\d+|/run/lock|/dev/shm|/tmp|/var/tmp)$")
 
 
 def check_storage(machine):
@@ -747,12 +752,17 @@ def check_storage(machine):
         if result is None or result.returncode not in (0, 1):
             say("failed", failure("df", result))
             return
-        full = []
+        full, tmpfs = [], set()
         for line in result.stdout.splitlines()[1:]:
             parts = line.split()
-            if len(parts) < 7 or parts[1] in SKIP_FS or parts[6].startswith("/snap/"):
+            if len(parts) < 7 or parts[1] in SKIP_FS or parts[6].startswith("/snap/") or \
+                    (parts[1] == "tmpfs" and not TMPFS_WATCHED.match(parts[6])):
                 continue
             used = parts[5].rstrip("%")
+            if parts[1] == "tmpfs":
+                tmpfs.add(parts[6])
+            if not inodes and parts[4].isdigit():
+                machine.free_kib[parts[6]] = int(parts[4])
             if used.isdigit() and int(used) >= 80:
                 full.append((int(used), parts[6], parts[4]))
         for used, mount, free in sorted(full, reverse=True):
@@ -763,7 +773,8 @@ def check_storage(machine):
                 free_text = f"{int(free) / 1024 / 1024:.1f} GiB free"
             else:
                 free_text = f"{int(free) // 1024} MiB free"
-            say("warning" if used >= 90 else "info", f"{mount}: {used}% of {what} used ({free_text})")
+            memory = " in memory (tmpfs)" if mount in tmpfs else ""
+            say("warning" if used >= 90 else "info", f"{mount}: {used}% of {what}{memory} used ({free_text})")
         if not full and not inodes:
             say("ok", "all filesystems have at least 20% space free")
     mounts = machine.read("proc/self/mounts") or ""
@@ -772,7 +783,34 @@ def check_storage(machine):
         if len(parts) >= 4 and parts[1] in ("/", "/home", "/var", "/boot", "/boot/efi") and \
                 "ro" in parts[3].split(","):
             say("warning", f"{parts[1]} is mounted read-only; the kernel may have remounted it after errors")
+    quotas(machine)
     smart(machine)
+
+
+def quotas(machine):
+    """Disk quotas of the invoking account: a user over quota cannot write even on a filesystem with room."""
+    command = ["quota", "-w", "-v"] + (["-u", machine.user] if machine.privileged and machine.user else [])
+    result = run(command)
+    if result is None:
+        return
+    # quota exits 1 when a limit is exceeded, which the table below shows.
+    if not broken("disk quotas", "quota", result, ok=(0, 1)):
+        return
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or not parts[0].startswith("/"):
+            continue
+        for what, offset in (("space", 1), ("files", 5 if len(parts) >= 8 else 4)):
+            values = parts[offset:offset + 3]
+            if len(values) < 3:
+                continue
+            used, soft, hard = (re.sub(r"[^\d]", "", value) or "0" for value in values)
+            over = values[0].endswith("*")
+            limit = int(hard) or int(soft)
+            if over or (limit and int(used) * 100 // limit >= 90):
+                say("warning", f"quota for {machine.user or 'this account'} on {parts[0]}: {what} "
+                               f"{'over its soft limit' if over else 'at ' + str(int(used) * 100 // limit) + '% of its limit'}"
+                               "; writes there will fail at the hard limit")
 
 
 def smart(machine):
@@ -791,13 +829,19 @@ def smart(machine):
         device = words[0] if words else ""
         if not device.startswith("/dev/"):
             continue
-        result = run(["smartctl", "-H", "-j"] + words[1:] + [device])
+        result = run(["smartctl", "-H", "-A", "-j"] + words[1:] + [device])
         try:
-            passed = json.loads(result.stdout).get("smart_status", {}).get("passed")
+            report = json.loads(result.stdout)
+            passed = report.get("smart_status", {}).get("passed")
         except (ValueError, AttributeError):
-            passed = None
-        if passed is True:
+            report, passed = {}, None
+        details = smart_details(report)
+        for level, text in details:
+            say(level, f"{device}: {text}")
+        if passed is True and not any(level == "warning" for level, _ in details):
             say("ok", f"{device}: SMART health passed")
+        elif passed is True:
+            say("info", f"{device}: overall SMART health still reads passed; the indicators above matter more")
         elif passed is False:
             say("warning", f"{device}: SMART health FAILED; back up now and see: sudo smartctl -a {device}")
         elif result is not None and result.returncode & 3:
@@ -805,6 +849,42 @@ def smart(machine):
             say("failed", f"{device}: SMART health: {failure('smartctl', result)}")
         else:
             say("unchecked", f"{device}: does not report SMART health ({failure('smartctl', result)})")
+
+
+NVME_WARNINGS = {0: "spare capacity below threshold", 1: "temperature out of range",
+                 2: "reliability degraded by media or internal errors", 3: "media switched to read-only",
+                 4: "volatile memory backup failed", 5: "persistent memory region read-only"}
+ATA_ATTRIBUTES = {5: ("warning", "reallocated sectors"), 187: ("warning", "uncorrectable errors reported"),
+                  196: ("warning", "reallocation events"), 197: ("warning", "sectors pending reallocation"),
+                  198: ("warning", "offline uncorrectable sectors"),
+                  199: ("info", "interface CRC errors (often a cable or connector)")}
+
+
+def smart_details(report):
+    """Indicators that fail long before the overall SMART verdict does, as (level, text)."""
+    details = []
+    nvme = report.get("nvme_smart_health_information_log") or {}
+    if nvme:
+        critical = int(nvme.get("critical_warning") or 0)
+        for bit, text in NVME_WARNINGS.items():
+            if critical >> bit & 1:
+                details.append(("warning", f"NVMe critical warning: {text}"))
+        used = nvme.get("percentage_used")
+        if isinstance(used, int) and used >= 80:
+            details.append(("warning" if used >= 100 else "info", f"{used}% of its rated endurance used"))
+        spare, threshold = nvme.get("available_spare"), nvme.get("available_spare_threshold")
+        if isinstance(spare, int) and isinstance(threshold, int) and spare <= threshold + 10:
+            details.append(("warning", f"available spare {spare}% (threshold {threshold}%)"))
+        if nvme.get("media_errors"):
+            details.append(("warning", f"{nvme['media_errors']} media and data integrity errors"))
+        if nvme.get("num_err_log_entries"):
+            details.append(("info", f"{nvme['num_err_log_entries']} error log entries (often harmless driver probes)"))
+    for attribute in (report.get("ata_smart_attributes") or {}).get("table", []):
+        known = ATA_ATTRIBUTES.get(attribute.get("id"))
+        raw = (attribute.get("raw") or {}).get("value")
+        if known and isinstance(raw, int) and raw > 0:
+            details.append((known[0], f"{raw} {known[1]}"))
+    return details
 
 
 def check_memory(machine):
@@ -833,6 +913,62 @@ def check_memory(machine):
     if oomd:
         say("warning", f"systemd-oomd killed {plural(len(oomd), 'unit')} for memory pressure this boot")
         print(f"    e.g. {clean(oomd[-1]['MESSAGE'], 160)}")
+
+
+def check_load(machine):
+    """Stalls and exhausted limits that leave memory looking fine: CPU and I/O pressure, cgroup memory and task
+    limits, and the kernel file and process tables. Busy alone is not a fault; waiting is."""
+    section("Load and limits")
+    for resource, line, warn, note in (("cpu", "some", 40, 20), ("io", "full", 10, 5)):
+        matched = re.search(rf"^{line} avg10=[\d.]+ avg60=[\d.]+ avg300=([\d.]+)",
+                            machine.read(f"proc/pressure/{resource}") or "", re.M)
+        if matched and float(matched.group(1)) >= note:
+            stalled = "runnable tasks waited for a CPU" if resource == "cpu" else "all non-idle tasks waited for I/O"
+            say("warning" if float(matched.group(1)) >= warn else "info",
+                f"{stalled} {matched.group(1)}% of the last 5 minutes")
+    found = False
+    for events in sorted(glob.glob(str(machine.path("sys/fs/cgroup/**/memory.events")), recursive=True)):
+        found = True
+        counts = cgroup_counts(events)
+        unit = cgroup_name(machine, events)
+        if counts.get("oom_kill", "0") != "0":
+            say("warning", f"{unit}: the kernel killed {plural(int(counts['oom_kill']), 'process')} at its memory "
+                           "limit (MemoryMax)")
+        elif counts.get("max", "0") != "0":
+            say("info", f"{unit} reached its memory limit {plural(int(counts['max']), 'time')}")
+    for events in sorted(glob.glob(str(machine.path("sys/fs/cgroup/**/pids.events")), recursive=True)):
+        counts = cgroup_counts(events)
+        if counts.get("max", "0") != "0":
+            say("warning", f"{cgroup_name(machine, events)}: {plural(int(counts['max']), 'process start')} refused "
+                           "at its task limit (TasksMax)")
+    if not found and machine.path("sys/fs/cgroup").is_dir():
+        say("info", "no cgroup memory accounting found")
+    files = (machine.read("proc/sys/fs/file-nr") or "").split()
+    if len(files) == 3 and files[0].isdigit() and files[2].isdigit() and int(files[2]):
+        used = int(files[0]) * 100 // int(files[2])
+        if used >= 80:
+            say("warning", f"{used}% of the kernel file handle table (fs.file-max) in use")
+    tasks = (machine.read("proc/loadavg") or "").split()
+    limit = min(int(value) for value in ((machine.read("proc/sys/kernel/pid_max") or "").strip(),
+                                         (machine.read("proc/sys/kernel/threads-max") or "").strip(), "4194304")
+                if value.isdigit())
+    if len(tasks) >= 4 and "/" in tasks[3] and tasks[3].split("/")[1].isdigit():
+        used = int(tasks[3].split("/")[1]) * 100 // limit
+        if used >= 80:
+            say("warning", f"{used}% of the process and thread limit in use")
+
+
+def cgroup_counts(path):
+    try:
+        return dict(line.split() for line in Path(path).read_text().splitlines() if len(line.split()) == 2)
+    except OSError:
+        return {}
+
+
+def cgroup_name(machine, path):
+    """The unit or slice a cgroup file belongs to, like system.slice/backupd.service."""
+    relative = Path(path).parent.relative_to(machine.path("sys/fs/cgroup"))
+    return str(relative) or "the root cgroup"
 
 
 # --- Network, time, and domain login ---------------------------------------------------------------------------
@@ -945,6 +1081,7 @@ def check_packages(machine):
         say("ok", "AppArmor is enabled")
     elif enabled:
         say("warning", "AppArmor is disabled; Ubuntu snaps and confined services rely on it")
+    check_readiness(machine)
     check_history(machine)
     if not machine.privileged:
         say("unchecked", "AppArmor profiles, firewall, and unattended-upgrades log need root; run: "
@@ -976,6 +1113,64 @@ def check_packages(machine):
             print(f"    e.g. {clean(problems[-1], 160)}")
         else:
             say("ok", "unattended-upgrades logged no errors since its log was rotated")
+
+
+def check_readiness(machine):
+    """Whether updates still arrive and the next boot has what it needs; package consistency alone shows neither."""
+    now = time.time()
+    uptime = (machine.read("proc/uptime") or "").split()
+    # The daily jobs run within hours of boot, so a machine just back from days powered off is stale but fine.
+    settled = not uptime or float(uptime[0]) >= 86400
+    lists = glob.glob(str(machine.path("var/lib/apt/lists/*_InRelease"))) + \
+        glob.glob(str(machine.path("var/lib/apt/lists/*_Release")))
+    if lists:
+        age = (now - max(os.path.getmtime(path) for path in lists)) / 86400
+        if age >= 7:
+            say("warning" if settled else "info", f"APT package lists are {age:.0f} days old; "
+                + ("refreshes are failing or disabled (see: systemctl status apt-daily.service)" if settled
+                   else "the daily refresh runs within hours of boot"))
+    refresh = [e for e in machine.journal("_SYSTEMD_UNIT=apt-daily.service", "-p", "0..4") or []
+               if re.search(r"Failed to fetch|Some index files failed|Temporary failure resolving|"
+                            r"Could not (connect|resolve)|NO_PUBKEY|is not signed", e["MESSAGE"])]
+    if refresh:
+        say("warning", f"the daily APT refresh failed to fetch {plural(len(refresh), 'time')} this boot")
+        print(f"    e.g. {clean(refresh[-1]['MESSAGE'], 160)}")
+    periodic = machine.read("etc/apt/apt.conf.d/20auto-upgrades") or ""
+    stamp = machine.path("var/lib/apt/periodic/unattended-upgrades-stamp")
+    if re.search(r'Unattended-Upgrade\s+"0"', periodic):
+        say("info", "unattended upgrades are disabled (/etc/apt/apt.conf.d/20auto-upgrades)")
+    elif stamp.exists() and (now - stamp.stat().st_mtime) / 86400 >= 3:
+        say("warning" if settled else "info",
+            f"unattended upgrades last ran {(now - stamp.stat().st_mtime) / 86400:.0f} days ago; "
+            + ("security updates are not being applied (see: systemctl status apt-daily-upgrade.timer)" if settled
+               else "they run within hours of boot"))
+    kernels = sorted(Path(path).name[len("vmlinuz-"):] for path in glob.glob(str(machine.path("boot/vmlinuz-*"))))
+    dkms = run(["dkms", "status"])
+    if kernels and broken("DKMS modules", "dkms status", dkms):
+        built = {}
+        for line in dkms.stdout.splitlines():
+            matched = re.match(r"^([^,/\s]+)[/,]\s*([^,\s]+)(?:,\s*([^,\s]+))?.*:\s*(\S+)", line.strip())
+            if matched:
+                name, kernel, state = matched.group(1), matched.group(3), matched.group(4)
+                built.setdefault(name, {})
+                if kernel:
+                    built[name][kernel] = state
+        for name, states in sorted(built.items()):
+            missing = [kernel for kernel in kernels if states.get(kernel) != "installed"]
+            if missing:
+                say("warning", f"DKMS module {name} is not installed for kernel {', '.join(missing)}; that kernel "
+                               f"boots without it (see: dkms status, sudo dkms autoinstall -k {missing[-1]})")
+    if "/boot" in machine.free_kib and kernels:
+        need = (largest(machine, "boot/vmlinuz-*") + largest(machine, "boot/initrd.img-*")) // 1024
+        if need and machine.free_kib["/boot"] < need * 1.2:
+            say("warning", f"/boot has {machine.free_kib['/boot'] // 1024} MiB free but a kernel and its initrd "
+                           f"take about {need // 1024} MiB; the next kernel update may fail "
+                           "(sudo apt autoremove --purge removes old kernels)")
+
+
+def largest(machine, pattern):
+    sizes = [os.path.getsize(path) for path in glob.glob(str(machine.path(pattern)))]
+    return max(sizes) if sizes else 0
 
 
 def check_history(machine):
@@ -1067,6 +1262,7 @@ def main():
     check_kernel(machine, args.examples)
     check_storage(machine)
     check_memory(machine)
+    check_load(machine)
     check_network(machine)
     check_packages(machine)
     check_hardware(machine)

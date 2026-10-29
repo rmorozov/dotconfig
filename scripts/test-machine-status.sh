@@ -14,7 +14,7 @@ mkdir -p "$root/etc/sssd" "$root/proc/sys/kernel" "$root/proc/self" "$root/proc/
 
 printf 'PRETTY_NAME="Ubuntu 26.04.1 LTS"\nID=ubuntu\nVERSION_ID="26.04"\n' > "$root/etc/os-release"
 printf '6.20.0-14-generic\n' > "$root/proc/sys/kernel/osrelease"
-printf '5400.25 20000.00\n' > "$root/proc/uptime"
+printf '95400.25 20000.00\n' > "$root/proc/uptime"
 printf '12928\n' > "$root/proc/sys/kernel/tainted"
 printf '/dev/nvme0n1p2 / ext4 ro,relatime 0 0\n/dev/nvme0n1p1 /boot/efi vfat rw 0 0\n' > "$root/proc/self/mounts"
 printf 'MemTotal: 16000000 kB\nMemAvailable: 1200000 kB\nSwapTotal: 4000000 kB\nSwapFree: 1000000 kB\n' \
@@ -40,6 +40,41 @@ printf 'x86_pkg_temp\n' > "$root/sys/class/thermal/thermal_zone0/type"
 printf '[sssd]\ndomains = corp.example\nservices = nss, pam\n\n[domain/corp.example]\nid_provider = ad\n' \
     > "$root/etc/sssd/sssd.conf"
 chmod 600 "$root/etc/sssd/sssd.conf"
+
+# Update and next-boot readiness: stale lists, a stalled unattended-upgrades stamp, two kernels, a nearly full /boot.
+# Load and limits: CPU and I/O pressure, cgroup memory and task limit events, a nearly full file table.
+python3 - "$root" <<'EOF'
+import os, sys, time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+def write(relative, text="", days_old=0, size=0):
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as handle:
+        handle.write(text)
+        if size:
+            handle.truncate(size)
+    stamp = time.time() - days_old * 86400
+    os.utime(path, (stamp, stamp))
+
+write("var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_resolute_InRelease", days_old=10)
+write("var/lib/apt/periodic/unattended-upgrades-stamp", days_old=5)
+write("etc/apt/apt.conf.d/20auto-upgrades", 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n')
+for kernel in ("6.20.0-14-generic", "6.20.0-15-generic"):
+    write(f"boot/vmlinuz-{kernel}", size=15 * 1024 * 1024)
+write("boot/initrd.img-6.20.0-14-generic", size=90 * 1024 * 1024)
+write("proc/pressure/cpu", "some avg10=50.00 avg60=45.00 avg300=42.00 total=1\n")
+write("proc/pressure/io", "some avg10=9.00 avg60=8.00 avg300=7.00 total=1\nfull avg10=6.00 avg60=6.00 avg300=6.00 total=1\n")
+write("sys/fs/cgroup/system.slice/backupd.service/memory.events", "low 0\nhigh 0\nmax 4\noom 1\noom_kill 1\n")
+write("sys/fs/cgroup/system.slice/cups.service/memory.events", "low 0\nhigh 0\nmax 2\noom 0\noom_kill 0\n")
+write("sys/fs/cgroup/system.slice/cups.service/pids.events", "max 0\n")
+write("sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build.scope/pids.events", "max 3\n")
+write("proc/sys/fs/file-nr", "900000\t0\t1000000\n")
+write("proc/loadavg", "0.50 0.40 0.30 2/1200 9999\n")
+write("proc/sys/kernel/pid_max", "4194304\n")
+write("proc/sys/kernel/threads-max", "126000\n")
+EOF
 
 # A journal for this boot (0) and the one before (-1), which ended mid-session without a shutdown.
 python3 - "$test_dir/journal.json" <<'EOF'
@@ -99,6 +134,9 @@ log(0, 211, "backupd.service: Main process exited, code=exited, status=1/FAILURE
 log(0, 12, "refused.service: Service has no ExecStart=, ExecStop=, or SuccessAction=. Refusing.", PRIORITY=3, _PID=1)
 log(0, 13, "/etc/systemd/system/odd.service:5: Unknown key name 'Foo' in section 'Service', ignoring.", PRIORITY=4,
     _PID=1)
+log(0, 250, "VFS: file-max limit 1000000 reached", _TRANSPORT="kernel", PRIORITY=4)
+log(0, 260, "W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/resolute/InRelease  Temporary failure "
+    "resolving 'archive.ubuntu.com'", _SYSTEMD_UNIT="apt-daily.service", PRIORITY=4, SYSLOG_IDENTIFIER="apt.systemd.daily")
 log(0, 300, "kernel panic in compositor", SYSLOG_IDENTIFIER="gnome-shell", PRIORITY=2, _UID=1000)
 log(0, 301, "Process 5555 (gnome-shell) of user 1000 dumped core.", MESSAGE_ID="fc2e22bc6ee647b6b90729ab34a250b1",
     COREDUMP_COMM="gnome-shell", PRIORITY=2, SYSLOG_IDENTIFIER="systemd-coredump")
@@ -216,6 +254,9 @@ else
     printf '/dev/nvme0n1p1 vfat 1000000 850000 150000 85%% /boot/efi\n'
     printf '/dev/loop3 squashfs 100 100 0 100%% /snap/core/1\n'
     printf 'tmpfs tmpfs 100 99 1 99%% /run\n'
+    printf 'tmpfs tmpfs 1000 500 500 50%% /dev/shm\n'
+    printf 'tmpfs tmpfs 100 99 1 99%% /sys/fs/cgroup\n'
+    printf '/dev/nvme0n1p3 ext4 1000000 900000 100000 90%% /boot\n'
 fi
 EOF
 cat > "$stubs/nmcli" <<'EOF'
@@ -228,10 +269,20 @@ EOF
 cat > "$stubs/smartctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-    --scan) echo "/dev/nvme0 -d nvme # /dev/nvme0, NVMe device" ;;
-    *) echo '{"smart_status": {"passed": false}}' ;;
+    --scan) printf '/dev/nvme0 -d nvme # /dev/nvme0, NVMe device\n/dev/sda -d sat # /dev/sda, ATA device\n' ;;
+    *"-d nvme /dev/nvme0") echo '{"smart_status": {"passed": false}, "nvme_smart_health_information_log": {"critical_warning": 4, "percentage_used": 97, "available_spare": 12, "available_spare_threshold": 10, "media_errors": 3, "num_err_log_entries": 40}}' ;;
+    *"-d sat /dev/sda") echo '{"smart_status": {"passed": true}, "ata_smart_attributes": {"table": [{"id": 5, "raw": {"value": 12}}, {"id": 9, "raw": {"value": 5000}}, {"id": 199, "raw": {"value": 2}}]}}' ;;
+    *) echo "unexpected smartctl $*" >&2; exit 1 ;;
 esac
 EOF
+cat > "$stubs/quota" <<'EOF'
+#!/usr/bin/env bash
+echo "Disk quotas for user alice@corp.example (uid 1000):"
+echo "     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace"
+echo " /dev/nvme0n1p4  950000*  900000 1000000  6days     100       0       0"
+exit 1
+EOF
+printf '#!/usr/bin/env bash\nprintf "nvidia/580.95, 6.20.0-14-generic, x86_64: installed\\nnvidia/580.95: added\\n"\n' > "$stubs/dkms"
 cat > "$stubs/snap" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -325,7 +376,32 @@ check '^warning: /: 95% of inodes used (50 inodes left)'
 check '^warning: / is mounted read-only'
 check '^warning: /dev/nvme0: SMART health FAILED'
 refute '/snap/core'
-refute '/run:'
+check '^warning: /run: 99% of space in memory (tmpfs) used'
+refute '/dev/shm:'
+refute '/sys/fs/cgroup:'
+check '^warning: quota for alice@corp.example on /dev/nvme0n1p4: space over its soft limit'
+check '^warning: /dev/nvme0: NVMe critical warning: reliability degraded by media or internal errors'
+check '^info: /dev/nvme0: 97% of its rated endurance used'
+check '^warning: /dev/nvme0: available spare 12% (threshold 10%)'
+check '^warning: /dev/nvme0: 3 media and data integrity errors'
+check '^info: /dev/nvme0: 40 error log entries'
+check '^warning: /dev/sda: 12 reallocated sectors'
+check '^info: /dev/sda: 2 interface CRC errors'
+check '^info: /dev/sda: overall SMART health still reads passed'
+refute 'unexpected smartctl'
+check '^warning: runnable tasks waited for a CPU 42.00% of the last 5 minutes'
+check '^info: all non-idle tasks waited for I/O 6.00% of the last 5 minutes'
+check '^warning: system.slice/backupd.service: the kernel killed 1 process at its memory limit (MemoryMax)'
+check '^info: system.slice/cups.service reached its memory limit 2 times'
+check '^warning: user.slice/user-1000.slice/user@1000.service/app.slice/build.scope: 3 process starts refused at its task limit (TasksMax)'
+check '^warning: 90% of the kernel file handle table (fs.file-max) in use'
+check '^warning: the kernel ran out of file handles (fs.file-max) (1 time)'
+refute 'process and thread limit'
+check '^warning: APT package lists are 10 days old'
+check '^warning: the daily APT refresh failed to fetch 1 time this boot'
+check '^warning: unattended upgrades last ran 5 days ago'
+check '^warning: DKMS module nvidia is not installed for kernel 6.20.0-15-generic; that kernel boots without it'
+check '^warning: /boot has 97 MiB free but a kernel and its initrd take about 105 MiB'
 check '^warning: 7% of 15.3 GiB memory available'
 check '^info: 75% of swap used'
 check '^warning: processes stalled on memory 6.50% of the last 5 minutes'
@@ -336,7 +412,7 @@ check '^info: DNS servers: 10.0.0.1, 10.8.0.53'
 check '^warning: clock not synchronized with NTP; Kerberos refuses tickets'
 check '^warning: sssd is inactive; domain logins fail'
 check '^  dotconfig creds status:'
-check '^  dotconfig creds check-logs --days 1:'
+check '^  dotconfig creds check-logs --days 2:'
 check '^warning: dpkg reports half-installed or unconfigured packages (libfoo1)'
 refute 'systemd-coredump: '
 check '^info: 12 package updates pending, 3 of them security updates'
@@ -385,6 +461,13 @@ check '^info: no earlier boot in the journal'
 check '^info: no graphical or console login recorded in this boot'
 refute 'slowest units this boot'
 
+# Within a day of boot, stale lists and an old unattended-upgrades stamp are expected: the daily jobs have not run yet.
+printf '3600.00 1000.00\n' > "$root/proc/uptime"
+run_status --sudo
+check '^info: APT package lists are 10 days old; the daily refresh runs within hours of boot'
+check '^info: unattended upgrades last ran 5 days ago; they run within hours of boot'
+printf '95400.25 20000.00\n' > "$root/proc/uptime"
+
 # A diagnostic that is installed but fails, and a delegated credential check that times out, leave the
 # assessment incomplete instead of reading as healthy.
 cp "$stubs/timedatectl" "$test_dir/timedatectl"
@@ -394,7 +477,7 @@ run_status --sudo
 unset DOTCONFIG_MACHINE_CREDS_TIMEOUT
 check '^check failed: clock synchronization: timedatectl exited 1: Failed to query server: Connection timed out'
 check '^check failed: dotconfig creds status did not finish within 0.01 s; domain login health is not assessed'
-check '^check failed: dotconfig creds check-logs --days 1 did not finish within 0.01 s'
+check '^check failed: dotconfig creds check-logs --days 2 did not finish within 0.01 s'
 check '^Summary: problems found: [0-9]* warnings; assessment incomplete: 3 checks failed$'
 cp "$test_dir/timedatectl" "$stubs/timedatectl"
 
