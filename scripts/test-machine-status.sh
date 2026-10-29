@@ -881,7 +881,10 @@ export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1
 # Probes take the route of each inspected environment and name the stage that failed. The fake proxy splits its
 # answer across writes, so a reader that stops at the first one misreads it; in tunnel mode it then serves TLS
 # with a certificate only one environment trusts.
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=localhost \
+# The name goes in subjectAltName: verifiers need not fall back to the common name (macOS builds do not).
+printf '[req]\ndistinguished_name = dn\nx509_extensions = ext\n[dn]\n[ext]\nsubjectAltName = DNS:localhost\nbasicConstraints = critical,CA:TRUE\n' \
+    > "$test_dir/tls.cnf"
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=localhost -config "$test_dir/tls.cnf" \
     -keyout "$test_dir/tls.key" -out "$test_dir/tls.pem" > /dev/null 2>&1
 mkdir -p "$root/etc/ssl"
 cp "$test_dir/tls.pem" "$root/etc/ssl/test-ca.pem"
