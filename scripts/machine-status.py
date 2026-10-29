@@ -14,10 +14,20 @@ import json
 import os
 import pwd
 import re
+import importlib.util
 import shutil
+import socket
+import ssl
+import stat
 import subprocess
+import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
+
+_spec = importlib.util.spec_from_file_location("credentials_inspect", Path(__file__).with_name("credentials-inspect.py"))
+inspector = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(inspector)
 
 LABELS = {"unchecked": "not checked", "failed": "check failed"}
 # A sensitive key, bare or quoted as in JSON or Python reprs, and its value: a quoted value up to its closing quote,
@@ -87,6 +97,13 @@ def seconds(usec):
     return f"{value:.1f} s"
 
 
+def owner_label(uid):
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f"uid {uid}"
+
+
 def plural(count, word):
     return f"{count} {word}" + ("" if count == 1 else "s")
 
@@ -101,8 +118,25 @@ def invoking_uid(user):
         return None
 
 
+def resolve_account(name):
+    """The account as NSS resolves it, the way login sees it: name, uid, gid, home, shell and all group ids.
+    Domain accounts come from SSSD here, so the home is never guessed from the login name."""
+    if not name:
+        return None
+    result = run(["getent", "passwd", name])
+    if result is None or result.returncode != 0:
+        return None
+    fields = result.stdout.strip().split("\n")[0].split(":")
+    if len(fields) < 7 or not fields[2].isdigit() or not fields[3].isdigit():
+        return None
+    groups = run(["id", "-G", fields[0]])
+    gids = tuple(int(g) for g in groups.stdout.split() if g.isdigit()) if groups and groups.returncode == 0 else ()
+    return {"name": fields[0], "uid": int(fields[2]), "gid": int(fields[3]), "home": fields[5], "shell": fields[6],
+            "gids": gids or (int(fields[3]),)}
+
+
 class Machine:
-    def __init__(self, root, boot):
+    def __init__(self, root, boot, target=None):
         self.root = Path(root)
         self.boot = boot
         self.system_journal = None
@@ -115,6 +149,15 @@ class Machine:
         self.hinted = False
         self.journal_failures = set()
         self.free_kib = {}
+        self.invoker = self.user
+        # The account the user-level checks inspect: --user, else whoever ran the command (through sudo or not).
+        self.target = resolve_account(target or self.user)
+        if self.target:
+            self.user, self.uid = self.target["name"], self.target["uid"]
+        elif target:
+            self.user, self.uid = target, None
+        # Without root, another account's files, manager and environment are out of reach.
+        self.reach = self.privileged or self.user == self.invoker
 
     def path(self, relative):
         return self.root / relative
@@ -998,6 +1041,440 @@ def cgroup_name(machine, path):
     return str(relative) or "the root cgroup"
 
 
+# --- Account and session ---------------------------------------------------------------------------------------
+
+def identity(machine):
+    target = machine.target
+    return inspector.Identity(target["name"], target["uid"], target["gids"], root=target["uid"] == 0, effective=True)
+
+
+def home_path(machine):
+    """The target's home as a path under the inspected root."""
+    return machine.path(machine.target["home"].lstrip("/"))
+
+
+def check_account(machine):
+    section(f"Account and session ({machine.user or 'unknown'})")
+    if not machine.target:
+        say("warning", f"NSS does not resolve {machine.user or 'the invoking account'}: logins and file ownership for "
+                       "it fail; for a domain account check sssd and the domain connection (getent passwd NAME)")
+        return
+    target = machine.target
+    say("info", f"uid {target['uid']}, home {target['home']}, shell {target['shell']}, "
+                f"{plural(len(target['gids']), 'group')}")
+    if not machine.reach:
+        say("unchecked", f"{target['name']} is another account; its session, files and environment need --sudo")
+        return
+    home = home_path(machine)
+    try:
+        st = home.stat()
+    except FileNotFoundError:
+        say("warning", f"home {target['home']} does not exist; a first login creates it only with pam_mkhomedir")
+        st = None
+    except OSError as exc:
+        say("failed", f"home {target['home']}: {exc.strerror or exc}")
+        st = None
+    if st is not None:
+        if st.st_uid != target["uid"]:
+            say("warning", f"home {target['home']} is owned by {owner_label(st.st_uid)}, not {target['name']}")
+        blocked = inspector.access_check(machine.root, home, st, identity(machine), 3)
+        if blocked:
+            level, where, doubt = blocked
+            where = "/" + str(where.relative_to(machine.root)) if where else target["home"]
+            say("unchecked" if level == "unchecked" else "warning",
+                f"{target['name']} cannot " + ("reach" if where != target["home"] else "write") + " their home: "
+                + (doubt if doubt else f"{where} denies it"))
+    sessions(machine)
+    xdg_overrides(machine, target)
+
+
+XDG_DEFAULTS = (("XDG_CONFIG_HOME", ".config"), ("XDG_DATA_HOME", ".local/share"), ("XDG_STATE_HOME", ".local/state"),
+                ("XDG_CACHE_HOME", ".cache"))
+
+
+def xdg_overrides(machine, target):
+    """dotconfig installs into the default XDG directories, so an override in the user manager hides its files."""
+    flags = machine.user_flags()
+    result = run(["systemctl"] + flags + ["show-environment"]) if flags else None
+    if result is None or result.returncode != 0:
+        return
+    values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    for key, default in XDG_DEFAULTS:
+        value = values.get(key)
+        if not value or value.rstrip("/") == f"{target['home'].rstrip('/')}/{default}":
+            continue
+        if not value.startswith("/"):
+            say("warning", f"{key}={value} is not absolute; the XDG specification says to ignore it, but some programs "
+                           "resolve it against their working directory")
+        elif not (machine.root / value.lstrip("/")).is_dir():
+            say("warning", f"{key}={value} does not exist; programs that honor it lose the files dotconfig put in "
+                           f"~/{default}")
+        else:
+            say("info", f"{key}={value} overrides ~/{default}; programs that honor it do not read what dotconfig "
+                        "installs there")
+
+
+def sessions(machine):
+    uid = machine.uid
+    user = run(["loginctl", "show-user", str(uid), "-p", "Sessions", "-p", "State", "-p", "Linger",
+                "-p", "RuntimePath"])
+    if user is None:
+        say("unchecked", "sessions: loginctl is not installed")
+        return
+    if user.returncode != 0:
+        say("info", f"{machine.user} has no session and no running user manager; per-session checks do not apply")
+        return
+    values = dict(line.split("=", 1) for line in user.stdout.splitlines() if "=" in line)
+    ids = values.get("Sessions", "").split()
+    for session in ids:
+        result = run(["loginctl", "show-session", session, "-p", "Type", "-p", "Class", "-p", "State",
+                      "-p", "Active", "-p", "Remote", "-p", "Service", "-p", "Seat"])
+        if not broken(f"session {session}", "loginctl show-session", result):
+            continue
+        info = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        where = f" on {info['Seat']}" if info.get("Seat") else ""
+        how = f" through {info['Service']}" if info.get("Service") else ""
+        remote = ", remote" if info.get("Remote") == "yes" else ""
+        say("info", f"session {session}: {info.get('Type', '?')} {info.get('Class', '?')} session{where}{how}, "
+                    f"{info.get('State', '?')}{remote}")
+    if not ids:
+        say("info", f"{machine.user} has no session; the user manager runs because of "
+                    + ("lingering" if values.get("Linger") == "yes" else "a recent logout"))
+    runtime = machine.path((values.get("RuntimePath") or f"/run/user/{uid}").lstrip("/"))
+    try:
+        st = runtime.stat()
+    except OSError:
+        say("warning", f"runtime directory {runtime} is missing; sockets, the user bus and Wayland cannot start")
+        return
+    if st.st_uid != uid or stat.S_IMODE(st.st_mode) != 0o700:
+        say("warning", f"runtime directory {runtime} has owner uid {st.st_uid} and mode "
+                       f"{stat.S_IMODE(st.st_mode):o}; it must be the user's own with mode 700")
+    if not (runtime / "bus").exists():
+        say("warning", "no user D-Bus socket; desktop apps and systemctl --user cannot reach the user manager")
+    manager = run(["systemctl", "is-active", f"user@{uid}.service"])
+    if manager is not None and manager.stdout.strip() not in ("active", "reloading"):
+        say("warning", f"user@{uid}.service is {manager.stdout.strip() or 'not running'}; see: "
+                       f"systemctl status user@{uid}.service")
+    if len(ids) > 1:
+        say("info", "one user manager and user bus serve all of these sessions; user-unit findings are per user, "
+                    "not per session")
+
+
+# --- Installation ----------------------------------------------------------------------------------------------
+
+CHEZMOI_PREFIXES = ("private_", "readonly_", "empty_", "executable_", "symlink_", "exact_", "create_", "modify_",
+                    "encrypted_", "literal_")
+
+
+def managed_targets():
+    """Home-relative paths of the files this repository manages, from chezmoi source names."""
+    repo = Path(__file__).resolve().parents[1]
+    source = repo / ((repo / ".chezmoiroot").read_text().strip() if (repo / ".chezmoiroot").exists() else "")
+    targets = []
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source)
+        if not path.is_file() or any(part.startswith(".chezmoi") for part in relative.parts):
+            continue
+        parts = []
+        for part in relative.parts:
+            changed = True
+            while changed:
+                changed = False
+                for prefix in CHEZMOI_PREFIXES:
+                    if part.startswith(prefix):
+                        part, changed = part[len(prefix):], True
+            if part.startswith("dot_"):
+                part = "." + part[4:]
+            parts.append(part[:-5] if part.endswith(".tmpl") else part)
+        targets.append(Path(*parts))
+    return targets
+
+
+def check_installation(machine):
+    if not machine.target:
+        return
+    section(f"Installation ({machine.user})")
+    if not machine.reach:
+        say("unchecked", f"{machine.user}'s files need --sudo")
+        return
+    home, uid, who = home_path(machine), machine.uid, identity(machine)
+    if not home.is_dir():
+        return
+    missing, foreign = [], []
+    for relative in managed_targets():
+        path = home / relative
+        if not os.path.lexists(path):
+            missing.append(str(relative))
+            continue
+        if path.is_symlink() and not path.exists():
+            say("warning", f"~/{relative} is a broken symlink")
+            continue
+        st = path.lstat()
+        if st.st_uid != uid:
+            foreign.append((str(relative), st.st_uid))
+        parent = path.parent
+        if parent != home and parent.stat().st_uid != uid:
+            foreign.append((str(relative.parent) + "/", parent.stat().st_uid))
+        blocked = inspector.access_check(machine.root, parent, parent.stat(), who, 3)
+        if blocked and blocked[0] == "warning":
+            say("warning", f"{machine.user} cannot replace ~/{relative}: its directory is not writable for them, so "
+                           "dotconfig apply fails")
+    for relative, owner in sorted(set(foreign)):
+        say("warning", f"~/{relative} is owned by {owner_label(owner)}, not "
+                       f"{machine.user}; updates as {machine.user} cannot replace it (sudo chown {machine.user} "
+                       f"~/{relative})")
+    if missing:
+        say("info", f"{plural(len(missing), 'managed file')} not applied yet: {', '.join(missing[:5])}"
+            + (" ..." if len(missing) > 5 else "") + "; see: dotconfig status")
+    elif not foreign:
+        say("ok", f"all {len(managed_targets())} managed files exist and belong to {machine.user}")
+    for directory in (".local/bin", ".config/dotconfig", ".config/zsh"):
+        for path in sorted((home / directory).glob("*")) if (home / directory).is_dir() else []:
+            if path.is_symlink() and not path.exists():
+                say("warning", f"~/{directory}/{path.name} is a broken symlink")
+    private = [home / ".zshrc.local"] + sorted(home.glob(".zshrc.*.local")) + \
+        sorted((home / ".config/dotconfig").glob("*.local"))
+    for path in private:
+        if path.is_file() and not path.is_symlink() and path.stat().st_mode & 0o077:
+            say("warning", f"~/{path.relative_to(home)} is readable or writable by other users; chmod 600 it")
+    repository(machine, home)
+    completions(machine, home)
+
+
+def repository(machine, home):
+    """Files in the dotconfig checkout that the account cannot rewrite, usually left by a sudo git command."""
+    repo = Path(__file__).resolve().parents[1]
+    if machine.root != Path("/"):
+        repo = home / ".local/share/chezmoi"
+    if not (repo / ".git").is_dir():
+        return
+    foreign, examples = 0, []
+    for count, path in enumerate((repo / ".git").rglob("*")):
+        if count > 50000:
+            break
+        try:
+            owner = path.lstat().st_uid
+        except OSError:
+            continue
+        if owner != machine.uid:
+            foreign += 1
+            if len(examples) < 2:
+                examples.append(str(path.relative_to(repo)))
+    if foreign:
+        say("warning", f"{plural(foreign, 'file')} in the dotconfig repository {'belongs' if foreign == 1 else 'belong'} to another account (often after "
+                       f"sudo git); git pull as {machine.user} fails on them, e.g. {', '.join(examples)}")
+
+
+def completions(machine, home):
+    """compaudit judges ownership against the account that runs it, so it runs as the target, never as root."""
+    omz = home / ".oh-my-zsh"
+    if not omz.is_dir():
+        return
+    script = Path(__file__).with_name("check-zsh-completions.sh")
+    command = ["bash", str(script), str(omz)]
+    if machine.privileged and machine.uid != 0 and machine.root == Path("/"):
+        command = ["runuser", "-u", machine.user, "--", "env", f"HOME={machine.target['home']}"] + command
+    elif machine.privileged and machine.root == Path("/"):
+        return
+    result = run(command, timeout=60)
+    if result is None:
+        say("unchecked", "Zsh completion permissions: bash or runuser is not installed")
+    elif result.returncode == 0:
+        say("ok", "Zsh completion directories pass compaudit")
+    elif "Zsh completion audit failed" in result.stderr:
+        paths = [line for line in result.stderr.splitlines() if line.startswith("/")]
+        say("warning", f"Zsh completion audit failed for {plural(len(paths), 'path')}"
+            + (f", e.g. {paths[0]}" if paths else "") + "; Zsh then asks before loading completions")
+    else:
+        say("failed", "Zsh completion audit: " + failure("check-zsh-completions.sh", result))
+
+
+# --- Proxy and TLS ---------------------------------------------------------------------------------------------
+
+PROXY_KEYS = ("http_proxy", "https_proxy", "no_proxy")
+CA_KEYS = ("SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO",
+           "NODE_EXTRA_CA_CERTS")
+DEFAULT_PROXY = "http://127.0.0.1:3128"
+
+
+def redact(url):
+    """A proxy URL without its credentials."""
+    try:
+        parts = urlsplit(url)
+        if parts.username or parts.password:
+            return parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]).geturl()
+    except ValueError:
+        return "<unparsable URL>"
+    return url
+
+
+def proxy_contexts(machine):
+    """(label, consequence, variables) for each environment a program of the target can inherit."""
+    contexts = []
+    if not machine.privileged and machine.user == machine.invoker:
+        contexts.append(("this shell", "commands run from this shell", dict(os.environ)))
+    flags = machine.user_flags() if machine.reach else None
+    result = run(["systemctl"] + flags + ["show-environment"]) if flags else None
+    if result is not None and result.returncode == 0:
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        contexts.append(("the user manager", "desktop apps and user services", values))
+    elif flags:
+        say("unchecked", "user manager environment: " + failure("systemctl show-environment", result))
+    environment = machine.read("etc/environment")
+    if environment is not None:
+        values = {}
+        for line in environment.splitlines():
+            matched = re.match(r"^\s*(?:export\s+)?(\w+)=(.*)$", line)
+            if matched:
+                values[matched.group(1)] = matched.group(2).strip().strip("\"'")
+        contexts.append(("/etc/environment", "new login sessions", values))
+    return contexts
+
+
+def check_proxy(machine, probes):
+    section("Proxy and TLS")
+    configured, endpoint = "unmanaged", DEFAULT_PROXY
+    if machine.target and machine.reach:
+        state = home_path(machine) / ".config/dotconfig"
+        mode = (state / "proxy.mode")
+        try:
+            configured = mode.read_text().strip() or "unmanaged"
+        except OSError:
+            pass
+        try:
+            local = (state / "proxy.local").read_text()
+            matched = re.search(r"https_proxy=[\"']?([^\"'\s]+)", local)
+            endpoint = matched.group(1) if matched else endpoint
+        except OSError:
+            pass
+        say("info", f"dotconfig proxy is {configured}" + (f" ({redact(endpoint)})" if configured == "on" else ""))
+    elif machine.target:
+        say("unchecked", f"{machine.user}'s proxy setting needs --sudo")
+    contexts = proxy_contexts(machine)
+    for label, consequence, values in contexts:
+        lower = {key: values.get(key) for key in PROXY_KEYS}
+        upper = {key: values.get(key.upper()) for key in PROXY_KEYS}
+        for key in ("http_proxy", "https_proxy"):
+            if lower[key] and upper[key] and lower[key] != upper[key]:
+                say("warning", f"{label}: {key}={redact(lower[key])} but {key.upper()}={redact(upper[key])}; tools "
+                               "that read different cases go to different proxies")
+        if lower["no_proxy"] and upper["no_proxy"] and lower["no_proxy"] != upper["no_proxy"]:
+            say("info", f"{label}: no_proxy and NO_PROXY differ, so bypasses depend on the tool")
+        https = lower["https_proxy"] or upper["https_proxy"]
+        if configured == "on" and not https:
+            say("warning", f"{label} has no https_proxy although dotconfig proxy is on: {consequence} connect "
+                           "directly and fail where only the proxy is allowed")
+        elif configured == "on" and https.rstrip("/") != endpoint.rstrip("/"):
+            say("warning", f"{label} uses proxy {redact(https)}, not the configured {redact(endpoint)}")
+        elif configured == "off" and https:
+            say("warning", f"{label} still sets https_proxy={redact(https)} although dotconfig proxy is off")
+        for key in CA_KEYS:
+            if values.get(key):
+                ca_file(machine, label, key, values[key])
+    if contexts:
+        say("info", "environments inspected: " + ", ".join(label for label, _, _ in contexts))
+    if configured == "on":
+        listener(endpoint)
+    for probe in probes:
+        probe_endpoint(probe, endpoint if configured == "on" else None, contexts)
+
+
+def ca_file(machine, label, key, value):
+    path = machine.path(value.lstrip("/"))
+    if not path.exists():
+        say("warning", f"{label}: {key}={value} does not exist; TLS fails for tools that use it")
+    elif machine.target:
+        blocked = inspector.access_check(machine.root, path, path.stat(), identity(machine), 4)
+        if blocked and blocked[0] == "warning":
+            say("warning", f"{label}: {key}={value} is not readable by {machine.user}")
+
+
+def listener(endpoint):
+    try:
+        parts = urlsplit(endpoint)
+        host, port = parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        say("warning", "the configured proxy URL cannot be parsed")
+        return
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        say("info", f"proxy {host}:{port} is remote and not contacted without --probe")
+        return
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            say("ok", f"a proxy listens on {host}:{port}")
+    except OSError as exc:
+        say("warning", f"nothing listens on {host}:{port} ({exc.strerror or exc}); with the proxy on, every proxied "
+                       "connection fails until the local proxy (Px, cntlm-gss) runs")
+
+
+def resolve(host, timeout=5):
+    """getaddrinfo with a deadline; (addresses, error)."""
+    found = {}
+
+    def lookup():
+        try:
+            found["addresses"] = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            found["error"] = exc
+    worker = threading.Thread(target=lookup, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return None, f"no answer within {timeout} s"
+    if "error" in found:
+        return None, str(found["error"])
+    return sorted({item[4][0] for item in found["addresses"]}), None
+
+
+def probe_endpoint(probe, proxy, contexts):
+    """DNS, TCP, proxy CONNECT and a verified TLS handshake, each bounded, so a failure names its stage."""
+    host, _, port = probe.rpartition(":") if probe.count(":") == 1 else (probe, "", "443")
+    port = int(port) if port.isdigit() else 443
+    name = f"probe {host}:{port}"
+    bypass = next((values.get("no_proxy") or values.get("NO_PROXY") for _, _, values in contexts
+                   if values.get("no_proxy") or values.get("NO_PROXY")), "")
+    if proxy and any(host == entry.strip().lstrip(".") or host.endswith("." + entry.strip().lstrip("."))
+                     for entry in bypass.split(",") if entry.strip()):
+        proxy = None
+    via = urlsplit(proxy) if proxy else None
+    connect_host, connect_port = (via.hostname, via.port or 80) if via else (host, port)
+    addresses, error = resolve(connect_host)
+    if error:
+        say("warning", f"{name}: DNS for {connect_host} failed ({error})")
+        return
+    try:
+        raw = socket.create_connection((connect_host, connect_port), timeout=5)
+    except OSError as exc:
+        say("warning", f"{name}: TCP connection to {connect_host}:{connect_port} failed ({exc.strerror or exc})")
+        return
+    with raw:
+        raw.settimeout(5)
+        if via:
+            try:
+                raw.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+                reply = raw.recv(4096).decode("latin-1", "replace")
+            except OSError as exc:
+                say("warning", f"{name}: the proxy did not answer CONNECT ({exc.strerror or exc})")
+                return
+            status = reply.split("\r\n", 1)[0]
+            code = status.split()[1] if len(status.split()) > 1 else "?"
+            if code != "200":
+                hint = {"407": "the proxy wants authentication: a Kerberos ticket (kinit) or its own credentials",
+                        "403": "the proxy policy refuses this destination",
+                        "502": "the proxy could not reach the destination"}.get(code, "the proxy refused the tunnel")
+                say("warning", f"{name}: proxy answered {clean(status, 80)}; {hint}")
+                return
+        context = ssl.create_default_context()
+        try:
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                say("ok", f"{name}: TLS verified ({tls.version()})" + (f" through proxy {via.hostname}" if via else ""))
+        except ssl.SSLCertVerificationError as exc:
+            say("warning", f"{name}: certificate not trusted here ({exc.verify_message}); hypotheses: a "
+                           "TLS-inspecting proxy whose CA is not installed, or a server misconfiguration")
+        except (ssl.SSLError, OSError) as exc:
+            say("warning", f"{name}: TLS handshake failed ({clean(str(exc), 120)})")
+
+
 # --- Network, time, and domain login ---------------------------------------------------------------------------
 
 def check_network(machine):
@@ -1314,12 +1791,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--boot", type=int, default=0, help="journal boot offset: 0 this boot, -1 the one before")
     parser.add_argument("--examples", type=int, default=1, help="log lines to quote per finding")
+    parser.add_argument("--user", help="account whose installation, session and environment are inspected")
+    parser.add_argument("--probe", action="append", default=[], metavar="HOST[:PORT]",
+                        help="also test DNS, connection, proxy and TLS to this endpoint (bounded, verification kept)")
     parser.add_argument("root", nargs="?", default="/")
     args = parser.parse_args()
-    machine = Machine(args.root, args.boot)
+    machine = Machine(args.root, args.boot, args.user)
     if args.boot != 0:
         print(f"Journal sections read boot {args.boot}; disk, memory, network, and unit state are current.")
     check_system(machine)
+    check_account(machine)
     check_timing(machine)
     check_services(machine)
     check_journal(machine, args.examples)
@@ -1328,6 +1809,8 @@ def main():
     check_memory(machine)
     check_load(machine)
     check_network(machine)
+    check_proxy(machine, args.probe)
+    check_installation(machine)
     check_packages(machine)
     check_hardware(machine)
     text, status = summary(COUNTS)
