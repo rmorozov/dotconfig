@@ -170,7 +170,7 @@ log(0, 400, "Killed /user.slice/user-1000.slice/app-code.scope due to memory pre
 log(0, 500, "Sync failed: network unreachable", SYSLOG_IDENTIFIER="sync-agent", PRIORITY=3,
     _SYSTEMD_USER_UNIT="sync-agent.service", _UID=1000)
 log(0, 502, "bob backup: destination full", SYSLOG_IDENTIFIER="bob-backup", _SYSTEMD_USER_UNIT="bob-backup.service",
-    _UID=1001)
+    _UID=4001)
 log(0, 501, "root decoy for sync-agent", SYSLOG_IDENTIFIER="sync-agent", _SYSTEMD_USER_UNIT="sync-agent.service",
     _UID=0)
 with open(sys.argv[1], "w") as handle:
@@ -332,7 +332,7 @@ cat > "$stubs/getent" <<EOF
 case "\$2" in
     alice@corp.example) echo "alice@corp.example:*:1000:1000:Alice:/home/alice:/bin/zsh" ;;
     carol) echo "carol:x:$me:$me:Carol:/home/carol-home:/bin/zsh" ;;
-    bob) echo "bob:x:1001:1001::/home/bob:/bin/bash" ;;
+    bob) echo "bob:x:4001:4001::/home/bob:/bin/bash" ;;
     *) exit 2 ;;
 esac
 EOF
@@ -341,14 +341,14 @@ cat > "$stubs/id" <<EOF
 case "\$*" in
     "-G alice@corp.example") echo "1000 27" ;;
     "-G carol") echo "$me 27" ;;
-    "-G bob") echo "1001" ;;
+    "-G bob") echo "4001" ;;
     *) exec "$real_id" "\$@" ;;
 esac
 EOF
 cat > "$stubs/loginctl" <<EOF
 #!/usr/bin/env bash
 case "\$1 \$2" in
-    "list-users "*) printf "1000 alice@corp.example no active\\n1001 bob yes lingering\\n" ;;
+    "list-users "*) printf "1000 alice@corp.example no active\\n4001 bob yes lingering\\n" ;;
     "show-user $me") printf "Sessions=4 7\\nState=active\\nLinger=no\\nRuntimePath=/run/user/$me\\n" ;;
     "show-user "*) echo "Failed to get user: User ID \$2 is not logged in or lingering" >&2; exit 1 ;;
     "show-session 4") printf "Type=wayland\\nClass=user\\nState=active\\nActive=yes\\nRemote=no\\nService=gdm-password\\nSeat=seat0\\n" ;;
@@ -412,7 +412,7 @@ check '^warning: sync-agent.service failed (Sync agent): it restarted too often 
 check '^    log: Sync failed: network unreachable'
 refute 'root decoy'
 check '^  user units of alice@corp.example (uid 1000):'
-check '^  user units of bob (uid 1001):'
+check '^  user units of bob (uid 4001):'
 check '^warning: bob-backup.service failed (Bob backup): its main process exited with an error, exited 2 (invalid arguments)'
 check '^    log: bob backup: destination full'
 check '^warning: broken.service did not load: bad-setting (org.freedesktop.systemd1.BadSetting'
