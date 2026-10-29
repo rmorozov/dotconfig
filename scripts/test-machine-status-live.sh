@@ -31,12 +31,27 @@ report() {
 
 id "$user" >/dev/null 2>&1 || sudo useradd --create-home --shell /bin/bash "$user"
 
+# Each failing process lives a moment after it logs: journald reads a sender's unit from its cgroup, and a process
+# that exits first leaves its lines without one.
 sudo systemd-run --unit=dotconfig-live-fail --description='dotconfig live failure' \
-    sh -c 'echo "live failure: cannot read /etc/dotconfig-live.conf" >&2; exit 3'
+    sh -c 'echo "live failure: cannot read /etc/dotconfig-live.conf" >&2; sleep 1; exit 3'
 printf '[Unit]\nDescription=dotconfig live bad setting\n[Service]\nType=simple\n' |
     sudo tee /etc/systemd/system/dotconfig-live-bad.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl start dotconfig-live-bad.service 2>/dev/null || :
+
+# Expectations: a required unit installed but never enabled, a condition that skips another, and a declared mount
+# that is absent while its directory is writable.
+printf '[Unit]\nDescription=dotconfig live required\n[Service]\nExecStart=/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n' |
+    sudo tee /etc/systemd/system/dotconfig-live-off.service > /dev/null
+printf '[Unit]\nDescription=dotconfig live skipped\nConditionPathExists=/nonexistent/dotconfig\n[Service]\nExecStart=/bin/true\n' |
+    sudo tee /etc/systemd/system/dotconfig-live-skip.service > /dev/null
+sudo systemctl daemon-reload
+sudo systemctl start dotconfig-live-skip.service
+sudo mkdir -p /etc/dotconfig /mnt/dotconfig-live
+sudo chmod 1777 /mnt/dotconfig-live
+printf 'require dotconfig-live-off.service\nrequire dotconfig-live-skip.service\nmount /mnt/dotconfig-live\n' |
+    sudo tee /etc/dotconfig/machine-expect > /dev/null
 
 for count in 1 2 3; do
     logger -p user.err -t dotconfig-live "injected journal error $count"
@@ -55,7 +70,7 @@ uid="$(id -u "$user")"
 sudo loginctl enable-linger "$user"
 sudo systemctl start "user@$uid.service"
 sudo systemd-run --user -M "$user@" --unit=dotconfig-live-user-fail \
-    sh -c 'echo "user failure: cannot reach sync server" >&2; exit 4'
+    sh -c 'echo "user failure: cannot reach sync server" >&2; sleep 1; exit 4'
 sleep 2
 
 report bash "$repo_root/scripts/machine.sh" status
@@ -76,6 +91,9 @@ check '    e.g. dotconfig-live: injected kernel error 3 (x3)'
 check "^info: $user logged in through login .*; user services started in "
 check "^warning: 1 failed password attempt through login before $user logged in"
 check '^ok: no half-installed packages'
+check '^warning: dotconfig-live-off.service is disabled, so it does not start at boot'
+check '^warning: dotconfig-live-skip.service was skipped: a start condition was not met'
+check '^warning: /mnt/dotconfig-live is expected to be mounted (/etc/dotconfig/machine-expect) but is not; its directory is writable'
 if grep -q '^not checked: .*needs root' "$out"; then
     echo 'The --sudo run still skipped root-only checks' >&2
     exit 1
