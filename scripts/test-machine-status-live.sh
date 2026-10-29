@@ -54,11 +54,13 @@ report bash "$repo_root/scripts/machine.sh" status
 report bash "$repo_root/scripts/machine.sh" status --sudo --examples 2
 
 check '^ok: Ubuntu 26.04'
-check '^warning: systemd reports the system degraded'
-check '^info: Startup finished in '
+# A fresh runner may still be starting, so either state is accepted.
+grep -Eq '^(warning: systemd reports the system degraded|info: systemd is still starting)' "$out" ||
+    { echo 'Missing: systemd state' >&2; exit 1; }
+grep -Eq '^info: (Startup finished in |boot has not finished yet)' "$out" || { echo 'Missing: startup time' >&2; exit 1; }
 check '^warning: dotconfig-live-fail.service failed (dotconfig live failure): its main process exited with an error, exited 3'
 check '    log: live failure: cannot read /etc/dotconfig-live.conf'
-check '^warning: dotconfig-live-bad.service did not load: bad-setting'
+check '^warning: dotconfig-live-bad.service was refused: Service has no ExecStart='
 check '^info: dotconfig-live: 3 errors'
 check '^warning: dotconfig-live-crit: 1 error (1 critical)'
 check '^warning: the kernel OOM killer ended processes .*dotconfig-live'

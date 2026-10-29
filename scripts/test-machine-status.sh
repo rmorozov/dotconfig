@@ -86,6 +86,9 @@ log(0, 210, "Connection to backup.corp.example failed; api_token=TokenMustNeverP
     PRIORITY=3, _SYSTEMD_UNIT="backupd.service")
 log(0, 211, "backupd.service: Main process exited, code=exited, status=1/FAILURE", _SYSTEMD_UNIT="init.scope",
     UNIT="backupd.service", PRIORITY=4, _PID=1)
+log(0, 12, "refused.service: Service has no ExecStart=, ExecStop=, or SuccessAction=. Refusing.", PRIORITY=3, _PID=1)
+log(0, 13, "/etc/systemd/system/odd.service:5: Unknown key name 'Foo' in section 'Service', ignoring.", PRIORITY=4,
+    _PID=1)
 log(0, 300, "kernel panic in compositor", SYSLOG_IDENTIFIER="gnome-shell", PRIORITY=2, _UID=1000)
 log(0, 301, "Process 5555 (gnome-shell) of user 1000 dumped core.", MESSAGE_ID="fc2e22bc6ee647b6b90729ab34a250b1",
     COREDUMP_COMM="gnome-shell", PRIORITY=2, SYSLOG_IDENTIFIER="systemd-coredump")
@@ -271,6 +274,8 @@ check '^warning: sync-agent.service failed (Sync agent): it restarted too often 
 check '^    log: Sync failed: network unreachable'
 check '^warning: broken.service did not load: bad-setting (org.freedesktop.systemd1.BadSetting'
 check '^warning: gone.service is active but its unit file is gone'
+check '^warning: refused.service was refused: Service has no ExecStart='
+check "^info: /etc/systemd/system/odd.service: 1 setting ignored, e.g. Unknown key name 'Foo'"
 check '^info: 1 system unit referenced but not installed (usually optional): plymouth-quit-wait.service'
 check '^warning: NetworkManager.service was restarted 4 times this boot'
 check '^info: pipewire.service was restarted 1 time this boot'

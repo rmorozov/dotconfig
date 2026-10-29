@@ -170,6 +170,7 @@ def check_system(machine):
         say("ok", "systemd reports the system running")
     elif state in ("starting", "initializing"):
         say("info", f"systemd is still {state}; boot has not finished")
+        pending_jobs()
     elif state == "degraded":
         say("warning", "systemd reports the system degraded: at least one unit failed (see Services)")
     else:
@@ -355,7 +356,8 @@ def check_services(machine):
             say("ok", f"no failed {scope} units")
         for unit in units:
             explain_failed(machine, unit, flag)
-        load_problems(scope, flag)
+        reported = unit_file_problems(machine) if scope == "system" else set()
+        load_problems(scope, flag, reported)
         restarts(scope, flag)
 
 
@@ -413,7 +415,43 @@ def unit_log(machine, unit, user):
     return [clean(e["MESSAGE"], 160) for e in chosen[-3:]]
 
 
-def load_problems(scope, flag):
+def pending_jobs():
+    """The start jobs that hold up the end of boot: the running ones are what the waiting ones wait for."""
+    result = run(["systemctl", "list-jobs", "--no-legend", "--plain", "--no-pager"])
+    if result is None or result.returncode != 0:
+        return
+    rows = [line.split() for line in result.stdout.splitlines() if len(line.split()) >= 4]
+    running = [row[1] for row in rows if row[3] == "running"]
+    if rows:
+        say("info", f"{plural(len(rows), 'job')} pending" + (", running: " + ", ".join(running[:6]) if running else ""))
+
+
+UNIT_FILE_PROBLEM = re.compile(r"^(/\S+?\.(?:service|socket|timer|mount|automount|path|target|slice|swap)):\d+: (.+)$|"
+                               r"^([\w@.\\:-]+\.(?:service|socket|timer|mount|automount|path|target|slice|swap)): "
+                               r"(.*(?:Refusing|bad unit file setting|fatal error|Unit configuration).*)$")
+
+
+def unit_file_problems(machine):
+    """Unit files systemd refused or only partly understood, from its own log: a unit with a bad setting is
+    unloaded again soon after, so list-units alone misses it."""
+    entries = [e for e in machine.journal("_PID=1", "-p", "0..4") or []]
+    files, refused = {}, {}
+    for entry in entries:
+        matched = UNIT_FILE_PROBLEM.match(entry["MESSAGE"])
+        if not matched:
+            continue
+        if matched.group(1):
+            files.setdefault(matched.group(1), []).append(matched.group(2))
+        else:
+            refused[matched.group(3)] = matched.group(4)
+    for unit, reason in sorted(refused.items()):
+        say("warning", f"{unit} was refused: {clean(reason, 160)}")
+    for path, problems in sorted(files.items()):
+        say("info", f"{path}: {plural(len(problems), 'setting')} ignored, e.g. {clean(problems[-1], 120)}")
+    return set(refused)
+
+
+def load_problems(scope, flag, reported=()):
     result = run(["systemctl"] + flag + ["list-units", "--all", "--no-legend", "--plain", "--no-pager",
                                          "--state=bad-setting,error,not-found"])
     if result is None or result.returncode != 0:
@@ -422,7 +460,7 @@ def load_problems(scope, flag):
     broken = [row[0] for row in rows if len(row) > 1 and row[1] in ("bad-setting", "error")]
     missing = [row[0] for row in rows if len(row) > 3 and row[1] == "not-found" and row[2] != "inactive"]
     absent = [row[0] for row in rows if len(row) > 1 and row[1] == "not-found" and row[0] not in missing]
-    for unit in broken:
+    for unit in [unit for unit in broken if unit not in reported]:
         props = (unit_properties(flag, [unit], ["LoadState", "LoadError"]) or [{}])[0]
         say("warning", f"{unit} did not load: {props.get('LoadState', 'error')}"
             + (f" ({props['LoadError']})" if props.get("LoadError") else "") + f"; run: systemd-analyze verify {unit}")
