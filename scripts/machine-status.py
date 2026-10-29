@@ -46,6 +46,8 @@ COREDUMP = "fc2e22bc6ee647b6b90729ab34a250b1"
 GRAPHICAL_PAM = re.compile(r"^(gdm-(?!launch-environment)\S+|login|sddm|lightdm)$")
 SLOW_LOGIN_SECONDS = 30
 CREDS_TIMEOUT = float(os.environ.get("DOTCONFIG_MACHINE_CREDS_TIMEOUT", "300"))
+# Resolving one account's groups longer than this makes every login, sudo and file-access check wait.
+SLOW_GROUPS = float(os.environ.get("DOTCONFIG_MACHINE_SLOW_GROUPS", "2"))
 
 
 def say(level, message):
@@ -131,10 +133,12 @@ def resolve_account(name):
     fields = result.stdout.strip().split("\n")[0].split(":")
     if len(fields) < 7 or not fields[2].isdigit() or not fields[3].isdigit():
         return None
+    started = time.monotonic()
     groups = run(["id", "-G", fields[0]])
+    took = time.monotonic() - started
     gids = tuple(int(g) for g in groups.stdout.split() if g.isdigit()) if groups and groups.returncode == 0 else ()
     return {"name": fields[0], "uid": int(fields[2]), "gid": int(fields[3]), "home": fields[5], "shell": fields[6],
-            "gids": gids or (int(fields[3]),)}
+            "gids": gids or (int(fields[3]),), "groups_took": took}
 
 
 class Machine:
@@ -2165,7 +2169,35 @@ def check_domain_login(machine, probe_domain):
             say("failed", f"authorization of {name}: {failure('sssctl user-checks', check)}")
         else:
             say("failed", f"authorization of {name}: sssctl user-checks printed no pam_acct_mgmt verdict")
+    lookup_cost(machine, name, domain_account)
     login_stages(machine, name)
+
+
+MEMCACHE_FULL = re.compile(r"mmap cache of type (\w+) is full")
+
+
+def lookup_cost(machine, name, domain_account):
+    """Slow identity lookups: every login, sudo and file-access check waits on them, and sssd_be burns CPU
+    expanding large nested groups."""
+    took = machine.target.get("groups_took", 0)
+    if domain_account and took > SLOW_GROUPS:
+        say("warning", f"resolving the groups of {name} took {took:.1f} s; sudo and logins wait that long each time "
+                       "the cache misses. Hypothesis: large nested domain groups; ignore_group_members = True in the "
+                       "[domain/...] section stops SSSD from fetching every member (see: time id -G " + name + ")")
+    full = {}
+    for entry in machine.journal("SYSLOG_IDENTIFIER=sssd_nss", "+", "_COMM=sssd_nss") or []:
+        matched = MEMCACHE_FULL.search(entry["MESSAGE"])
+        if matched:
+            full[matched.group(1)] = full.get(matched.group(1), 0) + 1
+    for kind, count in sorted(full.items()):
+        say("warning", f"SSSD's in-memory {kind} cache filled up {plural(count, 'time')} this boot, so lookups fall "
+                       f"back to the slower SSSD socket; raise memcache_size_{kind} in [nss] of sssd.conf"
+                       + (" and set ignore_group_members = True for the domain, which keeps group entries small"
+                          if kind in ("group", "initgroups") else ""))
+    sudoers = re.search(r"^\s*sudoers:\s*(.+)$", machine.read("etc/nsswitch.conf") or "", re.M)
+    if sudoers and "sss" in sudoers.group(1).split():
+        say("info", f"sudo also asks SSSD for its rules (nsswitch: sudoers: {sudoers.group(1).strip()}); if the "
+                    "domain defines none, sudo_provider = none in the [domain/...] section saves that lookup")
 
 
 def link_domains():
