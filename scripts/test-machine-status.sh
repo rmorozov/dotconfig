@@ -170,7 +170,7 @@ log(0, 400, "Killed /user.slice/user-1000.slice/app-code.scope due to memory pre
 log(0, 500, "Sync failed: network unreachable", SYSLOG_IDENTIFIER="sync-agent", PRIORITY=3,
     _SYSTEMD_USER_UNIT="sync-agent.service", _UID=1000)
 log(0, 502, "bob backup: destination full", SYSLOG_IDENTIFIER="bob-backup", _SYSTEMD_USER_UNIT="bob-backup.service",
-    _UID=1001)
+    _UID=4001)
 log(0, 501, "root decoy for sync-agent", SYSLOG_IDENTIFIER="sync-agent", _SYSTEMD_USER_UNIT="sync-agent.service",
     _UID=0)
 with open(sys.argv[1], "w") as handle:
@@ -235,6 +235,8 @@ cat > "$stubs/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
     is-system-running) echo degraded ;;
+    "is-active user@"*) echo active ;;
+    *"-M carol@ show-environment") cat "$(dirname "$0")/../manager-env" ;;
     *"-M bob@"*"--failed"*) echo "bob-backup.service loaded failed failed Bob backup" ;;
     *"show"*"bob-backup.service"*) printf 'Description=Bob backup\nResult=exit-code\nExecMainCode=1\nExecMainStatus=2\nLoadState=loaded\n' ;;
     *"-M bob@"*) ;;
@@ -321,7 +323,38 @@ case "$1" in
     warnings) printf 'last-occurrence:  today at 10:05 UTC\nwarning: |\n  snap "code" has running apps; refresh is inhibited\n' ;;
 esac
 EOF
-printf '#!/usr/bin/env bash\nprintf "1000 alice@corp.example no active\\n1001 bob yes lingering\\n"\n' > "$stubs/loginctl"
+# Accounts as NSS returns them. carol is the runner's own uid, so files the test creates belong to her; her home
+# is not derived from her name. bob's uid owns nothing here, so his files read as another account's.
+me="$(id -u)"
+real_id="$(command -v id)"
+cat > "$stubs/getent" <<EOF
+#!/usr/bin/env bash
+case "\$2" in
+    alice@corp.example) echo "alice@corp.example:*:1000:1000:Alice:/home/alice:/bin/zsh" ;;
+    carol) echo "carol:x:$me:$me:Carol:/home/carol-home:/bin/zsh" ;;
+    bob) echo "bob:x:4001:4001::/home/bob:/bin/bash" ;;
+    *) exit 2 ;;
+esac
+EOF
+cat > "$stubs/id" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+    "-G alice@corp.example") echo "1000 27" ;;
+    "-G carol") echo "$me 27" ;;
+    "-G bob") echo "4001" ;;
+    *) exec "$real_id" "\$@" ;;
+esac
+EOF
+cat > "$stubs/loginctl" <<EOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+    "list-users "*) printf "1000 alice@corp.example no active\\n4001 bob yes lingering\\n" ;;
+    "show-user $me") printf "Sessions=4 7\\nState=active\\nLinger=no\\nRuntimePath=/run/user/$me\\n" ;;
+    "show-user "*) echo "Failed to get user: User ID \$2 is not logged in or lingering" >&2; exit 1 ;;
+    "show-session 4") printf "Type=wayland\\nClass=user\\nState=active\\nActive=yes\\nRemote=no\\nService=gdm-password\\nSeat=seat0\\n" ;;
+    "show-session 7") printf "Type=tty\\nClass=user\\nState=online\\nActive=no\\nRemote=yes\\nService=sshd\\nSeat=\\n" ;;
+esac
+EOF
 printf '#!/usr/bin/env bash\necho "default via 10.0.0.1 dev wlp0s20f3"\n' > "$stubs/ip"
 printf '#!/usr/bin/env bash\necho "Global:"\necho "Link 3 (wlp0s20f3): 10.0.0.1"\necho "Link 9 (vpn0): 10.8.0.53"\n' \
     > "$stubs/resolvectl"
@@ -338,6 +371,8 @@ printf '#!/usr/bin/env bash\nprintf "Issues identified by validators: 0\\n"\n' >
 chmod +x "$stubs"/*
 export PATH="$stubs:$PATH"
 export USER=alice@corp.example
+# The test controls every proxy setting it reads.
+unset http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY SSL_CERT_FILE
 
 check() {
     grep -q -- "$1" "$test_dir/out" || { cat "$test_dir/out" >&2; echo "Missing: $1" >&2; exit 1; }
@@ -377,7 +412,7 @@ check '^warning: sync-agent.service failed (Sync agent): it restarted too often 
 check '^    log: Sync failed: network unreachable'
 refute 'root decoy'
 check '^  user units of alice@corp.example (uid 1000):'
-check '^  user units of bob (uid 1001):'
+check '^  user units of bob (uid 4001):'
 check '^warning: bob-backup.service failed (Bob backup): its main process exited with an error, exited 2 (invalid arguments)'
 check '^    log: bob backup: destination full'
 check '^warning: broken.service did not load: bad-setting (org.freedesktop.systemd1.BadSetting'
@@ -551,8 +586,213 @@ PYEOF
 [[ "$(verdict '{"failed": 1}')" == '3 assessment incomplete: 1 check failed; no problems found in what was checked' ]]
 [[ "$(verdict '{"warning": 2, "failed": 1, "unchecked": 1}')" == '1 problems found: 2 warnings; assessment incomplete: 1 check failed; 1 not checked (need --sudo, or not applicable)' ]]
 
+# The account, its session, installation and proxy environment, for a target named with --user. /etc/environment
+# disagrees with itself and points at a missing CA file; the user manager lacks https_proxy; the configured local
+# proxy is not running.
+printf 'LANG=C.UTF-8\nHTTP_PROXY=http://127.0.0.1:3128\nhttp_proxy=http://127.0.0.1:3129\nXDG_CONFIG_HOME=/home/carol-home/.config/\nXDG_CACHE_HOME=/var/tmp/carol-cache\n' > "$test_dir/manager-env"
+closed_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+python3 - "$root" "$repo_root" "$me" "$closed_port" <<'EOF'
+import importlib.util, os, sys
+from pathlib import Path
+
+root, repo, uid, port = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+spec = importlib.util.spec_from_file_location("machine_status", repo / "scripts/machine-status.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+home = root / "home/carol-home"
+for relative in module.managed_targets():
+    (home / relative).parent.mkdir(parents=True, exist_ok=True)
+    (home / relative).write_text("managed\n")
+(home / ".local/bin/old-tool").symlink_to(home / ".local/bin/removed-tool")
+(home / ".zshrc.local").write_text("export SECRET=1\n")
+os.chmod(home / ".zshrc.local", 0o644)
+state = home / ".config/dotconfig"
+state.mkdir(parents=True, exist_ok=True)
+(state / "proxy.mode").write_text("on\n")
+(state / "proxy.local").write_text(f"export https_proxy='http://proxyuser:SecretMustNeverPrint@127.0.0.1:{port}'\n")
+(home / ".local/share/chezmoi/.git").mkdir(parents=True)
+(home / ".local/share/chezmoi/.git/HEAD").write_text("ref: refs/heads/master\n")
+runtime = root / f"run/user/{uid}"
+runtime.mkdir(parents=True)
+os.chmod(runtime, 0o700)
+(runtime / "bus").write_text("")
+(root / "etc/environment").write_text(
+    'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"\n# dotconfig proxy begin\n'
+    f'http_proxy="http://127.0.0.1:{port}"\nhttps_proxy="http://127.0.0.1:{port}"\n'
+    'HTTPS_PROXY="http://10.0.0.9:8080"\nSSL_CERT_FILE="/etc/ssl/corp-ca.pem"\n# dotconfig proxy end\n')
+(home / ".config/chezmoi").mkdir(parents=True)
+(home / ".config/chezmoi/chezmoi.toml").write_text('sourceDir = "~/code/dotconfig"\n')
+(home / "code/dotconfig/.git").mkdir(parents=True)
+# bob's dotconfig command was rendered from a checkout outside chezmoi's default, which holds a decoy.
+bob = root / "home/bob"
+(bob / ".local/share/chezmoi/.git").mkdir(parents=True)
+(bob / ".local/share/chezmoi/.git/config").write_text("[core]\n")
+(bob / ".local/bin").mkdir(parents=True)
+(bob / ".local/bin/dotconfig").write_text('#!/usr/bin/env bash\nSOURCE_DIR="/home/bob/src/dotconfig/home"\n')
+(bob / "src/dotconfig/home").mkdir(parents=True)
+(bob / "src/dotconfig/.git").mkdir()
+for name in ("config", "HEAD"):
+    (bob / "src/dotconfig/.git" / name).write_text("x\n")
+(bob / ".zshrc").write_text("managed\n")
+EOF
+run_status --sudo --user carol
+check '^Account and session (carol):'
+check '^warning: XDG_CACHE_HOME=/var/tmp/carol-cache does not exist; programs that honor it lose the files dotconfig put in ~/.cache'
+refute 'XDG_CONFIG_HOME'
+check "^info: uid $me, home /home/carol-home, shell /bin/zsh, 2 groups"
+check '^info: session 4: wayland user session on seat0 through gdm-password, active$'
+check '^info: session 7: tty user session through sshd, online, remote$'
+check '^info: one user manager and user bus serve all of these sessions'
+refute 'runtime directory'
+refute 'no user D-Bus socket'
+check '^Installation (carol):'
+check '^info: dotconfig checkout: /home/carol-home/code/dotconfig (from ~/.config/chezmoi/chezmoi.toml)$'
+check '^warning: ~/.local/bin/old-tool is a broken symlink'
+check '^warning: ~/.zshrc.local is readable or writable by other users'
+refute 'is owned by'
+refute 'in the dotconfig repository belongs\? to another account'
+check '^info: dotconfig proxy is on (http://127.0.0.1:[0-9]*)$'
+check "^warning: the user manager: http_proxy=http://127.0.0.1:3129 but HTTP_PROXY=http://127.0.0.1:3128"
+check '^warning: the user manager has no https_proxy although dotconfig proxy is on: desktop apps and user services connect directly'
+check "^warning: /etc/environment: https_proxy=http://127.0.0.1:$closed_port but HTTPS_PROXY=http://10.0.0.9:8080"
+check '^warning: /etc/environment: SSL_CERT_FILE=/etc/ssl/corp-ca.pem does not exist'
+check '^info: environments inspected: the user manager, /etc/environment$'
+check "^warning: nothing listens on 127.0.0.1:$closed_port"
+refute 'SecretMustNeverPrint'
+refute 'proxyuser'
+
+# Another account: files and a repository it does not own, and no session.
+run_status --sudo --user bob
+check '^warning: home /home/bob is owned by [a-z0-9 ]*, not bob'
+check '^info: bob has no session and no running user manager'
+check '^warning: ~/.zshrc is owned by [a-z0-9 ]*, not bob; updates as bob cannot replace it'
+check '^info: dotconfig checkout: /home/bob/src/dotconfig (from ~/.local/bin/dotconfig)$'
+check '^warning: 2 files in the dotconfig repository belong to another account'
+run_status --sudo --user nobody-here
+check '^warning: NSS does not resolve nobody-here'
+export DOTCONFIG_MACHINE_TEST_PRIVILEGED=0
+run_status --user bob
+check '^not checked: bob is another account; its session, files and environment need --sudo'
+check "^not checked: bob's files need --sudo"
+export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1
+
+# Probes take the route of each inspected environment and name the stage that failed. The fake proxy splits its
+# answer across writes, so a reader that stops at the first one misreads it; in tunnel mode it then serves TLS
+# with a certificate only one environment trusts.
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=localhost \
+    -keyout "$test_dir/tls.key" -out "$test_dir/tls.pem" > /dev/null 2>&1
+mkdir -p "$root/etc/ssl"
+cp "$test_dir/tls.pem" "$root/etc/ssl/test-ca.pem"
+cat > "$test_dir/fake-proxy.py" <<'EOF'
+import socket, ssl, sys, threading, time
+mode, port_file, cert, key = sys.argv[1:5]
+status = b"HTTP/1.1 407 Proxy Authentication Required" if mode == "407" else b"HTTP/1.1 200 Connection established"
+server = socket.socket()
+server.bind(("127.0.0.1", 0))
+server.listen()
+open(port_file, "w").write(str(server.getsockname()[1]))
+def serve(client):
+    with client:
+        # The listener check connects and leaves without asking anything.
+        if not client.recv(4096):
+            return
+        for part in (status[:10], status[10:] + b"\r\nVia: 1.1 fake\r", b"\n", b"\r\n"):
+            client.sendall(part)
+            time.sleep(0.05)
+        if mode == "tunnel":
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert, key)
+            try:
+                with context.wrap_socket(client, server_side=True) as tls:
+                    tls.recv(1)
+            except (ssl.SSLError, OSError):
+                pass
+while True:
+    threading.Thread(target=serve, args=(server.accept()[0],), daemon=True).start()
+EOF
+fake_proxy() {
+    rm -f "$test_dir/port"
+    python3 "$test_dir/fake-proxy.py" "$1" "$test_dir/port" "$test_dir/tls.pem" "$test_dir/tls.key" &
+    proxy_pid=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$test_dir/port" ]] && break; sleep 0.2; done
+    proxy_port="$(cat "$test_dir/port")"
+}
+dotconfig_state="$root/home/carol-home/.config/dotconfig"
+
+# Every environment and the dotconfig setting agree, so one probe covers them all.
+fake_proxy 407
+printf 'on\n' > "$dotconfig_state/proxy.mode"
+printf "export https_proxy='http://127.0.0.1:%s'\n" "$proxy_port" > "$dotconfig_state/proxy.local"
+printf 'https_proxy=http://127.0.0.1:%s\n' "$proxy_port" > "$test_dir/manager-env"
+printf 'https_proxy="http://127.0.0.1:%s"\n' "$proxy_port" > "$root/etc/environment"
+run_status --sudo --user carol --probe localhost
+kill "$proxy_pid"
+check '^ok: a proxy listens on 127.0.0.1:'
+check '^warning: probe localhost:443 (the user manager, /etc/environment): proxy answered HTTP/1.1 407 Proxy Authentication Required; the proxy wants authentication'
+refute 'which no inspected environment uses'
+
+# Unmanaged by dotconfig, both environments use a proxy of their own; only the user manager trusts the
+# certificate, through its SSL_CERT_FILE. The diagnostic's own SSL_CERT_FILE is not borrowed.
+fake_proxy tunnel
+rm "$dotconfig_state/proxy.mode"
+printf 'https_proxy=http://127.0.0.1:%s\nSSL_CERT_FILE=/etc/ssl/test-ca.pem\nCURL_CA_BUNDLE=/etc/ssl/test-ca.pem\n' "$proxy_port" > "$test_dir/manager-env"
+printf 'https_proxy="http://127.0.0.1:%s"\n' "$proxy_port" > "$root/etc/environment"
+SSL_CERT_FILE="$test_dir/tls.pem" run_status --sudo --user carol --probe localhost
+kill "$proxy_pid"
+check '^info: dotconfig proxy is unmanaged'
+check '^ok: probe localhost:443 (the user manager): TLS verified (TLS.*) through proxy 127.0.0.1$'
+check '^info: probe localhost:443 (the user manager): verified with OpenSSL.s SSL_CERT_FILE and SSL_CERT_DIR; tools that read CURL_CA_BUNDLE=/etc/ssl/test-ca.pem use those instead'
+check '^warning: probe localhost:443 (/etc/environment): certificate not trusted'
+
+# A trust file the account cannot read fails TLS for it. Root reads anything, so this needs an unprivileged runner.
+if [[ "$me" != 0 ]]; then
+    chmod 000 "$root/etc/ssl/test-ca.pem"
+    run_status --sudo --user carol --probe localhost
+    chmod 644 "$root/etc/ssl/test-ca.pem"
+    check '^warning: probe localhost:443 (the user manager): SSL_CERT_FILE=/etc/ssl/test-ca.pem is not readable by carol, so TLS fails here'
+fi
+
+# The dotconfig setting, which no environment uses yet, is probed under its own label with its own bypass list;
+# the user manager connects directly.
+printf 'on\n' > "$dotconfig_state/proxy.mode"
+printf "export https_proxy='http://127.0.0.1:%s'\nexport no_proxy='.invalid'\n" "$closed_port" > "$dotconfig_state/proxy.local"
+printf 'LANG=C.UTF-8\n' > "$test_dir/manager-env"
+rm "$root/etc/environment"
+run_status --sudo --user carol --probe "127.0.0.1:$closed_port" --probe nonexistent.invalid
+check "^warning: probe 127.0.0.1:$closed_port (the user manager): TCP connection to 127.0.0.1:$closed_port failed"
+check "^warning: probe 127.0.0.1:$closed_port (the dotconfig proxy setting, which no inspected environment uses yet): TCP connection to 127.0.0.1:$closed_port failed"
+check '^warning: probe nonexistent.invalid:443 (the user manager): DNS for nonexistent.invalid failed'
+check '^warning: probe nonexistent.invalid:443 (the dotconfig proxy setting, which no inspected environment uses yet): DNS for nonexistent.invalid failed'
+
+# DNS is asked once, within its deadline: connecting reuses those addresses, so a second lookup never happens.
+python3 - "$repo_root" "$root" <<'EOF'
+import contextlib, importlib.util, io, socket, sys, threading
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("machine_status", Path(sys.argv[1]) / "scripts/machine-status.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+server = socket.socket()
+server.bind(("127.0.0.1", 0))
+server.listen()
+threading.Thread(target=lambda: server.accept()[0].close(), daemon=True).start()
+real, calls = socket.getaddrinfo, []
+def lookup(*args, **kwargs):
+    calls.append(args)
+    if len(calls) > 1:
+        raise socket.gaierror("second lookup")
+    return real(*args, **kwargs)
+socket.getaddrinfo = lookup
+machine = module.Machine(sys.argv[2], 0)
+route = dict.fromkeys(module.PROXY_KEYS + module.CA_KEYS, "")
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    module.probe_endpoint(machine, f"localhost:{server.getsockname()[1]}", ["test"], route)
+assert len(calls) == 1, calls
+assert "TLS handshake failed" in out.getvalue(), out.getvalue()
+EOF
+
 # Arguments are validated before anything runs.
-for bad in "--boot 1" "--boot x" "--examples 0" "--bogus"; do
+for bad in "--boot 1" "--boot x" "--examples 0" "--bogus" "--user" "--user a;b" "--probe" "--probe http://x"; do
     # shellcheck disable=SC2086 # Each case is a word list.
     if bash "$repo_root/scripts/machine.sh" status $bad > "$test_dir/out" 2>&1; then
         echo "accepted: $bad" >&2

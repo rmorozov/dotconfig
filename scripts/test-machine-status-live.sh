@@ -84,4 +84,9 @@ fi
 report sudo env SUDO_USER="$user" SUDO_UID="$uid" bash "$repo_root/scripts/machine.sh" status --sudo
 check '^warning: dotconfig-live-user-fail.service failed .*: its main process exited with an error, exited 4'
 check '    log: user failure: cannot reach sync server'
+# Another account by name, plus a real endpoint taken step by step through DNS, TCP and TLS.
+report bash "$repo_root/scripts/machine.sh" status --sudo --user "$user" --probe github.com
+check "^Account and session ($user):"
+check "^info: uid $uid, home "
+check '^ok: probe github.com:443 (.*): TLS verified'
 echo 'machine status live tests passed'
