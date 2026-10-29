@@ -583,7 +583,8 @@ def kernel_messages(machine):
         return machine.kernel_entries
     entries = machine.journal("_TRANSPORT=kernel", "_TRANSPORT=audit") if machine.sees_system_journal() else None
     if entries:
-        machine.kernel_entries = [(int(e.get("PRIORITY", "6")), e["MESSAGE"]) for e in entries]
+        # journald splits a "name: " prefix of a /dev/kmsg line into SYSLOG_IDENTIFIER; dmesg shows it whole.
+        machine.kernel_entries = [(int(e.get("PRIORITY", "6")), kernel_text(e)) for e in entries]
         return machine.kernel_entries
     machine.kernel_entries = []
     if machine.boot != 0:
@@ -595,6 +596,14 @@ def kernel_messages(machine):
             if matched:
                 machine.kernel_entries.append((int(matched.group(1)) & 7, matched.group(2)))
     return machine.kernel_entries
+
+
+def kernel_text(entry):
+    name = entry.get("SYSLOG_IDENTIFIER", "kernel")
+    if entry.get("_TRANSPORT") == "kernel" and name not in ("kernel", "") and \
+            not entry["MESSAGE"].startswith(name + ":"):
+        return f"{name}: {entry['MESSAGE']}"
+    return entry["MESSAGE"]
 
 
 def check_kernel(machine, examples):

@@ -59,7 +59,8 @@ log(0, 0.5, "Direct firmware load for i915/mtl_gsc_1.bin failed with error -2", 
 log(0, 0.6, "Loading of unsigned module is rejected", _TRANSPORT="kernel", PRIORITY=3)
 log(0, 0.7, "ACPI BIOS Error (bug): Could not resolve symbol [\\_SB.PC00.XHCI.RHUB.HS01._PLD]", _TRANSPORT="kernel",
     PRIORITY=3)
-log(0, 0.8, "mysterious-driver: probe of 0000:00:1f.5 failed with error -110", _TRANSPORT="kernel", PRIORITY=3)
+log(0, 0.8, "probe of 0000:00:1f.5 failed with error -110", _TRANSPORT="kernel", PRIORITY=3,
+    SYSLOG_IDENTIFIER="mysterious-driver")
 log(0, 3000, "Out of memory: Killed process 4242 (chrome) total-vm:9000000kB", _TRANSPORT="kernel", PRIORITY=3)
 log(0, 3001, 'audit: type=1400 apparmor="DENIED" operation="open" profile="snap.firefox.firefox" name="/etc/x"',
     _TRANSPORT="audit", PRIORITY=5)
