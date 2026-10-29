@@ -50,6 +50,12 @@ logger -p authpriv.notice -t login \
     "pam_unix(login:auth): authentication failure; logname= uid=0 euid=0 tty=/dev/tty3 ruser= rhost=  user=$user"
 # A real PAM session through the login service: pam_systemd registers it and starts the user manager.
 sudo systemd-run --wait --quiet -p PAMName=login -p User="$user" /bin/sleep 3
+# A failed unit in the account's own user manager, kept running by lingering, for the --sudo user-unit lookup.
+uid="$(id -u "$user")"
+sudo loginctl enable-linger "$user"
+sudo systemctl start "user@$uid.service"
+sudo systemd-run --user -M "$user@" --unit=dotconfig-live-user-fail \
+    sh -c 'echo "user failure: cannot reach sync server" >&2; exit 4'
 sleep 2
 
 report bash "$repo_root/scripts/machine.sh" status
@@ -74,4 +80,8 @@ if grep -q '^not checked: .*needs root' "$out"; then
     echo 'The --sudo run still skipped root-only checks' >&2
     exit 1
 fi
+# As if the account itself had run --sudo: its user manager and its own user-unit journal records are inspected.
+report sudo env SUDO_USER="$user" SUDO_UID="$uid" bash "$repo_root/scripts/machine.sh" status --sudo
+check '^warning: dotconfig-live-user-fail.service failed .*: its main process exited with an error, exited 4'
+check '    log: user failure: cannot reach sync server'
 echo 'machine status live tests passed'

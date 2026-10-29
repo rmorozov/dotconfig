@@ -11,13 +11,17 @@ import argparse
 import glob
 import json
 import os
+import pwd
 import re
 import shutil
 import subprocess
 from pathlib import Path
 
 LABELS = {"unchecked": "not checked", "failed": "check failed"}
-PRIVATE_VALUE = re.compile(r"(\b\w*(?:authtok|password|passwd|secret|token)\w*\s*[=:]\s*)\S.*$", re.I)
+# A sensitive key, bare or quoted as in JSON or Python reprs, and its value: a quoted value up to its closing quote,
+# escaped quotes included, else the rest of the line, since an unquoted value may contain spaces.
+PRIVATE_VALUE = re.compile(r"""((?:\\?["'])?\b\w*(?:authtok|password|passwd|secret|token)\w*(?:\\?["'])?\s*[=:]\s*)"""
+                           r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S.*$)""", re.I)
 COUNTS = {}
 
 # Journal message IDs from systemd's catalog.
@@ -73,6 +77,16 @@ def plural(count, word):
     return f"{count} {word}" + ("" if count == 1 else "s")
 
 
+def invoking_uid(user):
+    """The UID of the account that ran sudo; None when unknown."""
+    if os.environ.get("SUDO_UID", "").isdigit():
+        return int(os.environ["SUDO_UID"])
+    try:
+        return pwd.getpwnam(user).pw_uid
+    except (KeyError, TypeError):
+        return None
+
+
 class Machine:
     def __init__(self, root, boot):
         self.root = Path(root)
@@ -82,6 +96,7 @@ class Machine:
         self.privileged = override == "1" if override is not None else os.geteuid() == 0
         self.user = os.environ.get("SUDO_USER") if self.privileged else None
         self.user = self.user or os.environ.get("USER") or ""
+        self.uid = invoking_uid(self.user) if self.privileged else os.getuid()
         self.kernel_entries = None
         self.hinted = False
 
@@ -300,11 +315,20 @@ def check_logins(machine):
             logins.append((entry, opened.group(1), opened.group(2), opened.group(3), failures.pop(opened.group(1), 0)))
     if not logins:
         say("info", "no graphical or console login recorded in this boot")
-    for entry, service, user, uid, failed_before in logins:
+    used = set()
+    for index, (entry, service, user, uid, failed_before) in enumerate(logins):
         start = monotonic(entry)
         unit = f"user@{uid}.service" if uid else None
-        ready = next((e for e in graphical if e.get("_SYSTEMD_UNIT") == unit and monotonic(e) >= start), None)
-        manager = next((e for e in startups if e.get("_SYSTEMD_UNIT") == unit and monotonic(e) >= start), None)
+        # Events after the next login of the same account belong to that login, not to this one.
+        end = next((monotonic(later[0]) for later in logins[index + 1:] if later[3] == uid), float("inf"))
+
+        def first(events):
+            found = next((e for e in events if e.get("_SYSTEMD_UNIT") == unit and start <= monotonic(e) < end
+                          and id(e) not in used), None)
+            if found is not None:
+                used.add(id(found))
+            return found
+        ready, manager = first(graphical), first(startups)
         text = f"{user} logged in through {service} {seconds(start)} after the kernel started"
         if manager and manager.get("USERSPACE_USEC"):
             text += f"; user services started in {seconds(int(manager['USERSPACE_USEC']))}"
@@ -407,9 +431,18 @@ EXIT_CODES = {"1": "generic failure", "2": "invalid arguments", "3": "not implem
 
 
 def unit_log(machine, unit, user):
-    """The unit's last own log lines in this boot, else systemd's lines about it."""
-    entries = machine.journal("--user-unit" if user else "-u", unit, "-n", "30",
-                              user=user and not machine.privileged) or []
+    """The unit's last own log lines in this boot, else systemd's lines about it. A user unit is matched for the
+    invoking account explicitly: journalctl --user-unit adds the caller's UID, which is 0 under sudo."""
+    if not user:
+        entries = machine.journal("-u", unit, "-n", "30") or []
+    elif machine.uid is None:
+        return []
+    else:
+        uid = str(machine.uid)
+        entries = machine.journal("-n", "30", "_SYSTEMD_USER_UNIT=" + unit, "_UID=" + uid, "+",
+                                  "USER_UNIT=" + unit, "_UID=" + uid, "+",
+                                  "COREDUMP_USER_UNIT=" + unit, "COREDUMP_UID=" + uid,
+                                  user=not machine.privileged) or []
     own = [e for e in entries if e.get("_SYSTEMD_UNIT") == unit or e.get("_SYSTEMD_USER_UNIT") == unit]
     chosen = own or [e for e in entries if not re.match(r"(Consumed|Starting|Started|Stopped|Stopping) ", e["MESSAGE"])]
     return [clean(e["MESSAGE"], 160) for e in chosen[-3:]]
@@ -542,10 +575,13 @@ def check_crashes(machine):
 
 KERNEL_RULES = (
     ("oom", "warning", "the kernel OOM killer ended processes", r"Out of memory: Killed process|oom-kill:"),
-    ("module", "warning", "the kernel refused an unsigned module; with Secure Boot on, DKMS modules need a "
-                          "MOK key enrolled (sudo mokutil --import)",
-     r"Loading of (unsigned|module with unavailable key) module is rejected|Lockdown: .*unsigned module|"
-     r"module verification failed|Key was rejected by service"),
+    ("module", "warning", "the kernel refused to load an unsigned or untrusted module; with Secure Boot, DKMS "
+                          "modules load only once their signing key is enrolled (sudo mokutil --import)",
+     r"Loading of (unsigned module|module with unavailable key) is rejected|Lockdown: .*unsigned module|"
+     r"Key was rejected by service"),
+    ("module-unsigned", "info", "modules loaded without a valid signature and tainted the kernel (E); allowed "
+                                "because signatures are not enforced",
+     r"module verification failed: signature and/or required key missing"),
     ("io", "warning", "disk I/O errors; check the drive with sudo smartctl -a",
      r"I/O error, dev \S+|Buffer I/O error|blk_update_request: .*error|critical medium error"),
     ("fs", "warning", "filesystem errors; an fsck may be needed",
@@ -640,7 +676,7 @@ def check_kernel(machine, examples):
 
 
 def kernel_detail(key, lines):
-    patterns = {"oom": r"Killed process \d+ \(([^)]+)\)", "firmware": r"Direct firmware load for (\S+)",
+    patterns = {"oom": r"Killed process \d+ \(([^)]+)\)", "module-unsigned": r"^(\S+): module verification", "firmware": r"Direct firmware load for (\S+)",
                 "segfault": r"(\S+)\[\d+\]: segfault", "apparmor": r'profile="([^"]+)"',
                 "io": r"dev (\w+)", "fs": r"\((\w+)\)"}
     if key not in patterns:

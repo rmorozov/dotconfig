@@ -57,6 +57,8 @@ log(-1, 7000, "wlp0s20f3: disconnected from corp-wifi", SYSLOG_IDENTIFIER="Netwo
 log(0, 1, "systemd 259 running in system mode", _PID=1)
 log(0, 0.5, "Direct firmware load for i915/mtl_gsc_1.bin failed with error -2", _TRANSPORT="kernel", PRIORITY=4)
 log(0, 0.6, "Loading of unsigned module is rejected", _TRANSPORT="kernel", PRIORITY=3)
+log(0, 0.65, "example: module verification failed: signature and/or required key missing - tainting kernel",
+    _TRANSPORT="kernel", PRIORITY=4)
 log(0, 0.7, "ACPI BIOS Error (bug): Could not resolve symbol [\\_SB.PC00.XHCI.RHUB.HS01._PLD]", _TRANSPORT="kernel",
     PRIORITY=3)
 log(0, 0.8, "probe of 0000:00:1f.5 failed with error -110", _TRANSPORT="kernel", PRIORITY=3,
@@ -68,6 +70,9 @@ log(0, 9, "Startup finished in 6.1s (firmware) + 2.0s (loader) + 1.5s (kernel) +
     "= 1min 27.8s.", MESSAGE_ID="b07a249cd024414a82dd00cd181378ff", USERSPACE_USEC=75000000, _PID=1)
 log(0, 20, "pam_unix(gdm-launch-environment:session): session opened for user gdm-greeter(uid=60578) by (uid=0)",
     SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="gdm-launch-environment]")
+# A first login whose desktop never came up; the later login reaches graphical-session.target.
+log(0, 30, "pam_unix(gdm-password:session): session opened for user alice@corp.example(uid=1000) by (uid=0)",
+    SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="gdm-password]")
 for second in (40, 45):
     log(0, second, "pam_sss(gdm-password:auth): received for user alice@corp.example: 9 (Authentication service "
         "cannot retrieve authentication info)", SYSLOG_FACILITY=10, SYSLOG_IDENTIFIER="gdm-password]")
@@ -83,6 +88,10 @@ log(0, 105, "Reached target graphical-session.target - Current graphical user se
 for second in (200, 201, 202):
     log(0, second, f"Failed to mount /mnt/share{second}: Permission denied", SYSLOG_IDENTIFIER="mount.cifs",
         PRIORITY=3, _SYSTEMD_UNIT="mnt-share.mount")
+log(0, 209, '{"api_token": "QuotedMustNeverPrint", "error": "request failed"}', SYSLOG_IDENTIFIER="backupd",
+    PRIORITY=3, _SYSTEMD_UNIT="backupd.service")
+log(0, 209.5, "{'password': 'Escaped\\' MustNeverPrint', 'user': 'svc'}", SYSLOG_IDENTIFIER="backupd",
+    PRIORITY=3, _SYSTEMD_UNIT="backupd.service")
 log(0, 210, "Connection to backup.corp.example failed; api_token=TokenMustNeverPrint", SYSLOG_IDENTIFIER="backupd",
     PRIORITY=3, _SYSTEMD_UNIT="backupd.service")
 log(0, 211, "backupd.service: Main process exited, code=exited, status=1/FAILURE", _SYSTEMD_UNIT="init.scope",
@@ -97,6 +106,8 @@ log(0, 400, "Killed /user.slice/user-1000.slice/app-code.scope due to memory pre
     SYSLOG_IDENTIFIER="systemd-oomd")
 log(0, 500, "Sync failed: network unreachable", SYSLOG_IDENTIFIER="sync-agent", PRIORITY=3,
     _SYSTEMD_USER_UNIT="sync-agent.service", _UID=1000)
+log(0, 501, "root decoy for sync-agent", SYSLOG_IDENTIFIER="sync-agent", _SYSTEMD_USER_UNIT="sync-agent.service",
+    _UID=0)
 with open(sys.argv[1], "w") as handle:
     json.dump(entries, handle)
 EOF
@@ -112,7 +123,8 @@ if "--list-boots" in args:
     print("[]")
     sys.exit(0)
 entries = json.load(open("$test_dir/journal.json"))
-boot, limit, matches, priority = "0", None, {}, 7
+boot, limit, priority, units = "0", None, 7, {}
+groups = [{}]
 user_scope = "--user" in args
 i = 0
 while i < len(args):
@@ -123,11 +135,13 @@ while i < len(args):
         if arg == "-b": boot = value
         elif arg == "-n": limit = int(value)
         elif arg == "-p": priority = int(value.split("..")[-1])
-        elif arg == "-u": matches["unit"] = value
-        elif arg == "--user-unit": matches["user-unit"] = value
+        elif arg == "-u": units["unit"] = value
+        elif arg == "--user-unit": units["user-unit"] = value
+    elif arg == "+":
+        groups.append({})
     elif "=" in arg and not arg.startswith("-"):
         key, value = arg.split("=", 1)
-        matches.setdefault(key, []).append(value)
+        groups[-1].setdefault(key, []).append(value)
     i += 1
 if boot not in ("0", "-1"):
     print("Data from the specified boot (" + boot + ") is not available: No such boot ID in journal", file=sys.stderr)
@@ -138,16 +152,13 @@ def keep(entry):
         return False
     if (user_scope or not system) and entry.get("_UID") != "1000":
         return False
-    for key, values in matches.items():
-        if key == "unit":
-            if values not in (entry.get("_SYSTEMD_UNIT"), entry.get("UNIT")):
-                return False
-        elif key == "user-unit":
-            if values not in (entry.get("_SYSTEMD_USER_UNIT"), entry.get("USER_UNIT")):
-                return False
-        elif entry.get(key) not in values:
-            return False
-    return True
+    if "unit" in units and units["unit"] not in (entry.get("_SYSTEMD_UNIT"), entry.get("UNIT")):
+        return False
+    # Like journalctl, --user-unit also matches the caller's own UID, which is 0 under sudo.
+    if "user-unit" in units and (units["user-unit"] not in (entry.get("_SYSTEMD_USER_UNIT"), entry.get("USER_UNIT"))
+                                 or entry.get("_UID") != os.environ.get("JOURNAL_CALLER_UID", "0")):
+        return False
+    return any(all(entry.get(key) in values for key, values in group.items()) for group in groups)
 chosen = sorted((e for e in entries if keep(e)), key=lambda e: float(e["__MONOTONIC_TIMESTAMP"]))
 if limit:
     chosen = chosen[-limit:]
@@ -252,7 +263,7 @@ run_status() {
 }
 
 # With sudo: everything is visible.
-export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example
+export DOTCONFIG_MACHINE_TEST_PRIVILEGED=1 SUDO_USER=alice@corp.example SUDO_UID=1000
 run_status --sudo --examples 2
 [[ "$status" == 1 ]] || { cat "$test_dir/out" >&2; echo "expected exit 1, got $status" >&2; exit 1; }
 check '^ok: Ubuntu 26.04.1 LTS'
@@ -265,14 +276,18 @@ check '^warning: userspace took 1 min 15 s to start'
 check '^info: graphical.target reached after 74.1s in userspace'
 check '^info: slowest units this boot: NetworkManager-wait-online.service (60.012s), snapd.seeded.service (5.300s)'
 check '^info: login screen appeared 20.0 s after the kernel started'
+check '^info: alice@corp.example logged in through gdm-password 30.0 s after the kernel started; no graphical session start recorded$'
 check '^warning: alice@corp.example logged in through gdm-password 1 min 0 s after the kernel started; user services started in 2.5 s; desktop session ready 44.8 s after the password was accepted'
 check '^info: slowest user units: tracker-miner-fs-3.service (30.5s)'
 check '^warning: 2 failed password attempts through gdm-password before alice@corp.example logged in'
 check '^info: domain logins go through SSSD'
 check '^warning: backupd.service failed (Backup daemon): its main process exited with an error, exited 1 (generic failure), restarted 5 times first'
+check '^    log: {"api_token": <hidden>, "error": "request failed"}'
+check "^    log: {'password': <hidden>, 'user': 'svc'}"
 check '^    log: Connection to backup.corp.example failed; api_token=<hidden>'
 check '^warning: sync-agent.service failed (Sync agent): it restarted too often and was stopped'
 check '^    log: Sync failed: network unreachable'
+refute 'root decoy'
 check '^warning: broken.service did not load: bad-setting (org.freedesktop.systemd1.BadSetting'
 check '^warning: gone.service is active but its unit file is gone'
 check '^warning: refused.service was refused: Service has no ExecStart='
@@ -287,7 +302,8 @@ check '    e.g. Failed to mount /mnt/share202: Permission denied (x3)'
 check '^warning: gnome-shell crashed 1 time this boot; see: coredumpctl info gnome-shell'
 check '^info: 1 crash report in /var/crash: _usr_bin_gnome-shell.1000.crash'
 check '^warning: the kernel OOM killer ended processes (1 time): chrome'
-check '^warning: the kernel refused an unsigned module'
+check '^warning: the kernel refused to load an unsigned or untrusted module'
+check '^info: modules loaded without a valid signature and tainted the kernel (E); allowed because signatures are not enforced (1 time): example'
 check '^info: firmware files not found (drivers often try several versions) (1 time): i915/mtl_gsc_1.bin'
 check '^info: AppArmor denied access (1 time): snap.firefox.firefox'
 check '^info: ACPI firmware errors'
@@ -328,12 +344,12 @@ check '^warning: unattended-upgrades logged 1 error or warning'
 check '^warning: BAT0: 71% discharging, holds 56% of its design capacity, 412 cycles'
 check '^warning: running hot: x86_pkg_temp 93 °C'
 check '^Summary: [0-9]* warnings$'
-refute 'TokenMustNeverPrint'
+refute 'MustNeverPrint'
 refute 'not checked'
 
 # Without sudo and outside the adm group: root-only and system-journal checks are listed, not failed.
 export DOTCONFIG_MACHINE_TEST_PRIVILEGED=0 JOURNAL_DENY=1
-unset SUDO_USER
+unset SUDO_USER SUDO_UID
 run_status
 check '^not checked: how the previous boot ended: the system journal is not readable by this account; run dotconfig machine status --sudo'
 check '^not checked: login timeline: needs the system journal (see above)'
