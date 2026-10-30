@@ -8,6 +8,7 @@ settings named like passwords or secrets hidden, but they can include user and h
 """
 
 import argparse
+import ast
 import email.utils
 import glob
 import json
@@ -157,6 +158,9 @@ class Machine:
         self.free_kib = {}
         self.vpns = None
         self.rules = None
+        self.user_entries = None
+        self.manager_environment = None
+        self.settings_noted = False
         self.invoker = self.user
         # The account the user-level checks inspect: --user, else whoever ran the command (through sudo or not).
         self.target = resolve_account(target or self.user)
@@ -227,6 +231,14 @@ class Machine:
         if self.rules is None:
             self.rules = expectation_overrides(self)
         return self.rules
+
+    def user_log(self):
+        """The account's own warnings and errors this boot, from its processes; empty when out of reach."""
+        if self.user_entries is None:
+            reachable = self.uid is not None and self.reach
+            self.user_entries = (self.journal("-p", "4", f"_UID={self.uid}", user=not self.privileged) or []
+                                 if reachable else [])
+        return self.user_entries
 
     def user_flags(self):
         """systemctl flags that reach the invoking user's manager, also from root under sudo."""
@@ -1744,17 +1756,17 @@ def expectation_overrides(machine):
     return rules
 
 
-def show_units(flags, names, fields, scope):
+def show_units(flags, names, fields, what):
     """systemctl show blocks matched to names by position: an alias such as display-manager.service reports
     the unit it points to as its Id. None when the query fails."""
     result = run(["systemctl"] + flags + ["show", "--no-pager", "--timestamp=unix"]
                  + ["-p" + name for name in fields] + list(names))
-    if not broken(f"expected {scope} units", "systemctl show", result):
+    if not broken(what, "systemctl show", result):
         return None
     blocks = [dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
               for block in result.stdout.strip().split("\n\n")]
     if len(blocks) != len(names):
-        say("failed", f"expected {scope} units: systemctl show answered {len(blocks)} of {len(names)} units")
+        say("failed", f"{what}: systemctl show answered {len(blocks)} of {len(names)} units")
         return None
     return dict(zip(names, blocks))
 
@@ -1784,12 +1796,13 @@ def check_expected(machine):
                              "(another account needs --sudo)")
             continue
         names = [name for entry in group for name in entry[0]]
-        found = show_units(flags, names, UNIT_FIELDS, scope)
+        found = show_units(flags, names, UNIT_FIELDS, f"expected {scope} units")
         if found is None:
             continue
         # The sockets, paths and timers that start units on demand, to see whether they are live.
         sources = sorted({source for props in found.values() for source in props.get("TriggeredBy", "").split()})
-        triggers = (show_units(flags, sources, ["Id", "LoadState", "UnitFileState", "ActiveState", "SubState"], scope)
+        triggers = (show_units(flags, sources, ["Id", "LoadState", "UnitFileState", "ActiveState", "SubState"],
+                               f"expected {scope} units")
                     if sources else {}) or {}
         for alternatives, _, required, age, why in group:
             installed = [found[name] for name in alternatives
@@ -2323,6 +2336,7 @@ def check_desktop(machine):
     else:
         graphical_logins(machine)
     keyring(machine)
+    desktop_components(machine)
 
 
 def session_definitions(machine):
@@ -2515,12 +2529,468 @@ def keyring_storage(machine):
 
 
 def proxy_values_env(machine):
-    """The account's user-manager environment, for the XDG paths its session uses."""
-    flags = machine.user_flags()
-    result = run(["systemctl"] + flags + ["show-environment"]) if flags else None
+    """The account's user-manager environment, for the XDG paths its session uses; read once."""
+    if machine.manager_environment is None:
+        flags = machine.user_flags()
+        result = run(["systemctl"] + flags + ["show-environment"]) if flags else None
+        machine.manager_environment = {} if result is None or result.returncode != 0 else \
+            dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return machine.manager_environment
+
+
+# The variables that decide which settings store gsettings and dconf read.
+SETTINGS_ENVIRONMENT = ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "DCONF_PROFILE",
+                        "GSETTINGS_BACKEND", "GSETTINGS_SCHEMA_DIR")
+
+
+def as_account(machine, command, environment):
+    """The command run as the inspected account in an environment built from scratch: its home, runtime directory
+    and the settings variables of its user manager, and nothing of the caller's (config home, dconf profile,
+    session bus). Under sudo it runs through runuser, without it only for oneself. None when out of reach."""
+    if machine.uid is None or not machine.target or not machine.reach:
+        return None
+    variables = [f"HOME={machine.target['home']}", f"USER={machine.user}", f"LOGNAME={machine.user}",
+                 "PATH=" + os.environ.get("PATH", "/usr/bin:/bin"), f"XDG_RUNTIME_DIR=/run/user/{machine.uid}"]
+    variables += [f"{name}={environment[name]}" for name in SETTINGS_ENVIRONMENT if environment.get(name)]
+    command = ["env", "-i"] + variables + command
+    if machine.privileged and machine.root == Path("/") and machine.uid != 0:
+        return ["runuser", "-u", machine.user, "--"] + command
+    return command
+
+
+def gvariant(text):
+    """A gsettings value as Python: booleans, numbers, strings and lists of them."""
+    text = re.sub(r"^(?:@\w+|u?int(?:16|32|64)|byte|double|objectpath) ", "", text.strip())
+    if text in ("true", "false"):
+        return text == "true"
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return text
+
+
+def gsettings(machine, schema):
+    """The account's values of one settings schema, read from its dconf database (no session bus needed). None
+    when gsettings is missing, the schema is not installed, or the account is out of reach."""
+    environment = proxy_values_env(machine) if machine.reach else {}
+    if not environment and not machine.settings_noted:
+        machine.settings_noted = True
+        say("info", f"settings of {machine.user} are read from the default locations: their user manager's "
+                    "environment (XDG paths, DCONF_PROFILE) is not available")
+    command = as_account(machine, ["gsettings", "list-recursively", schema], environment)
+    result = run(command, timeout=20) if command else None
     if result is None or result.returncode != 0:
-        return {}
-    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        return None
+    values = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(" ", 2)
+        if len(parts) == 3 and parts[0] == schema:
+            values[parts[1]] = gvariant(parts[2])
+    return values
+
+
+def config_home(machine, environment):
+    return (environment.get("XDG_CONFIG_HOME") or f"{machine.target['home'].rstrip('/')}/.config").rstrip("/")
+
+
+# --- Desktop components -----------------------------------------------------------------------------------------
+
+COMPONENT_UNITS = {
+    "xdg-desktop-portal.service": "sandboxed and Flatpak applications get no file chooser, screen sharing or link "
+                                  "opening",
+    "xdg-desktop-portal-gnome.service": "screenshots, screen sharing and file choosers through the GNOME backend fail",
+    "xdg-desktop-portal-gtk.service": "file choosers and settings through the GTK backend fail",
+    "pipewire.service": "no sound, camera or screen sharing",
+    "pipewire-pulse.service": "applications that use PulseAudio have no sound",
+    "wireplumber.service": "no audio or video devices appear: no sound and no camera",
+    "pulseaudio.service": "",
+}
+SOUND_UNITS = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
+PORTAL_FAILURE = re.compile(r"(?i)no skeleton|failed to (?:create|load|start|register)\b.*(?:implementation|backend|"
+                            r"portal)|backend .*(?:failed|not found|timed out)|could not find .*backend|"
+                            r"Timeout was reached")
+EXTENSION_ERROR = re.compile(r"(?:Extension|Error loading extension|Could not load extension) ([\w.+-]+@[\w.+-]+)")
+DCONF_FAILURE = re.compile(r"(?i)dconf.*(?:failed to commit|unable to (?:open|create|write)|permission denied|"
+                           r"could not (?:open|write))")
+GPU_ERROR = re.compile(r"(?i)\b(i915|xe|amdgpu|radeon|nouveau|nvidia(?:-modeset)?)\b.*(?:\*ERROR\*|GPU hang|hang on|"
+                       r"ring \S+ timeout|timed out|failed|reset)")
+RESUMED = re.compile(r"PM: (?:suspend|hibernation) exit|System returned from sleep|PM: resume\b")
+SLEEP_FAILED = re.compile(r"(?i)Failed to put system to sleep|PM: Some devices failed to (?:suspend|resume)|"
+                          r"Freezing (?:of tasks|user space processes) failed|PM: (?:suspend|hibernation) .*failed|"
+                          r"error during resume")
+SHELL_PROGRAMS = ("gnome-shell", "mutter", "Xwayland")
+RESUME_WINDOW = 120e6
+
+
+def desktop_components(machine):
+    """Desktop pieces that fail on their own while login works: portals, sound, Shell extensions, settings storage
+    and policy, autostart entries, and what follows a resume from sleep."""
+    section(f"Desktop components ({machine.user})")
+    environment = proxy_values_env(machine) if machine.reach else {}
+    desktops = [part.lower() for part in (environment.get("XDG_CURRENT_DESKTOP") or "").split(":") if part]
+    flags = machine.user_flags() if machine.reach else None
+    found = None
+    if not flags:
+        say("unchecked", f"portal and sound services of {machine.user}: their user manager needs --sudo")
+    else:
+        found = show_units(flags, list(COMPONENT_UNITS), ["Id", "LoadState", "ActiveState", "SubState", "Result"],
+                           "portal and sound services")
+    log = machine.user_log() if machine.target else []
+    if found:
+        sound(found, log)
+    if machine.target:
+        portals(machine, environment, desktops, found or {}, log)
+        shell_extensions(machine, environment, log)
+        dconf_health(machine, environment, log)
+        autostart(machine, environment, desktops)
+    if machine.sees_system_journal():
+        resumes(machine)
+    else:
+        say("unchecked", "resume from sleep: " + machine.journal_hint())
+
+
+def installed_units(found):
+    return {name: props for name, props in found.items() if props.get("LoadState") not in (None, "", "not-found")}
+
+
+def running(props):
+    return (props or {}).get("ActiveState") in ("active", "activating", "reloading")
+
+
+def sound(found, log):
+    """PipeWire with its PulseAudio server and session manager. Failed units are counted under Services; here they
+    are only explained."""
+    units = installed_units(found)
+    for name, props in units.items():
+        if props.get("ActiveState") == "failed" and COMPONENT_UNITS[name]:
+            say("info", f"{name} has failed (see Services): {COMPONENT_UNITS[name]}")
+    if running(units.get("pipewire.service")) and "wireplumber.service" in units \
+            and not running(units["wireplumber.service"]) and units["wireplumber.service"].get("ActiveState") != "failed":
+        say("warning", "PipeWire runs without its session manager WirePlumber, so no audio or video devices appear; "
+                       "systemctl --user start wireplumber.service")
+    if running(units.get("pulseaudio.service")) and running(units.get("pipewire-pulse.service")):
+        say("warning", "PulseAudio and pipewire-pulse are both running and compete for the sound server, so sound "
+                       "works in some applications only; Ubuntu uses pipewire-pulse: systemctl --user mask "
+                       "pulseaudio.service pulseaudio.socket")
+    present = [name for name in SOUND_UNITS if name in units]
+    errors = [e for e in log if (e.get("_SYSTEMD_USER_UNIT") in present or e.get("SYSLOG_IDENTIFIER") in
+                                 ("pipewire", "pipewire-pulse", "wireplumber")) and int(e.get("PRIORITY", "6")) <= 3]
+    if errors:
+        say("info", f"sound services logged {plural(len(errors), 'error')} this boot, last: "
+                    f"{clean(errors[-1]['MESSAGE'], 160)}")
+    if present and all(running(units[name]) for name in present):
+        say("ok", "sound and screen sharing: " + ", ".join(name.rsplit(".", 1)[0] for name in present) + " running")
+    elif present and not any(running(units[name]) or units[name].get("ActiveState") == "failed" for name in present):
+        say("info", "PipeWire is not running; it starts with the first application that uses sound")
+
+
+def portals(machine, environment, desktops, found, log):
+    """Which portal backend serves the session: the portals.conf that applies to the desktop, the backends it
+    names, and the backend failures xdg-desktop-portal logged."""
+    if not executable(machine, "/usr/libexec/xdg-desktop-portal"):
+        return
+    config_dirs, data_dirs = portal_directories(machine, environment)
+    backends = installed_backends(machine, environment, data_dirs)
+    if not backends:
+        say("warning", "xdg-desktop-portal is installed without any backend, so sandboxed applications get no file "
+                       "chooser or screen sharing (Ubuntu's are xdg-desktop-portal-gnome and -gtk)")
+        return
+    if not desktops:
+        say("info", f"portals: no desktop name for {machine.user} (no graphical session), so which backend applies is "
+                    "not checked; installed: " + ", ".join(backends))
+    else:
+        config = None
+        for directory in config_dirs:
+            for name in [f"{desktop}-portals.conf" for desktop in desktops] + ["portals.conf"]:
+                text = machine.read(f"{directory}/{name}".lstrip("/"))
+                if text is not None:
+                    config = (f"{directory}/{name}", text)
+                    break
+            if config:
+                break
+        if config:
+            preferred = re.split(r"^\[preferred\]\s*$", config[1], flags=re.M)
+            choices = dict(re.findall(r"^([\w.-]+)\s*=\s*(.*)$", preferred[1].split("\n[")[0], re.M)) \
+                if len(preferred) > 1 else {}
+            unusable, disabled = portal_routes(choices, backends)
+            for key, reasons in unusable:
+                say("warning", f"portal configuration {config[0]}: {key} has no usable backend ({'; '.join(reasons)}), "
+                               "so that portal fails")
+            if disabled:
+                say("info", f"portals switched off on purpose by {config[0]} (none): {', '.join(disabled)}")
+            if not unusable:
+                say("ok", f"portals for {':'.join(desktops)}: {config[0]} chooses "
+                    + (choices.get("default") or "per interface") + " by default, and each interface it routes "
+                    f"explicitly has an installed backend that declares it (installed: {', '.join(backends)})")
+        elif any(set(desktops) & used_in(text) for text in backends.values()):
+            say("ok", f"portals for {':'.join(desktops)}: chosen by the backends' UseIn (no portals.conf)")
+        else:
+            say("warning", f"no portal backend is configured for desktop {':'.join(desktops)} (no portals.conf, no "
+                           "matching UseIn), so sandboxed applications get no file chooser or screen sharing")
+    failures = [e for e in log if ((e.get("_SYSTEMD_USER_UNIT") or "").startswith("xdg-desktop-portal")
+                                   or (e.get("SYSLOG_IDENTIFIER") or "").startswith("xdg-desktop-por"))
+                and PORTAL_FAILURE.search(e["MESSAGE"])]
+    if failures:
+        say("warning", f"xdg-desktop-portal reported {plural(len(failures), 'backend failure')} this boot, last at "
+                       f"{when(failures[-1])}: {clean(failures[-1]['MESSAGE'], 160)}; see: journalctl --user -b "
+                       "-u 'xdg-desktop-portal*'")
+
+
+def portal_directories(machine, environment):
+    """Where portals.conf is looked for, highest precedence first, and the data directories, as the portals.conf
+    documentation orders them: config home, XDG_CONFIG_DIRS, /etc, data home, XDG_DATA_DIRS, /usr/share."""
+    home = machine.target["home"].rstrip("/")
+    data_home = (environment.get("XDG_DATA_HOME") or f"{home}/.local/share").rstrip("/")
+    config_dirs = [d for d in (environment.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":") if d]
+    data_dirs = [d for d in (environment.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":") if d]
+    searched = [config_home(machine, environment)] + config_dirs + ["/etc", data_home] + data_dirs + ["/usr/share"]
+    return (list(dict.fromkeys(f"{d.rstrip('/')}/xdg-desktop-portal" for d in searched)),
+            list(dict.fromkeys(d.rstrip("/") for d in data_dirs + ["/usr/share"])))
+
+
+def installed_backends(machine, environment, data_dirs):
+    """Backend name to its .portal text: from XDG_DESKTOP_PORTAL_DIR when set, else the data directories (the
+    first file of a name wins)."""
+    directories = [environment["XDG_DESKTOP_PORTAL_DIR"]] if environment.get("XDG_DESKTOP_PORTAL_DIR") else \
+        [f"{d}/xdg-desktop-portal/portals" for d in data_dirs]
+    backends = {}
+    for directory in directories:
+        for entry in sorted(glob.glob(str(machine.path(directory.lstrip("/")) / "*.portal"))):
+            backends.setdefault(Path(entry).stem, Path(entry).read_text(errors="replace"))
+    return backends
+
+
+def interfaces(text):
+    matched = re.search(r"^Interfaces=(.*)$", text, re.M)
+    return {name.strip() for name in matched.group(1).split(";") if name.strip()} if matched else set()
+
+
+def portal_routes(choices, backends):
+    """Evaluate portals.conf [preferred]: each explicitly routed interface takes the first listed backend that is
+    installed and declares it ("*" any that does, "none" none on purpose). The default list is only checked for an
+    installed backend, since which interfaces it must serve depends on the caller. Returns (unusable, disabled)."""
+    unusable, disabled = [], []
+    for key, value in choices.items():
+        names = [name.strip() for name in value.split(";") if name.strip()]
+        if not names:
+            continue
+        if key == "default":
+            if not any(name in ("*", "none") or name in backends for name in names):
+                unusable.append((key, [f"{name} is not installed" for name in names]))
+            continue
+        if not key.startswith("org.freedesktop.impl.portal."):
+            continue
+        reasons = []
+        for name in names:
+            if name == "none":
+                disabled.append(key)
+                break
+            if name == "*":
+                if any(key in interfaces(text) for text in backends.values()):
+                    break
+                reasons.append("no installed backend declares it")
+            elif name not in backends:
+                reasons.append(f"{name} is not installed")
+            elif key not in interfaces(backends[name]):
+                reasons.append(f"{name} does not implement it")
+            else:
+                break
+        else:
+            unusable.append((key, reasons))
+    return unusable, disabled
+
+
+def used_in(text):
+    """The desktops a backend's .portal file says it serves (the pre-portals.conf way of choosing)."""
+    matched = re.search(r"^UseIn=(.*)$", text, re.M)
+    return {name.strip().lower() for name in matched.group(1).split(";") if name.strip()} if matched else set()
+
+
+def shell_major(machine):
+    result = run(["gnome-shell", "--version"], timeout=10)
+    matched = re.search(r"(\d+)\.", result.stdout) if result and result.returncode == 0 else None
+    return matched.group(1) if matched else None
+
+
+def shell_extensions(machine, environment, log):
+    """Enabled Shell extensions: missing, not declared for the running Shell (the Shell skips them after an
+    upgrade), or logging errors this boot."""
+    if not executable(machine, "/usr/bin/gnome-shell"):
+        return
+    settings = gsettings(machine, "org.gnome.shell")
+    if settings is None:
+        say("unchecked", f"Shell extensions of {machine.user}: their settings cannot be read (gsettings missing, or "
+                         "the account is out of reach without --sudo)")
+        return
+    if settings.get("disable-user-extensions") is True:
+        say("info", "user extensions are turned off (org.gnome.shell disable-user-extensions)")
+        return
+    enabled = [uuid for uuid in settings.get("enabled-extensions") or [] if isinstance(uuid, str)]
+    data = (environment.get("XDG_DATA_HOME") or f"{machine.target['home'].rstrip('/')}/.local/share").rstrip("/")
+    version = shell_major(machine)
+    validate = settings.get("disable-extension-version-validation") is not True
+    missing, outdated = [], []
+    for uuid in enabled:
+        meta = next((machine.read(f"{directory}/gnome-shell/extensions/{uuid}/metadata.json".lstrip("/"))
+                     for directory in (data, "/usr/local/share", "/usr/share")
+                     if machine.path(f"{directory}/gnome-shell/extensions/{uuid}/metadata.json".lstrip("/")).exists()),
+                    None)
+        if meta is None:
+            missing.append(uuid)
+            continue
+        try:
+            declared = [str(value).split(".")[0] for value in json.loads(meta).get("shell-version", [])]
+        except (ValueError, AttributeError):
+            declared = []
+        if version and validate and version not in declared:
+            outdated.append(f"{uuid} (declares {', '.join(declared) or 'none'})")
+    if missing:
+        say("info", f"{plural(len(missing), 'enabled extension')} not installed: {', '.join(missing)}")
+    if outdated:
+        say("warning", f"{plural(len(outdated), 'enabled extension')} not declared for GNOME Shell {version}, so the "
+                       f"Shell skips {'it' if len(outdated) == 1 else 'them'}: {'; '.join(outdated)}; update or switch "
+                       "off (gnome-extensions disable UUID)")
+    errors = {}
+    for entry in log:
+        if (entry.get("SYSLOG_IDENTIFIER") or entry.get("_COMM")) != "gnome-shell":
+            continue
+        matched = EXTENSION_ERROR.search(entry["MESSAGE"])
+        if matched:
+            errors.setdefault(matched.group(1), []).append(entry)
+    for uuid, entries in sorted(errors.items()):
+        say("warning", f"Shell extension {uuid} logged {plural(len(entries), 'error')} this boot, last: "
+                       f"{clean(entries[-1]['MESSAGE'], 160)}; to rule it out: gnome-extensions disable {uuid}")
+    if enabled and not (missing or outdated or errors):
+        say("ok", f"{plural(len(enabled), 'enabled Shell extension')} installed"
+            + (f", declared for GNOME Shell {version}" if version and validate else "") + ", no errors this boot")
+
+
+def dconf_health(machine, environment, log):
+    """Whether settings can be saved, and the system policy that locks them or has not been compiled."""
+    directory = f"{config_home(machine, environment)}/dconf"
+    path = machine.path(directory.lstrip("/"))
+    try:
+        st = path.stat()
+    except OSError:
+        st = None
+    if st and st.st_uid != machine.uid:
+        say("warning", f"{directory} is owned by {owner_label(st.st_uid)}, not {machine.user}: settings changes are "
+                       f"lost at logout (sudo chown -R {machine.user} {directory})")
+    elif st:
+        blocked = inspector.access_check(machine.root, path, st, identity(machine), 7)
+        if blocked and blocked[0] == "warning":
+            say("warning", f"{machine.user} cannot write {directory}: settings changes are lost at logout")
+    failures = [e for e in log if DCONF_FAILURE.search(e["MESSAGE"])]
+    if failures:
+        say("warning", f"settings failed to save {plural(len(failures), 'time')} this boot, last at "
+                       f"{when(failures[-1])}: {clean(failures[-1]['MESSAGE'], 160)}")
+    chosen = environment.get("DCONF_PROFILE") or "user"
+    profile = machine.read(chosen.lstrip("/") if chosen.startswith("/") else f"etc/dconf/profile/{chosen}") or ""
+    for name in re.findall(r"^system-db:(\S+)", profile, re.M):
+        keyfiles, compiled = machine.path(f"etc/dconf/db/{name}.d"), machine.path(f"etc/dconf/db/{name}")
+        sources = [entry for entry in keyfiles.rglob("*") if entry.is_file()] if keyfiles.is_dir() else []
+        if sources and (not compiled.exists()
+                        or max(entry.stat().st_mtime for entry in sources) > compiled.stat().st_mtime):
+            say("warning", f"dconf policy {name}: /etc/dconf/db/{name}.d changed after it was compiled, so its "
+                           "defaults and locks are not in effect; run: sudo dconf update")
+        locks = [line.strip() for entry in sorted((keyfiles / "locks").glob("*")) if entry.is_file()
+                 for line in entry.read_text(errors="replace").splitlines() if line.strip().startswith("/")]
+        if locks:
+            say("info", f"{plural(len(locks), 'setting')} locked by system policy {name} (e.g. {locks[0]}); users "
+                        "cannot change them")
+
+
+def autostart(machine, environment, desktops):
+    """Login autostart entries that apply to this desktop and point to a program that is not installed. An
+    entry whose TryExec is missing is skipped by design, so it is not reported."""
+    user_directory = f"{config_home(machine, environment)}/autostart"
+    entries = {}
+    for scope, directory in (("system", "/etc/xdg/autostart"), ("user", user_directory)):
+        for entry in sorted(glob.glob(str(machine.path(directory.lstrip("/")) / "*.desktop"))):
+            entries[Path(entry).name] = (scope, Path(entry))
+    problems = []
+    for name, (scope, path) in sorted(entries.items()):
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            problems.append((scope, name, f"{machine.user} cannot read it"))
+            continue
+        main = re.search(r"^\[Desktop Entry\][^\n]*\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
+        fields = dict(re.findall(r"^([A-Za-z0-9-]+)=(.*)$", main.group(1) if main else text, re.M))
+        if fields.get("Hidden", "").lower() == "true" or fields.get("X-GNOME-Autostart-enabled", "").lower() == "false":
+            continue
+        only = {d.lower() for d in fields.get("OnlyShowIn", "").split(";") if d}
+        hidden_in = {d.lower() for d in fields.get("NotShowIn", "").split(";") if d}
+        # Without a desktop name an OnlyShowIn entry may not apply, so it is left out rather than guessed.
+        if (only and not only & set(desktops)) or hidden_in & set(desktops):
+            continue
+        if fields.get("TryExec") and not executable(machine, fields["TryExec"]):
+            continue
+        try:
+            words = shlex.split(fields.get("Exec", ""))
+        except ValueError:
+            words = fields.get("Exec", "").split()
+        while words and (words[0] == "env" or re.match(r"^\w+=", words[0])):
+            words.pop(0)
+        if not words:
+            problems.append((scope, name, "it has no Exec line"))
+        elif not executable(machine, words[0]):
+            problems.append((scope, name, f"its program {words[0]} is missing"))
+    for scope, name, why in problems:
+        say("warning", f"autostart entry {name} ({scope}): {why}, so it fails at every login"
+            + (f"; remove {user_directory}/{name} if it is no longer wanted" if scope == "user" else ""))
+    if entries and not problems:
+        count = len(entries)
+        say("ok", f"{count} autostart entr{'y' if count == 1 else 'ies'} checked: each one that applies points to an installed "
+                  "program")
+
+
+def resumes(machine):
+    """Resumes from sleep this boot, and what went wrong right after them: graphics driver errors, Shell crashes
+    and failed unlocks within two minutes are correlated, not proven, causes of a broken desktop after resume."""
+    entries = machine.journal("_TRANSPORT=kernel", "+", "SYSLOG_IDENTIFIER=systemd-sleep") or []
+    failed = [e for e in entries if SLEEP_FAILED.search(e["MESSAGE"])]
+    if failed:
+        say("warning", f"suspend or resume failed {plural(len(failed), 'time')} this boot, last at {when(failed[-1])}: "
+                       f"{clean(kernel_text(failed[-1]), 160)}")
+    times = []
+    for entry in entries:
+        if RESUMED.search(entry["MESSAGE"]) and (not times or monotonic(entry) - times[-1] > 30e6):
+            times.append(monotonic(entry))
+    if not times:
+        if not failed:
+            say("info", "the machine did not resume from sleep this boot")
+        return
+    uid = str(machine.uid)
+    gpu = [e for e in entries if e.get("_TRANSPORT") == "kernel" and int(e.get("PRIORITY", "6")) <= 4
+           and GPU_ERROR.search(kernel_text(e))]
+    crashes = [e for e in machine.journal("MESSAGE_ID=" + COREDUMP) or []
+               if e.get("COREDUMP_UID") == uid and (e.get("COREDUMP_COMM") or "") in SHELL_PROGRAMS]
+    unlocks = []
+    for entry in machine.journal("SYSLOG_FACILITY=10", "SYSLOG_FACILITY=4") or []:
+        denied = AUTH_FAILURE.search(entry["MESSAGE"])
+        if denied and denied.group(1) in GRAPHICAL_PATHS \
+                and re.search(rf"\buser[= ]{re.escape(machine.user)}\b", entry["MESSAGE"]):
+            unlocks.append(entry)
+
+    def followed(events):
+        return [t for t in times if any(t <= monotonic(e) <= t + RESUME_WINDOW for e in events)]
+    after_gpu, after_crash, after_unlock = followed(gpu), followed(crashes), followed(unlocks)
+    say("info", f"{plural(len(times), 'resume')} from sleep this boot")
+    if after_gpu:
+        first = next(e for e in gpu if any(t <= monotonic(e) <= t + RESUME_WINDOW for t in after_gpu))
+        say("warning", f"after {len(after_gpu)} of them the graphics driver reported errors within two minutes, e.g. "
+                       f"{clean(kernel_text(first), 160)}; a black, frozen or garbled screen after resume likely "
+                       "comes from this (hypothesis); see: journalctl -b -k -p warning")
+    if after_crash:
+        say("warning", f"{machine.user}'s Shell crashed within two minutes after {plural(len(after_crash), 'resume')}"
+            + (", together with graphics errors: the driver is the likely cause (hypothesis)"
+               if set(after_crash) & set(after_gpu) else "") + "; see: coredumpctl list gnome-shell")
+    if after_unlock:
+        say("info", f"unlocking failed right after {plural(len(after_unlock), 'resume')} (a mistyped password, or an "
+                    "unreachable domain before the network came back)")
+    if not (after_gpu or after_crash or failed):
+        say("ok", "no graphics errors or Shell crashes followed a resume")
 
 
 # --- Authorization (polkit) -------------------------------------------------------------------------------------
@@ -2664,6 +3134,248 @@ def agents(machine, entries):
             recovered = any(kind == "Unregistered" for kind, _ in events)
             say("ok", f"session {session}: an authentication agent is registered"
                 + (" (it re-registered after going away)" if recovered else ""))
+
+
+# --- File indexing ----------------------------------------------------------------------------------------------
+
+# (name, miner program, its user unit, bus name, process name prefixes, command to rebuild the index)
+INDEXERS = (("LocalSearch", "/usr/libexec/localsearch-3", "localsearch-3.service", "org.freedesktop.LocalSearch3",
+             ("localsearch",), "localsearch reset"),
+            ("Tracker 3", "/usr/libexec/tracker-miner-fs-3", "tracker-miner-fs-3.service",
+             "org.freedesktop.Tracker3.Miner.Files", ("tracker-miner-f", "tracker-extract", "tracker3"),
+             "tracker3 reset --filesystem"))
+INDEX_SCHEMA = "org.freedesktop.Tracker3.Miner.Files"
+MINER_PATH = "/org/freedesktop/Tracker3/Miner/Files"
+MINER_INTERFACE = "org.freedesktop.Tracker3.Miner"
+# Message kinds are counted, never quoted: the indexer's messages name the files it was working on.
+INDEX_RULES = (
+    ("database", "warning", "database errors",
+     r"(?i)database disk image is malformed|SQLITE_CORRUPT|\bcorrupt|unable to open database|database is locked|"
+     r"could not (?:open|create) (?:the )?database",
+     "the index database is damaged or unusable, so search misses files; rebuilding it removes only the index: "
+     "{reset}"),
+    ("watches", "warning", "out of inotify watches",
+     r"(?i)inotify (?:watch )?limit|upper limit on inotify watches|max_user_watches|too many open files|"
+     r"could not (?:add|set up) (?:a )?monitor",
+     "changes in some folders go unnoticed until the next crawl; raise fs.inotify.max_user_watches (sysctl) or "
+     "exclude large folders"),
+    ("timeout", "warning", "extraction timeouts",
+     r"(?i)(?:extract\w*|metadata)\b.*(?:timed? ?out|timeout)|Timeout was reached",
+     "those files are indexed by name only"),
+    ("crash", "warning", "extractor crashes",
+     r"(?i)extract\w*\b.*(?:crash|died|killed|exited|terminated)|Disallowed syscall",
+     "the indexer skips a file that crashed the extractor, so repeated crashes mean many such files or a broken "
+     "extractor module; see: journalctl --user -b -u {unit}"),
+    ("space", "info", "paused for low disk space",
+     r"(?i)low disk space|No space left on device",
+     "indexing pauses deliberately when the disk is nearly full"),
+)
+INDEX_PATTERNS = tuple((key, level, title, re.compile(pattern), advice)
+                       for key, level, title, pattern, advice in INDEX_RULES)
+BUSY_HOURS = 6
+# Location tokens printed as they are; any other value is a folder name and only counted.
+INDEX_ALIASES = ("$HOME", "&DESKTOP", "&DOCUMENTS", "&DOWNLOAD", "&MUSIC", "&PICTURES", "&PUBLIC_SHARE",
+                 "&TEMPLATES", "&VIDEOS")
+
+
+def check_indexing(machine):
+    """The account's file indexer, discovered from what is installed: its settings, whether it runs, what it is
+    doing (asked over D-Bus only when it is already running, never started), what it logged, and whether its
+    database and the kernel's watch limit let it work. File names never appear: only counts and folder aliases."""
+    found = next((entry for entry in INDEXERS if executable(machine, entry[1])), None)
+    if not found or not machine.target:
+        return
+    name, _, unit, bus_name, programs, reset = found
+    section(f"File indexing ({name}, for {machine.user})")
+    settings = gsettings(machine, INDEX_SCHEMA)
+    if index_settings(settings):
+        return
+    flags = machine.user_flags() if machine.reach else None
+    if not flags:
+        say("unchecked", f"indexer of {machine.user}: their user manager needs --sudo")
+    else:
+        units = show_units(flags, [unit], ["Id", "LoadState", "UnitFileState", "ActiveState", "SubState", "Result",
+                                           "NRestarts", "ActiveEnterTimestamp"], "indexer")
+        if units and miner_unit(unit, units[unit]):
+            started = units[unit].get("ActiveEnterTimestamp", "").lstrip("@")
+            miner_status(flags, bus_name, int(started) if started.isdigit() else None)
+    index_log(machine, unit, programs, reset)
+    index_cache(machine, settings or {})
+    watches(machine)
+
+
+def index_settings(settings):
+    """Report what the indexer is set to cover; True when it is set to cover nothing, a deliberate choice."""
+    if settings is None:
+        say("unchecked", f"indexing settings: gsettings could not read {INDEX_SCHEMA}")
+        return False
+    recursive = [path for path in settings.get("index-recursive-directories") or [] if isinstance(path, str)]
+    single = [path for path in settings.get("index-single-directories") or [] if isinstance(path, str)]
+    if not recursive and not single:
+        say("info", "no folders are set to be indexed: indexing is turned off deliberately, not a fault")
+        return True
+
+    def describe(paths):
+        aliases = [path for path in paths if path in INDEX_ALIASES]
+        others = len(paths) - len(aliases)
+        return ", ".join(aliases + ([plural(others, "other folder")] if others else []))
+    say("info", f"indexes {describe(recursive) or 'no folder'} with subfolders"
+        + (f", and {describe(single)} without" if single else ""))
+    ignored, files = settings.get("ignored-directories") or [], settings.get("ignored-files") or []
+    say("info", f"exclusions: {plural(len(ignored), 'folder pattern')}, {plural(len(files), 'file pattern')}")
+    if settings.get("enable-monitors") is False:
+        say("info", "watching for changes is off (enable-monitors): new files are found only by the next crawl")
+    if settings.get("crawling-interval") == -2:
+        say("info", "crawling is off (crawling-interval -2): only changes seen while running are indexed")
+    return False
+
+
+def miner_unit(unit, props):
+    """The indexer's unit state; True when it is running."""
+    state, restarts = props.get("ActiveState", ""), int(props.get("NRestarts") or 0)
+    hint = f"see: systemctl --user status {unit}"
+    if "masked" in (props.get("LoadState"), props.get("UnitFileState")):
+        say("info", f"{unit} is masked: indexing is disabled deliberately; search finds only what was indexed before")
+    elif props.get("LoadState") in (None, "", "not-found"):
+        say("warning", f"{unit} is not known to the user manager although the indexer is installed; {hint}")
+    elif state == "failed":
+        reason = RESULTS.get(props.get("Result", ""), props.get("Result") or "unknown reason")
+        say("warning", f"{unit} has failed ({reason}): new and changed files do not appear in search; {hint}")
+    elif restarts >= 3:
+        say("warning", f"{unit} restarted {plural(restarts, 'time')} this boot: it keeps crashing; {hint}")
+        return running(props)
+    elif running(props):
+        return True
+    else:
+        say("info", f"{unit} is {state or 'not running'}; it starts with the desktop session")
+    return False
+
+
+def miner_status(flags, bus_name, started):
+    """Status, progress and pauses from the running miner. One look cannot tell a slow indexer from a stuck
+    one, so a long busy spell is reported with how to compare over time, not as a fault."""
+    call = ["busctl"] + flags + ["--no-pager", "--auto-start=no", "call", bus_name, MINER_PATH, MINER_INTERFACE]
+    status = run(call + ["GetStatus"], timeout=10)
+    if status is None:
+        say("unchecked", "indexer status: busctl is not installed")
+        return
+    if status.returncode != 0:
+        say("info", f"indexer status: not available over D-Bus ({failure('busctl', status)})")
+        return
+    quoted = re.search(r'"(.*)"', status.stdout)
+    text = quoted.group(1) if quoted else status.stdout.strip()
+    progress = run(call + ["GetProgress"], timeout=10)
+    value = None
+    if progress and progress.returncode == 0 and len(progress.stdout.split()) == 2:
+        try:
+            value = float(progress.stdout.split()[1])
+        except ValueError:
+            value = None
+    pause = run(call + ["GetPauseDetails"], timeout=10)
+    reasons = re.findall(r'"([^"]*)"', pause.stdout) if pause and pause.returncode == 0 else []
+    if reasons:
+        half = len(reasons) // 2
+        say("info", f"indexing is paused by {', '.join(reasons[:half])} ({'; '.join(reasons[half:])}); a pause is "
+                    "deliberate, not a fault")
+    elif text.lower() == "idle" or (value is not None and value >= 1):
+        say("ok", "the indexer is running and idle: everything set to be indexed is indexed")
+    else:
+        busy = time.time() - started if started else 0
+        say("info", f"the indexer is busy: {text}" + (f", {value:.0%} done" if value is not None else "")
+            + (f", {busy / 3600:.0f} h after it started; one look cannot tell slow from stuck: run this again later "
+               "and compare the progress" if busy > BUSY_HOURS * 3600 else ""))
+
+
+def index_log(machine, unit, programs, reset):
+    """What the indexer and its extractor logged this boot, by kind, with crashes from coredumps."""
+    if not machine.reach:
+        say("unchecked", f"indexer log of {machine.user}: needs --sudo")
+        return
+    mine = [e for e in machine.user_log() if e.get("_SYSTEMD_USER_UNIT") == unit
+            or (e.get("SYSLOG_IDENTIFIER") or e.get("_COMM") or "").startswith(programs)]
+    counts = {}
+    for entry in mine:
+        for key, _, _, pattern, _ in INDEX_PATTERNS:
+            if pattern.search(entry["MESSAGE"]):
+                counts[key] = counts.get(key, 0) + 1
+                break
+    uid = str(machine.uid)
+    dumps = [e for e in machine.journal("MESSAGE_ID=" + COREDUMP) or []
+             if e.get("COREDUMP_UID") == uid and (e.get("COREDUMP_COMM") or "").startswith(programs)]
+    if dumps:
+        counts["crash"] = counts.get("crash", 0) + len(dumps)
+    for key, level, title, _, advice in INDEX_PATTERNS:
+        if counts.get(key):
+            say(level, f"indexer: {title} ({counts[key]} this boot); " + advice.format(unit=unit, reset=reset))
+    if not counts:
+        say("ok", "the indexer logged no database, watch, timeout or crash problems this boot")
+
+
+def index_cache(machine, settings):
+    """The index database: present, owned and writable by the account, and the free space the indexer needs."""
+    environment = proxy_values_env(machine) if machine.reach else {}
+    cache = (environment.get("XDG_CACHE_HOME") or f"{machine.target['home'].rstrip('/')}/.cache").rstrip("/")
+    shown = f"{cache}/tracker3/files"
+    path = machine.path(shown.lstrip("/"))
+    try:
+        st = path.stat()
+    except OSError:
+        say("info", f"no index database yet at {shown}; it is created when the indexer first runs")
+        return
+    if st.st_uid != machine.uid:
+        say("warning", f"{shown} is owned by {owner_label(st.st_uid)}, not {machine.user}: the indexer cannot update "
+                       f"its database (sudo chown -R {machine.user} {cache}/tracker3)")
+        return
+    blocked = inspector.access_check(machine.root, path, st, identity(machine), 7)
+    if blocked and blocked[0] == "warning":
+        say("warning", f"{machine.user} cannot write {shown}: the indexer cannot update its database")
+        return
+    size = sum(entry.stat().st_size for entry in path.glob("meta.db*") if entry.is_file())
+    say("info", f"index database: {size / 2 ** 20:.0f} MiB in {shown}")
+    limit = settings.get("low-disk-space-limit")
+    if isinstance(limit, int) and not isinstance(limit, bool) and limit >= 0:
+        try:
+            fs = os.statvfs(path)
+        except OSError:
+            return
+        free = fs.f_bavail * 100 / fs.f_blocks if fs.f_blocks else 100
+        if free < limit:
+            say("info", f"the indexer pauses below {limit}% free space and {shown} has {free:.1f}% free, so indexing "
+                        "is paused deliberately until space is freed")
+
+
+def watches(machine):
+    """inotify watches held by the account's processes against the per-user limit; the indexer and editors stop
+    seeing changes when it runs out."""
+    maximum = (machine.read("proc/sys/fs/inotify/max_user_watches") or "").strip()
+    if not maximum.isdigit() or not machine.reach:
+        return
+    # A descriptor duplicated or inherited across fork shows the same instance's watches again, and nothing here
+    # tells shared instances apart, so the total is an upper bound; the largest single instance is a sure minimum.
+    used, largest = 0, 0
+    for status in machine.path("proc").glob("[0-9]*/status"):
+        try:
+            matched = re.search(r"^Uid:\s+(\d+)", status.read_text(errors="replace"), re.M)
+            if not matched or int(matched.group(1)) != machine.uid:
+                continue
+            for fd in (status.parent / "fd").iterdir():
+                if os.readlink(fd) == "anon_inode:inotify":
+                    info = (status.parent / "fdinfo" / fd.name).read_text(errors="replace")
+                    count = sum(1 for line in info.splitlines() if line.startswith("inotify wd:"))
+                    used, largest = used + count, max(largest, count)
+        except OSError:
+            continue
+    limit = int(maximum)
+    span = f"{largest} of {limit}" if used == largest else f"between {largest} and {used} of {limit}"
+    if largest >= limit * 0.9:
+        say("warning", f"{machine.user}'s programs hold at least {largest} of {limit} inotify watches: the indexer and "
+                       "editors stop seeing changes; raise fs.inotify.max_user_watches (sysctl) or close what watches "
+                       "most")
+    elif used >= limit * 0.9:
+        say("info", f"inotify watches of {machine.user}'s programs: {span} (descriptors shared between processes "
+                    "count once per process), so they may be near the limit; see whether changes go unnoticed")
+    else:
+        say("info", f"inotify watches: {span} in use by {machine.user}'s programs")
 
 
 # --- Packages and security --------------------------------------------------------------------------------------
@@ -2931,6 +3643,7 @@ def main():
     check_domain_login(machine, args.probe_domain)
     check_desktop(machine)
     check_polkit(machine)
+    check_indexing(machine)
     check_proxy(machine, args.probe)
     check_installation(machine)
     check_packages(machine)

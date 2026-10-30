@@ -196,6 +196,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
 
+      - name: Install the file indexer
+        # Its real settings schema and user unit, read through gsettings and the user manager.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends localsearch libglib2.0-bin
+
       - name: Check dotconfig machine status against the runner
         env:
           DOTCONFIG_MACHINE_LIVE_TEST: "1"

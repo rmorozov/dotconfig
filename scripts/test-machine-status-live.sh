@@ -112,4 +112,11 @@ if systemctl cat polkit.service > /dev/null 2>&1; then
     check '^Administrator authorization (polkit, for '
     check '^info: polkit authenticates through: '
 fi
+# The indexer, when installed: real gsettings output for its schema, read as the account, and its user unit.
+if [[ -x /usr/libexec/localsearch-3 ]]; then
+    check '^File indexing (LocalSearch, for '
+    check '^info: indexes .* with subfolders'
+    grep -Eq '^info: exclusions: [0-9]+ folder patterns?, [0-9]+ file patterns?$' "$out" ||
+        { echo 'Missing: indexer exclusions' >&2; exit 1; }
+fi
 echo 'machine status live tests passed'
