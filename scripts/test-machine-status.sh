@@ -308,8 +308,10 @@ EOF
 cat > "$stubs/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-    *"show -p Id -p ActiveState -p NRestarts --no-pager display-manager.service") printf 'Id=gdm.service\nActiveState=active\nNRestarts=1\n' ;;
-    *"show -p LoadState -p ActiveState -p NRestarts --no-pager polkit.service") printf 'LoadState=loaded\nActiveState=active\nNRestarts=0\n' ;;
+    *"show -p Id -p ActiveState -p SubState -p NRestarts -p ActiveEnterTimestampMonotonic --no-pager display-manager.service")
+        printf 'Id=gdm.service\nActiveState=active\nSubState=running\nNRestarts=1\nActiveEnterTimestampMonotonic=20000000000\n' ;;
+    *"show -p LoadState -p ActiveState -p SubState -p NRestarts -p ActiveEnterTimestampMonotonic --no-pager polkit.service")
+        printf 'LoadState=loaded\nActiveState=active\nNRestarts=0\n' ;;
     *"show --no-pager --timestamp=unix"*) exec python3 "$(dirname "$0")/../units.py" "$@" ;;
     is-system-running) echo degraded ;;
     "is-active user@"*) echo active ;;
@@ -682,9 +684,16 @@ check() {
 refute() {
     if grep -q -- "$1" "$test_dir/out"; then cat "$test_dir/out" >&2; echo "Unexpected: $1" >&2; exit 1; fi
 }
+# Every problem names what to run next.
+next_steps() {
+    local missing
+    missing="$(grep -E '^ *(warning|earlier|recovered): ' "$test_dir/out" | grep -vE 'see: |run: |to rule it out: |try: ' || :)"
+    [[ -z "$missing" ]] || { echo "Problems without a next step:" >&2; echo "$missing" >&2; exit 1; }
+}
 run_status() {
     status=0
     bash "$repo_root/scripts/machine.sh" status "$@" > "$test_dir/out" 2>&1 || status=$?
+    next_steps
 }
 
 # With sudo: everything is visible.
@@ -694,7 +703,7 @@ run_status --sudo --examples 2
 check '^ok: Ubuntu 26.04.1 LTS'
 check '^info: profile: work laptop (from ~/.config/chezmoi/chezmoi.toml); features: SSSD, dotconfig proxy$'
 check "^warning: ~/.config/dotconfig/machine-expect:8: cannot read 'require needs-dock.service max-age=fortnight'"
-check '^warning: sssd.service is disabled, so it does not start at boot (serves domain accounts and logins); systemctl enable --now sssd.service'
+check '^warning: sssd.service is disabled, so it does not start at boot (serves domain accounts and logins); run: systemctl enable --now sssd.service'
 check '^warning: fstrim.timer is masked, so it never starts'
 check '^warning: systemd-tmpfiles-clean.timer is inactive, so what it schedules never runs'
 check '^warning: logrotate.timer last ran 5 days ago, expected at least every 2 (keeps logs from filling the disk)'
@@ -723,24 +732,24 @@ check '^warning: SSSD is offline for corp.example although vpn0 routes its DNS; 
 check '^warning: alice@corp.example is not authorized to log in through gdm-password now: Permission denied'
 check '^ok: last login of alice@corp.example through gdm-password at 1 min 0 s after the kernel started: authentication, authorization and session setup succeeded'
 check '^info: 2 failed attempts through gdm-password before that, the last one 9: SSSD could not reach the domain'
-check '^warning: last login of alice@corp.example through sshd at .*: authentication succeeded, then authorization refused it (6: the access rules'
+check '^earlier: last login of alice@corp.example through sshd at .*: authentication succeeded, then authorization refused it (6: the access rules'
 check '^ok: last login of alice@corp.example through grd at .*: authentication, authorization and session setup succeeded'
 check '^ok: last login of alice@corp.example through vnc at .*: authentication, authorization and session setup succeeded'
 check '^info: a session failure through vnc at .* names no account and process, so it may or may not belong to this login'
 refute 'through grd at .*session setup failed'
-check '^warning: last login of alice@corp.example through cockpit at .*: authenticated and authorized, but session setup failed: Failed to create session: Connection timed out'
+check '^earlier: last login of alice@corp.example through cockpit at .*: authenticated and authorized, but session setup failed: Failed to create session: Connection timed out'
 refute 'discovery:'
-check "^warning: SSSD's in-memory group cache filled up 2 times this boot, so lookups fall back to the slower SSSD socket; raise memcache_size_group in \\[nss\\] of sssd.conf and set ignore_group_members = True"
+check "^earlier: SSSD's in-memory group cache filled up 2 times this boot, so lookups fall back to the slower SSSD socket; raise memcache_size_group in \\[nss\\] of sssd.conf and set ignore_group_members = True"
 check '^info: sudo also asks SSSD for its rules (nsswitch: sudoers: files sss); if the domain defines none, sudo_provider = none'
 refute 'resolving the groups of'
 check '^Desktop session (alice@corp.example):'
-check '^warning: display manager: gdm.service, active, restarted 1 time this boot; the login screen went away each time'
+check '^recovered: display manager: gdm.service, active, restarted 1 time this boot; the login screen went away each time'
 check '^warning: session oldwm: its program /usr/bin/oldwm is missing; choosing it at the login screen returns straight to it'
 refute 'session ubuntu: its program'
 check '^warning: alice@corp.example last chose session plasma, which is no longer installed'
-check '^warning: alice@corp.example logged in by password at 30.0 s after the kernel started, but the session ended 5 s later before the desktop was ready'
-check "^warning: alice@corp.example's desktop crashed 1 time this boot, last at .* (gnome-shell); see: coredumpctl info 5555"
-check "^warning: the login screen's Shell crashed 1 time this boot (greeter account, not a user session)"
+check '^recovered: alice@corp.example logged in by password at 30.0 s after the kernel started, but the session ended 5 s later before the desktop was ready'
+check "^earlier: alice@corp.example's desktop crashed 1 time this boot, last at .* (gnome-shell); see: coredumpctl info 5555"
+check "^earlier: the login screen's Shell crashed 1 time this boot (greeter account, not a user session)"
 check '^info: the default keyring is locked, as expected after a smart card login'
 check '^warning: /home/alice/.local/share/keyrings is owned by [a-z0-9 ]*, not alice@corp.example'
 check '^Administrator authorization (polkit, for alice@corp.example):'
@@ -752,8 +761,8 @@ check '^info: polkit authenticates through: pam_unix.so, pam_sss.so, pam_deny.so
 check '^warning: 1 legacy .pkla file (e.g. old.pkla) without polkitd-pkla installed'
 check '^warning: session 2: its authentication agent unregistered at .* and did not register again'
 check '^ok: session 3: an authentication agent is registered (it re-registered after going away)'
-check '^warning: polkit reported 1 rule error this boot'
-check '^warning: org.freedesktop.NetworkManager.settings.modify.system: authentication failed 1 time this boot'
+check '^earlier: polkit reported 1 rule error this boot'
+check '^earlier: org.freedesktop.NetworkManager.settings.modify.system: authentication failed 1 time this boot'
 check '^info: org.freedesktop.packagekit.package-install: authorized 1 time this boot'
 refute 'failed screen unlock'
 check '^Desktop components (alice@corp.example):'
@@ -767,32 +776,32 @@ check '^info: portals switched off on purpose by /etc/company/xdg-desktop-portal
 refute 'FileChooser has no usable backend'
 refute 'default has no usable backend'
 refute 'ubuntu-portals.conf'
-check '^warning: xdg-desktop-portal reported 1 backend failure this boot, last at .*: Failed to create file chooser'
+check '^earlier: xdg-desktop-portal reported 1 backend failure this boot, last at .*: Failed to create file chooser'
 check '^info: 1 enabled extension not installed: gone@example.com$'
 check '^warning: 1 enabled extension not declared for GNOME Shell 50, so the Shell skips it: old@example.com (declares 46, 47)'
-check '^warning: Shell extension dash-to-dock@micxgx.gmail.com logged 1 error this boot, last: JS ERROR'
+check '^earlier: Shell extension dash-to-dock@micxgx.gmail.com logged 1 error this boot, last: JS ERROR'
 check '^warning: /home/alice/.config/dconf is owned by [a-z0-9 ]*, not alice@corp.example: settings changes are lost'
-check '^warning: settings failed to save 1 time this boot'
+check '^earlier: settings failed to save 1 time this boot'
 check '^warning: dconf policy corp: /etc/dconf/db/corp.d changed after it was compiled'
 check '^info: 2 settings locked by system policy corp (e.g. /org/gnome/desktop/screensaver/lock-enabled)'
 refute 'dconf policy decoy'
-check '^warning: autostart entry broken-app.desktop (user): its program /opt/broken/app is missing, so it fails at every login; remove /home/alice/.config/autostart/broken-app.desktop'
+check '^warning: autostart entry broken-app.desktop (user): its program /opt/broken/app is missing, so it fails at every login; if it is no longer wanted, run: rm /home/alice/.config/autostart/broken-app.desktop'
 refute 'autostart entry (good|kde-only|tryexec|hidden)'
 check '^info: 2 resumes from sleep this boot'
-check '^warning: suspend or resume failed 1 time this boot, last at .*: Failed to put system to sleep'
-check '^warning: after 1 of them the graphics driver reported errors within two minutes, e.g. i915 0000:00:02.0: \[drm\] \*ERROR\*'
-check "^warning: alice@corp.example's Shell crashed within two minutes after 1 resume, together with graphics errors"
+check '^earlier: suspend or resume failed 1 time this boot, last at .*: Failed to put system to sleep'
+check '^earlier: after 1 of them the graphics driver reported errors within two minutes, e.g. i915 0000:00:02.0: \[drm\] \*ERROR\*'
+check "^earlier: alice@corp.example's Shell crashed within two minutes after 1 resume, together with graphics errors"
 check '^File indexing (LocalSearch, for alice@corp.example):'
 check '^info: indexes &DESKTOP, &DOCUMENTS, 3 other folders with subfolders, and [$]HOME without'
 refute 'secret-client-project'
 refute 'SECRET-thing'
 check '^info: exclusions: 3 folder patterns, 0 file patterns'
-check '^warning: localsearch-3.service restarted 4 times this boot: it keeps crashing'
+check '^recovered: localsearch-3.service restarted 4 times this boot: it crashed repeatedly; it has run 480 min [0-9]* s since its last start'
 check '^info: the indexer is busy: Crawling, 42% done, 8 h after it started; one look cannot tell slow from stuck'
-check '^warning: indexer: database errors (1 this boot); .*rebuilding it removes only the index: localsearch reset'
-check '^warning: indexer: out of inotify watches (1 this boot)'
-check '^warning: indexer: extraction timeouts (1 this boot)'
-check '^warning: indexer: extractor crashes (3 this boot)'
+check '^earlier: indexer: database errors (1 this boot); .*rebuilding it removes only the index: localsearch reset'
+check '^earlier: indexer: out of inotify watches (1 this boot)'
+check '^earlier: indexer: extraction timeouts (1 this boot)'
+check '^earlier: indexer: extractor crashes (3 this boot)'
 check '^warning: /home/alice/.cache/tracker3/files is owned by [a-z0-9 ]*, not alice@corp.example'
 check "^warning: alice@corp.example's programs hold at least 950 of 1000 inotify watches"
 refute 'secret-plan'
@@ -800,16 +809,16 @@ refute 'srv/projects'
 check '^warning: systemd reports the system degraded'
 check '^warning: kernel tainted: D kernel died recently (oops or BUG); W kernel warning; O out-of-tree module; E unsigned module'
 check '^warning: reboot required by linux-image-6.20.0-15-generic'
-check '^warning: the boot before this one ended without a clean shutdown.*disconnected from corp-wifi'
+check '^earlier: the boot before this one ended without a clean shutdown.*disconnected from corp-wifi'
 check '^info: Startup finished in 6.1s (firmware)'
-check '^warning: userspace took 1 min 15 s to start'
+check '^earlier: userspace took 1 min 15 s to start'
 check '^info: graphical.target reached after 74.1s in userspace'
 check '^info: slowest units this boot: NetworkManager-wait-online.service (60.012s), snapd.seeded.service (5.300s)'
 check '^info: login screen appeared 20.0 s after the kernel started'
 check '^info: alice@corp.example logged in through gdm-password 30.0 s after the kernel started; no graphical session start recorded$'
-check '^warning: alice@corp.example logged in through gdm-password 1 min 0 s after the kernel started; user services started in 2.5 s; desktop session ready 44.8 s after the password was accepted'
+check '^earlier: alice@corp.example logged in through gdm-password 1 min 0 s after the kernel started; user services started in 2.5 s; desktop session ready 44.8 s after the password was accepted'
 check '^info: slowest user units: tracker-miner-fs-3.service (30.5s)'
-check '^warning: 2 failed password attempts through gdm-password before alice@corp.example logged in'
+check '^recovered: 2 failed password attempts through gdm-password before alice@corp.example logged in'
 check '^info: domain logins go through SSSD'
 check '^warning: backupd.service failed (Backup daemon): its main process exited with an error, exited 1 (generic failure), restarted 5 times first'
 check '^    log: {"api_token": <hidden>, "error": "request failed"}'
@@ -827,19 +836,19 @@ check '^warning: gone.service is active but its unit file is gone'
 check '^warning: refused.service was refused: Service has no ExecStart='
 check "^info: /etc/systemd/system/odd.service: 1 setting ignored, e.g. Unknown key name 'Foo'"
 check '^info: 1 system unit referenced but not installed (usually optional): plymouth-quit-wait.service'
-check '^warning: NetworkManager.service was restarted 4 times this boot'
+check '^earlier: NetworkManager.service was restarted 4 times this boot'
 check '^info: pipewire.service was restarted 1 time this boot'
 refute 'cups.service was restarted'
-check '^warning: gnome-shell: 1 error (1 critical)'
+check '^earlier: gnome-shell: 1 error (1 critical)'
 check '^info: mount.cifs: 3 errors'
 check '    e.g. Failed to mount /mnt/share202: Permission denied (x3)'
-check '^warning: gnome-shell crashed 2 times this boot; see: coredumpctl info gnome-shell'
+check '^earlier: gnome-shell crashed 2 times this boot; see: coredumpctl info gnome-shell'
 check '^info: 1 crash report in /var/crash: _usr_bin_gnome-shell.1000.crash'
-check '^warning: the kernel OOM killer ended processes (1 time): chrome'
-check '^warning: the kernel refused to load an unsigned or untrusted module'
-check '^info: modules loaded without a valid signature and tainted the kernel (E); allowed because signatures are not enforced (1 time): example'
-check '^info: firmware files not found (drivers often try several versions) (1 time): i915/mtl_gsc_1.bin'
-check '^info: AppArmor denied access (1 time): snap.firefox.firefox'
+check '^earlier: the kernel OOM killer ended processes (1 time this boot): chrome'
+check '^earlier: the kernel refused to load an unsigned or untrusted module'
+check '^info: modules loaded without a valid signature and tainted the kernel (E); allowed because signatures are not enforced (1 time this boot): example'
+check '^info: firmware files not found (drivers often try several versions) (1 time this boot): i915/mtl_gsc_1.bin'
+check '^info: AppArmor denied access (1 time this boot): snap.firefox.firefox'
 check '^info: ACPI firmware errors'
 check '^info: 1 other kernel error'
 check '    e.g. mysterious-driver: probe of'
@@ -871,30 +880,30 @@ check '^info: /dev/sda: overall SMART health still reads passed'
 refute 'unexpected smartctl'
 check '^warning: runnable tasks waited for a CPU 42.00% of the last 5 minutes'
 check '^info: all non-idle tasks waited for I/O 6.00% of the last 5 minutes'
-check '^warning: system.slice/backupd.service: the kernel killed 1 process at its own memory limit (MemoryMax)'
+check '^earlier: system.slice/backupd.service: the kernel killed 1 process at its own memory limit (MemoryMax)'
 check '^info: system.slice/cups.service reached its memory limit 2 times'
-check '^warning: user.slice/user-1000.slice/user@1000.service/app.slice/app-code.scope: the OOM killer ended 1 process here; it did not reach its own limit'
-check '^warning: legacy.slice/old.service: the OOM killer ended 1 process here'
+check '^earlier: user.slice/user-1000.slice/user@1000.service/app.slice/app-code.scope: the OOM killer ended 1 process here; it did not reach its own limit'
+check '^earlier: legacy.slice/old.service: the OOM killer ended 1 process here'
 refute '^warning: system.slice: '
 refute '^warning: user.slice: '
 refute '^warning: legacy.slice: '
-check '^warning: user.slice/user-1000.slice/user@1000.service/app.slice/build.scope: 3 process starts refused at its task limit (TasksMax) or an enclosing one'
+check '^earlier: user.slice/user-1000.slice/user@1000.service/app.slice/build.scope: 3 process starts refused at its task limit (TasksMax) or an enclosing one'
 refute '^warning: user.slice/user-1000.slice/user@1000.service/app.slice: 3 process'
 check '^warning: 90% of the kernel file handle table (fs.file-max) in use'
-check '^warning: the kernel ran out of file handles (fs.file-max) (1 time)'
+check '^earlier: the kernel ran out of file handles (fs.file-max) (1 time this boot)'
 refute 'process and thread limit'
 check '^warning: APT last refreshed its package lists successfully 10 days ago but tried 2 days ago: refreshes are failing'
 check '^info: repository archive.ubuntu.com/ubuntu/dists/resolute: last published 40 days ago'
 check '^warning: repository ppa.launchpadcontent.net/team/tool/ubuntu/dists/resolute: metadata expired 3 days ago (Valid-Until)'
 refute 'repository security.ubuntu.com'
-check '^warning: the daily APT refresh failed to fetch 1 time this boot'
+check '^earlier: the daily APT refresh failed to fetch 1 time this boot'
 check '^warning: unattended upgrades last ran 5 days ago'
 check '^warning: DKMS module nvidia is not installed for kernel 6.20.0-15-generic; that kernel boots without it'
 check '^warning: /boot has 97 MiB free but a kernel and its initrd take about 105 MiB'
 check '^warning: 7% of 15.3 GiB memory available'
 check '^info: 75% of swap used'
 check '^warning: processes stalled on memory 6.50% of the last 5 minutes'
-check '^warning: systemd-oomd killed 1 unit for memory pressure'
+check '^earlier: systemd-oomd killed 1 unit for memory pressure'
 check '^warning: NetworkManager connected (site only), connectivity limited'
 check '^info: VPN active: corp-vpn'
 check '^info: DNS servers: 10.0.0.1, 10.8.0.53'
@@ -906,7 +915,7 @@ check '^warning: dpkg reports half-installed or unconfigured packages (libfoo1)'
 refute 'systemd-coredump: '
 check '^info: 12 package updates pending, 3 of them security updates'
 check '^info: held packages: linux-firmware'
-check '^warning: 1 snap change failed recently'
+check '^earlier: 1 snap change failed recently'
 check '^    e.g. Auto-refresh snap "code"'
 check '^info: SecureBoot enabled'
 check '^ok: AppArmor is enabled'
@@ -915,10 +924,10 @@ check '^info: Archived and active journals take up 1.2G'
 check '^info: AppArmor: 120 profiles loaded, 110 enforcing, 10 in complain mode'
 check '^info: 2 processes started before their AppArmor profile loaded'
 check '^info: firewall (ufw): active'
-check '^warning: unattended-upgrades logged 1 error or warning'
+check '^earlier: unattended-upgrades logged 1 error or warning'
 check '^warning: BAT0: 71% discharging, holds 56% of its design capacity, 412 cycles'
 check '^warning: running hot: x86_pkg_temp 93 °C'
-check '^Summary: problems found: [0-9]* warnings$'
+check '^Summary: problems found: [0-9]* current, [0-9]* earlier not seen to recover, [0-9]* earlier and recovered$'
 refute 'check failed'
 refute 'MustNeverPrint'
 refute 'not checked'
@@ -934,7 +943,7 @@ check '^not checked: SMART health needs root'
 check '^not checked: SSSD caches and login logs need root'
 check '^not checked: AppArmor profiles, firewall, and unattended-upgrades log need root'
 check '^not checked: kernel log: needs the system journal'
-check '^warning: gnome-shell: 1 error (1 critical)'
+check '^earlier: gnome-shell: 1 error (1 critical)'
 check '^warning: sync-agent.service failed'
 refute 'mount.cifs'
 refute 'dotconfig creds check-logs --days'
@@ -947,7 +956,7 @@ check '^info: portals: no desktop name for alice@corp.example (no graphical sess
 check '^info: settings of alice@corp.example are read from the default locations'
 refute 'autostart entry kde-only'
 check '^warning: sssd.service is disabled'
-check '^Summary: problems found: [0-9]* warnings; [0-9]* not checked (need --sudo, or not applicable)$'
+check '^Summary: problems found: [0-9]* current, [0-9]* earlier not seen to recover, [0-9]* earlier and recovered; [0-9]* not checked (need --sudo, or not applicable)$'
 refute 'check failed'
 
 # SSSD online and the account authorized; discovery, asked for, finds the controllers through the VPN and reports
@@ -1062,7 +1071,7 @@ unset DOTCONFIG_MACHINE_CREDS_TIMEOUT
 check '^check failed: clock synchronization: timedatectl exited 1: Failed to query server: Connection timed out'
 check '^check failed: dotconfig creds status did not finish within 0.01 s; domain login health is not assessed'
 check '^check failed: dotconfig creds check-logs --days 2 did not finish within 0.01 s'
-check '^Summary: problems found: [0-9]* warnings; assessment incomplete: 3 checks failed$'
+check '^Summary: problems found: [0-9]* current, [0-9]* earlier not seen to recover, [0-9]* earlier and recovered; assessment incomplete: 3 checks failed$'
 cp "$test_dir/timedatectl" "$stubs/timedatectl"
 
 # The verdict keeps problems, failed diagnostics, and expected limits apart.
@@ -1079,7 +1088,11 @@ PYEOF
 [[ "$(verdict '{}')" == '0 healthy within the checked scope' ]]
 [[ "$(verdict '{"unchecked": 2, "ok": 5}')" == '0 healthy within the checked scope; 2 not checked (need --sudo, or not applicable)' ]]
 [[ "$(verdict '{"failed": 1}')" == '3 assessment incomplete: 1 check failed; no problems found in what was checked' ]]
-[[ "$(verdict '{"warning": 2, "failed": 1, "unchecked": 1}')" == '1 problems found: 2 warnings; assessment incomplete: 1 check failed; 1 not checked (need --sudo, or not applicable)' ]]
+[[ "$(verdict '{"warning": 2, "failed": 1, "unchecked": 1}')" == '1 problems found: 2 current; assessment incomplete: 1 check failed; 1 not checked (need --sudo, or not applicable)' ]]
+# An incident not seen to recover still counts as a problem; one that recovered leaves the machine healthy now.
+[[ "$(verdict '{"earlier": 1, "recovered": 2}')" == '1 problems found: 1 earlier not seen to recover, 2 earlier and recovered' ]]
+[[ "$(verdict '{"recovered": 2, "unchecked": 1}')" == '0 healthy within the checked scope; 2 earlier and recovered; 1 not checked (need --sudo, or not applicable)' ]]
+[[ "$(verdict '{"recovered": 1, "failed": 1}')" == '3 assessment incomplete: 1 check failed; no problems found in what was checked; 1 earlier and recovered' ]]
 
 # The account, its session, installation and proxy environment, for a target named with --user. /etc/environment
 # disagrees with itself and points at a missing CA file; the user manager lacks https_proxy; the configured local
@@ -1324,6 +1337,82 @@ machine.uid = 0
 assert module.as_account(machine, ["true"], {})[:2] == ["env", "-i"]
 machine.reach = False
 assert module.as_account(machine, ["true"], {}) is None
+EOF
+
+# Reporting decisions, called directly: restart recovery, proxy credentials, delegated findings.
+python3 - "$repo_root/scripts/machine-status.py" "$root" <<'EOF'
+import contextlib, importlib.util, io, sys, time
+from pathlib import Path
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location("machine_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def report(call):
+    module.COUNTS.clear()
+    module.FINDINGS.clear()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        call()
+        module.digest()
+        verdict, status = module.summary(module.COUNTS)
+    return out.getvalue(), verdict, status
+
+
+# A service in restart backoff is a current problem, whatever its restart count says about the past.
+backoff = {"LoadState": "loaded", "ActiveState": "activating", "SubState": "auto-restart", "NRestarts": "99"}
+text, verdict, status = report(lambda: module.miner_unit("localsearch-3.service", backoff))
+assert text.startswith("warning: localsearch-3.service restarted 99 times this boot"), text
+assert "it is restarting now (auto-restart)" in text and "Needs attention now" in text, text
+assert status == 1, (verdict, status)
+# Up again, but only briefly: not seen to recover.
+brief = dict(backoff, ActiveState="active", SubState="running", ActiveEnterTimestamp=f"@{int(time.time()) - 30}")
+text, verdict, status = report(lambda: module.miner_unit("localsearch-3.service", brief))
+assert text.startswith("earlier: ") and "it runs, but only 3" in text and status == 1, (text, status)
+# Up for an hour: recovered, and alone it leaves the machine healthy.
+stable = dict(brief, ActiveEnterTimestamp=f"@{int(time.time()) - 3600}")
+text, verdict, status = report(lambda: module.miner_unit("localsearch-3.service", stable))
+assert text.startswith("recovered: ") and status == 0, (text, verdict, status)
+# The same policy for any unit, from its monotonic start time.
+assert module.restart_outcome(backoff, None)[:2] == (False, None)
+assert module.restart_outcome({"ActiveState": "active"}, None)[:2] == (True, False)
+props = {"ActiveState": "active", "SubState": "running", "ActiveEnterTimestampMonotonic": str(90_000 * 10**6)}
+assert module.restart_outcome(props, module.up_since_boot(props, 95_400.0))[:2] == (True, True)
+assert module.restart_outcome(props, module.up_since_boot(props, 90_100.0))[:2] == (True, False)
+
+# Proxy credentials: absent is a choice, different ones may be refused, and none of them is printed.
+configured = "http://alice:RightSecret@proxy.example:3128"
+cases = (("http://proxy.example:3128", "info", "without the credentials"),
+         ("http://alice:RightSecret@proxy.example:3128/", "ok", "uses the configured proxy"),
+         ("http://alice:WrongSecret@proxy.example:3128", "warning", "other credentials than proxy.local"),
+         ("http://bob:Other@proxy.example:3128", "warning", "other credentials than proxy.local"))
+for https, level, phrase in cases:
+    text, _, _ = report(lambda: module.proxy_match("the user manager", https, configured))
+    assert text.startswith(f"{level}: ") and phrase in text, (https, text)
+    assert not any(secret in text for secret in ("alice", "bob", "Secret", "Other")), text
+text, _, _ = report(lambda: module.proxy_match("the user manager", "http://u:p@proxy.example:3128",
+                                               "http://proxy.example:3128"))
+assert text.startswith("warning: ") and "credentials that proxy.local does not set" in text, text
+
+# Delegated findings join the digest: status findings are current, log findings are earlier incidents.
+root = Path(sys.argv[2])
+helpers = {"credentials-inspect.py": "ok: sssd.conf parsed\nwarning: sssd.conf is unreadable to the daemon\n"
+                                     "possible cause: an unreadable snippet may set it\n",
+           "credentials-logs.py": "warning: Cached password expired\n  why: the domain refused it\n"}
+module.run = lambda command, **kwargs: (
+    SimpleNamespace(returncode=0, stdout="active\n", stderr="") if command[0] == "systemctl" else
+    SimpleNamespace(returncode=0, stdout=helpers[Path(command[1]).name], stderr=""))
+machine = SimpleNamespace(privileged=True, boot=0, root=root, path=lambda relative: root / "etc/sssd",
+                          read=lambda relative: "3600.00 1000.00")
+module.SECTION[0] = "Domain"
+text, verdict, status = report(lambda: module.check_domain(machine))
+assert "    warning: sssd.conf is unreadable to the daemon; see: sudo sssctl config-check" in text, text
+assert "    warning: hypothesis: an unreadable snippet may set it" in text, text
+assert "    earlier: Cached password expired; see: sudo dotconfig creds check-logs --days 1 --examples 5" in text, text
+assert "  - Domain (dotconfig creds status): sssd.conf is unreadable to the daemon" in text, text
+assert "1 in Domain (dotconfig creds check-logs --days 1)" in text, text
+assert "2 current, 1 earlier not seen to recover" in verdict and status == 1, verdict
 EOF
 
 echo 'machine status tests passed'

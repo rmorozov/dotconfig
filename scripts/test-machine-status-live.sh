@@ -23,6 +23,11 @@ report() {
     cat "$out"
     [[ "$status" == 0 || "$status" == 1 || "$status" == 3 ]] || { echo "machine status exited $status" >&2; exit 1; }
     check '^Summary: '
+    # Every problem names what to run next.
+    if grep -E '^ *(warning|earlier|recovered): ' "$out" | grep -vE 'see: |run: |to rule it out: |try: '; then
+        echo 'problems above have no next step' >&2
+        exit 1
+    fi
     if grep -q 'Traceback' "$out"; then
         echo 'machine status crashed' >&2
         exit 1
@@ -85,11 +90,11 @@ check '^warning: dotconfig-live-fail.service failed (dotconfig live failure): it
 check '    log: live failure: cannot read /etc/dotconfig-live.conf'
 check '^warning: dotconfig-live-bad.service was refused: Service has no ExecStart='
 check '^info: dotconfig-live: 3 errors'
-check '^warning: dotconfig-live-crit: 1 error (1 critical)'
-check '^warning: the kernel OOM killer ended processes .*dotconfig-live'
+check '^earlier: dotconfig-live-crit: 1 error (1 critical)'
+check '^earlier: the kernel OOM killer ended processes .*dotconfig-live'
 check '    e.g. dotconfig-live: injected kernel error 3 (x3)'
 check "^info: $user logged in through login .*; user services started in "
-check "^warning: 1 failed password attempt through login before $user logged in"
+check "^recovered: 1 failed password attempt through login before $user logged in"
 check '^ok: no half-installed packages'
 check '^warning: dotconfig-live-off.service is disabled, so it does not start at boot'
 check '^warning: dotconfig-live-skip.service was skipped: a start condition was not met'
