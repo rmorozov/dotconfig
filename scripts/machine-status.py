@@ -31,12 +31,19 @@ _spec = importlib.util.spec_from_file_location("credentials_inspect", Path(__fil
 inspector = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(inspector)
 
+# A problem is current state ("warning"), a logged incident not seen to clear ("earlier"), or one that cleared
+# afterwards ("recovered"); the summary and exit status count them apart.
 LABELS = {"unchecked": "not checked", "failed": "check failed"}
+PROBLEMS = ("warning", "earlier", "recovered")
+# Text that already tells the reader what to run next.
+NEXT_MARKERS = ("see: ", "run: ", "to rule it out: ", "try: ")
 # A sensitive key, bare or quoted as in JSON or Python reprs, and its value: a quoted value up to its closing quote,
 # escaped quotes included, else the rest of the line, since an unquoted value may contain spaces.
 PRIVATE_VALUE = re.compile(r"""((?:\\?["'])?\b\w*(?:authtok|password|passwd|secret|token)\w*(?:\\?["'])?\s*[=:]\s*)"""
                            r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S.*$)""", re.I)
 COUNTS = {}
+FINDINGS = []
+SECTION = [""]
 
 # Journal message IDs from systemd's catalog.
 SYSTEM_STARTUP = "b07a249cd024414a82dd00cd181378ff"
@@ -51,12 +58,26 @@ CREDS_TIMEOUT = float(os.environ.get("DOTCONFIG_MACHINE_CREDS_TIMEOUT", "300"))
 SLOW_GROUPS = float(os.environ.get("DOTCONFIG_MACHINE_SLOW_GROUPS", "2"))
 
 
-def say(level, message):
+def say(level, message, past=False, recovered=None, next_step=None):
+    """Print one finding. past: the evidence is a logged event (this boot or the one before), not current state;
+    recovered: the condition was seen to clear afterwards (True), or not; next_step: the command to look further,
+    added when the message does not already name one."""
+    if next_step and level == "warning" and not any(marker in message for marker in NEXT_MARKERS):
+        message += f"; see: {next_step}"
+    if level == "warning" and past:
+        level = "recovered" if recovered else "earlier"
     COUNTS[level] = COUNTS.get(level, 0) + 1
+    FINDINGS.append((level, SECTION[0], message))
     print(f"{LABELS.get(level, level)}: {message}")
 
 
+def incident(message, recovered=None, next_step=None):
+    """A problem known from the logs: something that happened, which may or may not still hold."""
+    say("warning", message, past=True, recovered=recovered, next_step=next_step)
+
+
 def section(title):
+    SECTION[0] = title
     print(f"\n{title}:")
 
 
@@ -279,11 +300,12 @@ def check_system(machine):
         say("info", f"systemd is still {state}; boot has not finished")
         pending_jobs()
     elif state == "degraded":
-        say("warning", "systemd reports the system degraded: at least one unit failed (see Services)")
+        say("warning", "systemd reports the system degraded: at least one unit failed (see Services)",
+            next_step="systemctl --failed")
     elif not state:
         say("failed", "systemd state: " + failure("systemctl", result))
     else:
-        say("warning", f"systemd reports the system {state}")
+        say("warning", f"systemd reports the system {state}", next_step="systemctl list-jobs")
 
     tainted = (machine.read("proc/sys/kernel/tainted") or "0").strip()
     if tainted.isdigit() and int(tainted):
@@ -291,13 +313,14 @@ def check_system(machine):
         serious = [f"{flag} {text}" for flag, text, bad in flags if bad]
         other = [f"{flag} {text}" for flag, text, bad in flags if not bad]
         if serious:
-            say("warning", "kernel tainted: " + "; ".join(serious + other))
+            say("warning", "kernel tainted: " + "; ".join(serious + other), next_step="journalctl -b -k -p warning")
         else:
             say("info", "kernel tainted: " + "; ".join(other or [f"value {tainted}"]))
 
     if machine.path("run/reboot-required").exists():
         packages = sorted(set((machine.read("run/reboot-required.pkgs") or "").split()))
-        say("warning", "reboot required" + (f" by {', '.join(packages[:8])}" if packages else ""))
+        say("warning", "reboot required" + (f" by {', '.join(packages[:8])}" if packages else ""),
+            next_step="cat /run/reboot-required.pkgs")
     check_previous_shutdown(machine)
 
 
@@ -327,10 +350,11 @@ def check_previous_shutdown(machine):
         return
     last = clean(messages[-1], 120) if messages else "nothing"
     if any(re.search(r"PM: suspend entry|Reached target .*Sleep|Starting .*[Ss]uspend", m) for m in messages[-15:]):
-        say("warning", f"the boot before this one ended while suspending or suspended (last message: {last})")
+        incident(f"the boot before this one ended while suspending or suspended (last message: {last})",
+            next_step="journalctl -b -1 -n 50")
     else:
-        say("warning", "the boot before this one ended without a clean shutdown: a crash, freeze, power loss, or "
-                       f"forced power-off (last message: {last})")
+        incident("the boot before this one ended without a clean shutdown: a crash, freeze, power loss, or "
+                       f"forced power-off (last message: {last})", next_step="journalctl -b -1 -n 50")
 
 
 # --- Boot and login timing --------------------------------------------------------------------------------------
@@ -343,8 +367,9 @@ def check_timing(machine):
         say("info", clean(startup[-1]["MESSAGE"].rstrip(".")))
         userspace = int(startup[-1].get("USERSPACE_USEC") or 0)
         if userspace > 60e6:
-            say("warning", f"userspace took {seconds(userspace)} to start"
-                + ("; the slowest units are below" if machine.boot == 0 else ""))
+            incident(f"userspace took {seconds(userspace)} to start"
+                + ("; the slowest units are below" if machine.boot == 0 else ""),
+                    next_step="systemd-analyze critical-chain")
     elif analyze is not None and analyze.returncode == 0:
         for line in analyze.stdout.strip().splitlines():
             say("info", clean(line.rstrip(".")))
@@ -429,7 +454,8 @@ def check_logins(machine):
         if ready:
             took = monotonic(ready) - start
             text += f"; desktop session ready {seconds(took)} after the password was accepted"
-            say("warning" if took > SLOW_LOGIN_SECONDS * 1e6 else "info", text)
+            say("warning" if took > SLOW_LOGIN_SECONDS * 1e6 else "info", text, past=True,
+                next_step=f"systemd-analyze --user blame, as {user}")
             flags = machine.user_flags()
             if took > SLOW_LOGIN_SECONDS * 1e6 and machine.boot == 0 and user == machine.user and flags:
                 slowest = blame(["systemd-analyze"] + flags + ["blame", "--no-pager"], 5)
@@ -438,8 +464,8 @@ def check_logins(machine):
         else:
             say("info", text + ("; no graphical session start recorded" if service.startswith("gdm") else ""))
         if failed_before:
-            say("warning", f"{plural(failed_before, 'failed password attempt')} through {service} before {user} "
-                           "logged in")
+            incident(f"{plural(failed_before, 'failed password attempt')} through {service} before {user} "
+                     "logged in", recovered=True, next_step=f"journalctl -b {machine.boot} SYSLOG_FACILITY=10")
     if domain:
         say("info", "domain logins go through SSSD; for cached passwords and offline-login causes run: "
                     "dotconfig creds status and dotconfig creds check-logs")
@@ -532,7 +558,7 @@ def explain_failed(machine, unit, flag, uid):
         why.append(f"restarted {props['NRestarts']} times first")
     description = props.get("Description", "")
     say("warning", f"{unit} failed" + (f" ({description})" if description and description != unit else "")
-        + (": " + ", ".join(why) if why else ""))
+        + (": " + ", ".join(why) if why else ""), next_step=f"systemctl{' --user' if flag else ''} status {unit}")
     for line in unit_log(machine, unit, bool(flag), uid):
         print(f"    log: {line}")
 
@@ -596,7 +622,7 @@ def unit_file_problems(machine):
         else:
             refused[matched.group(3)] = matched.group(4)
     for unit, reason in sorted(refused.items()):
-        say("warning", f"{unit} was refused: {clean(reason, 160)}")
+        say("warning", f"{unit} was refused: {clean(reason, 160)}", next_step=f"systemctl cat {unit}")
     for path, problems in sorted(files.items()):
         say("info", f"{path}: {plural(len(problems), 'setting')} ignored, e.g. {clean(problems[-1], 120)}")
     return set(refused)
@@ -616,7 +642,7 @@ def load_problems(scope, flag, reported=()):
         say("warning", f"{unit} did not load: {props.get('LoadState', 'error')}"
             + (f" ({props['LoadError']})" if props.get("LoadError") else "") + f"; run: systemd-analyze verify {unit}")
     for unit in missing:
-        say("warning", f"{unit} is active but its unit file is gone")
+        say("warning", f"{unit} is active but its unit file is gone", next_step="sudo systemctl daemon-reload")
     if absent:
         say("info", f"{plural(len(absent), f'{scope} unit')} referenced but not installed (usually optional): "
             + ", ".join(absent[:8]) + (" ..." if len(absent) > 8 else ""))
@@ -629,10 +655,14 @@ def restarts(scope, flag):
     units = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
     if not units:
         return
-    restarted = [(p.get("Id", "?"), int(p["NRestarts"])) for p in unit_properties(flag, units, ["Id", "NRestarts"])
+    restarted = [(p.get("Id", "?"), int(p["NRestarts"]), p.get("ActiveState"))
+                 for p in unit_properties(flag, units, ["Id", "NRestarts", "ActiveState"])
                  if p.get("NRestarts", "0").isdigit() and int(p["NRestarts"]) > 0]
-    for unit, count in sorted(restarted, key=lambda item: -item[1]):
-        say("warning" if count >= 3 else "info", f"{unit} was restarted {plural(count, 'time')} this boot")
+    user = " --user" if "--user" in flag else ""
+    for unit, count, state in sorted(restarted, key=lambda item: -item[1]):
+        say("warning" if count >= 3 else "info", f"{unit} was restarted {plural(count, 'time')} this boot"
+            + ("; it runs now" if state == "active" else ""), past=True, recovered=state == "active",
+            next_step=f"journalctl -b{user} -u {unit}")
 
 
 # --- Journal ----------------------------------------------------------------------------------------------------
@@ -666,7 +696,8 @@ def check_journal(machine, examples):
         top = sorted(group["messages"].values(), key=lambda item: -item[0])[:examples]
         say("warning" if group["critical"] else "info",
             f"{name}: {plural(group['count'], 'error')}" + (f" ({group['critical']} critical)" if group["critical"]
-                                                             else ""))
+                                                             else "") + " this boot", past=True,
+            next_step=f"journalctl -b {machine.boot} -p err -t {name}")
         for count, message in top:
             print(f"    e.g. {clean(message, 160)}" + (f" (x{count})" if count > 1 else ""))
     if len(ranked) > 12:
@@ -681,7 +712,7 @@ def check_crashes(machine):
         name = entry.get("COREDUMP_COMM") or Path(entry.get("COREDUMP_EXE", "?")).name
         programs[name] = programs.get(name, 0) + 1
     for name, count in sorted(programs.items(), key=lambda item: -item[1]):
-        say("warning", f"{name} crashed {plural(count, 'time')} this boot; see: coredumpctl info {name}")
+        incident(f"{name} crashed {plural(count, 'time')} this boot; see: coredumpctl info {name}")
     crashes = sorted(glob.glob(str(machine.path("var/crash/*.crash"))))
     if crashes:
         names = [Path(path).name for path in crashes]
@@ -718,7 +749,7 @@ KERNEL_RULES = (
     ("thermal", "warning", "the CPU overheated or was throttled",
      r"temperature above threshold|cpu clock throttled|critical temperature|thermal.*shutdown"),
     ("mce", "warning", "hardware errors reported by the CPU", r"Machine check|\bMCE\b|Hardware Error"),
-    ("firmware-failed", "warning", "a driver could not load its firmware (linux-firmware may be outdated)",
+    ("firmware-failed", "warning", "a driver could not load its firmware (hypothesis: linux-firmware is outdated)",
      r"(failed to load|could not load|unable to load|no suitable) (the )?firmware|firmware: failed to load"),
     ("firmware", "info", "firmware files not found (drivers often try several versions)",
      r"Direct firmware load for \S+ failed"),
@@ -782,7 +813,8 @@ def check_kernel(machine, examples):
         if key in found:
             lines = found[key]
             detail = kernel_detail(key, lines)
-            say(level, f"{title} ({plural(len(lines), 'time')})" + (f": {detail}" if detail else ""))
+            say(level, f"{title} ({plural(len(lines), 'time')} this boot)" + (f": {detail}" if detail else ""),
+                past=True, next_step=f"journalctl -b {machine.boot} -k -p warning")
             for message in lines[-examples:]:
                 print(f"    e.g. {clean(message, 160)}")
     if other:
@@ -844,7 +876,8 @@ def check_storage(machine):
             else:
                 free_text = f"{int(free) // 1024} MiB free"
             memory = " in memory (tmpfs)" if mount in tmpfs else ""
-            say("warning" if used >= 90 else "info", f"{mount}: {used}% of {what}{memory} used ({free_text})")
+            say("warning" if used >= 90 else "info", f"{mount}: {used}% of {what}{memory} used ({free_text})",
+                next_step=f"du -xh -d 2 {mount} | sort -h | tail")
         if not full and not inodes:
             say("ok", "all filesystems have at least 20% space free")
     mounts = machine.read("proc/self/mounts") or ""
@@ -852,7 +885,8 @@ def check_storage(machine):
         parts = line.split()
         if len(parts) >= 4 and parts[1] in ("/", "/home", "/var", "/boot", "/boot/efi") and \
                 "ro" in parts[3].split(","):
-            say("warning", f"{parts[1]} is mounted read-only; the kernel may have remounted it after errors")
+            say("warning", f"{parts[1]} is mounted read-only; hypothesis: the kernel remounted it after errors; see: "
+                           f"journalctl -b -k --grep {parts[1]}")
     quotas(machine)
     smart(machine)
 
@@ -883,7 +917,7 @@ def quotas(machine):
             if over or percent >= 90:
                 say("warning", f"quota for {machine.user or 'this account'} on {parts[0]}: {what} "
                     + ("over its soft limit" if over else f"at {percent}% of its limit")
-                    + "; writes there will fail at the hard limit")
+                    + "; writes there will fail at the hard limit", next_step=f"quota -s -u {machine.user}")
 
 
 def smart(machine):
@@ -910,7 +944,7 @@ def smart(machine):
             report, passed = {}, None
         details = smart_details(report)
         for level, text in details:
-            say(level, f"{device}: {text}")
+            say(level, f"{device}: {text}", next_step=f"sudo smartctl -a {device}")
         if passed is True and not any(level == "warning" for level, _ in details):
             say("ok", f"{device}: SMART health passed")
         elif passed is True:
@@ -970,7 +1004,7 @@ def check_memory(machine):
     if info.get("MemTotal"):
         available = info.get("MemAvailable", 0) * 100 // info["MemTotal"]
         text = f"{available}% of {info['MemTotal'] / 1024 / 1024:.1f} GiB memory available"
-        say("warning" if available < 10 else "ok", text)
+        say("warning" if available < 10 else "ok", text, next_step="ps -eo pid,rss,comm --sort=-rss | head")
     if info.get("SwapTotal"):
         used = (info["SwapTotal"] - info.get("SwapFree", 0)) * 100 // info["SwapTotal"]
         if used >= 50:
@@ -980,11 +1014,13 @@ def check_memory(machine):
     pressure = machine.read("proc/pressure/memory") or ""
     matched = re.search(r"^full avg10=[\d.]+ avg60=[\d.]+ avg300=([\d.]+)", pressure, re.M)
     if matched and float(matched.group(1)) >= 5:
-        say("warning", f"processes stalled on memory {matched.group(1)}% of the last 5 minutes")
+        say("warning", f"processes stalled on memory {matched.group(1)}% of the last 5 minutes",
+            next_step="journalctl -b -u systemd-oomd")
     oomd = [e for e in machine.journal("SYSLOG_IDENTIFIER=systemd-oomd") or []
             if re.search(r"Killed|killed", e["MESSAGE"])]
     if oomd:
-        say("warning", f"systemd-oomd killed {plural(len(oomd), 'unit')} for memory pressure this boot")
+        incident(f"systemd-oomd killed {plural(len(oomd), 'unit')} for memory pressure this boot",
+                 next_step="journalctl -b -u systemd-oomd")
         print(f"    e.g. {clean(oomd[-1]['MESSAGE'], 160)}")
 
 
@@ -998,7 +1034,8 @@ def check_load(machine):
         if matched and float(matched.group(1)) >= note:
             stalled = "runnable tasks waited for a CPU" if resource == "cpu" else "all non-idle tasks waited for I/O"
             say("warning" if float(matched.group(1)) >= warn else "info",
-                f"{stalled} {matched.group(1)}% of the last 5 minutes")
+                f"{stalled} {matched.group(1)}% of the last 5 minutes",
+                    next_step="top -o %CPU" if resource == "cpu" else "sudo iotop -o")
     memory = cgroup_events(machine, "memory")
     for unit, counts in memory:
         killed = int(counts.get("oom_kill", "0"))
@@ -1006,17 +1043,18 @@ def check_load(machine):
         # killer or of an enclosing slice's limit.
         own = int(counts.get("oom", "0")) or int(counts.get("max", "0"))
         if killed and own:
-            say("warning", f"{unit}: the kernel killed {plural(killed, 'process')} at its own memory limit "
-                           "(MemoryMax)")
+            incident(f"{unit}: the kernel killed {plural(killed, 'process')} at its own memory limit "
+                           "(MemoryMax)", next_step="journalctl -b -k --grep oom-kill")
         elif killed:
-            say("warning", f"{unit}: the OOM killer ended {plural(killed, 'process')} here; it did not reach its "
-                           "own limit, so system memory or an enclosing slice ran out")
+            incident(f"{unit}: the OOM killer ended {plural(killed, 'process')} here; it did not reach its "
+                           "own limit, so system memory or an enclosing slice ran out",
+                               next_step="journalctl -b -k --grep oom-kill")
         elif counts.get("max", "0") != "0":
             say("info", f"{unit} reached its memory limit {plural(int(counts['max']), 'time')}")
     for unit, counts in cgroup_events(machine, "pids"):
         if counts.get("max", "0") != "0":
-            say("warning", f"{unit}: {plural(int(counts['max']), 'process start')} refused at its task limit "
-                           "(TasksMax) or an enclosing one")
+            incident(f"{unit}: {plural(int(counts['max']), 'process start')} refused at its task limit "
+                           "(TasksMax) or an enclosing one", next_step=f"systemctl status {Path(unit).name}")
     if not memory and not glob.glob(str(machine.path("sys/fs/cgroup/**/memory.events")), recursive=True) and \
             machine.path("sys/fs/cgroup").is_dir():
         say("info", "no cgroup memory accounting found")
@@ -1024,7 +1062,8 @@ def check_load(machine):
     if len(files) == 3 and files[0].isdigit() and files[2].isdigit() and int(files[2]):
         used = int(files[0]) * 100 // int(files[2])
         if used >= 80:
-            say("warning", f"{used}% of the kernel file handle table (fs.file-max) in use")
+            say("warning", f"{used}% of the kernel file handle table (fs.file-max) in use",
+                next_step="cat /proc/sys/fs/file-nr; sudo lsof -n | wc -l")
     tasks = (machine.read("proc/loadavg") or "").split()
     limit = min(int(value) for value in ((machine.read("proc/sys/kernel/pid_max") or "").strip(),
                                          (machine.read("proc/sys/kernel/threads-max") or "").strip(), "4194304")
@@ -1032,7 +1071,8 @@ def check_load(machine):
     if len(tasks) >= 4 and "/" in tasks[3] and tasks[3].split("/")[1].isdigit():
         used = int(tasks[3].split("/")[1]) * 100 // limit
         if used >= 80:
-            say("warning", f"{used}% of the process and thread limit in use")
+            say("warning", f"{used}% of the process and thread limit in use",
+                next_step="ps -eo nlwp,pid,comm --sort=-nlwp | head")
 
 
 def cgroup_events(machine, controller):
@@ -1083,7 +1123,8 @@ def check_account(machine):
     section(f"Account and session ({machine.user or 'unknown'})")
     if not machine.target:
         say("warning", f"NSS does not resolve {machine.user or 'the invoking account'}: logins and file ownership for "
-                       "it fail; for a domain account check sssd and the domain connection (getent passwd NAME)")
+                       "it fail; for a domain account check sssd and the domain connection",
+            next_step=f"getent passwd {machine.user or '$USER'}; sssctl domain-status")
         return
     target = machine.target
     say("info", f"uid {target['uid']}, home {target['home']}, shell {target['shell']}, "
@@ -1095,21 +1136,23 @@ def check_account(machine):
     try:
         st = home.stat()
     except FileNotFoundError:
-        say("warning", f"home {target['home']} does not exist; a first login creates it only with pam_mkhomedir")
+        say("warning", f"home {target['home']} does not exist; a first login creates it only with pam_mkhomedir",
+            next_step="getent passwd " + target["name"])
         st = None
     except OSError as exc:
         say("failed", f"home {target['home']}: {exc.strerror or exc}")
         st = None
     if st is not None:
         if st.st_uid != target["uid"]:
-            say("warning", f"home {target['home']} is owned by {owner_label(st.st_uid)}, not {target['name']}")
+            say("warning", f"home {target['home']} is owned by {owner_label(st.st_uid)}, not {target['name']}",
+                next_step=f"ls -ld {target['home']}")
         blocked = inspector.access_check(machine.root, home, st, identity(machine), 3)
         if blocked:
             level, where, doubt = blocked
             where = "/" + str(where.relative_to(machine.root)) if where else target["home"]
             say("unchecked" if level == "unchecked" else "warning",
                 f"{target['name']} cannot " + ("reach" if where != target["home"] else "write") + " their home: "
-                + (doubt if doubt else f"{where} denies it"))
+                + (doubt if doubt else f"{where} denies it"), next_step=f"namei -l {target['home']}")
     sessions(machine)
     xdg_overrides(machine, target)
 
@@ -1131,10 +1174,10 @@ def xdg_overrides(machine, target):
             continue
         if not value.startswith("/"):
             say("warning", f"{key}={value} is not absolute; the XDG specification says to ignore it, but some programs "
-                           "resolve it against their working directory")
+                           "resolve it against their working directory", next_step="systemctl --user show-environment")
         elif not (machine.root / value.lstrip("/")).is_dir():
             say("warning", f"{key}={value} does not exist; programs that honor it lose the files dotconfig put in "
-                           f"~/{default}")
+                           f"~/{default}", next_step="systemctl --user show-environment")
         else:
             say("info", f"{key}={value} overrides ~/{default}; programs that honor it do not read what dotconfig "
                         "installs there")
@@ -1170,13 +1213,16 @@ def sessions(machine):
     try:
         st = runtime.stat()
     except OSError:
-        say("warning", f"runtime directory {runtime} is missing; sockets, the user bus and Wayland cannot start")
+        say("warning", f"runtime directory {runtime} is missing; sockets, the user bus and Wayland cannot start",
+            next_step=f"loginctl user-status {machine.user}")
         return
     if st.st_uid != uid or stat.S_IMODE(st.st_mode) != 0o700:
         say("warning", f"runtime directory {runtime} has owner uid {st.st_uid} and mode "
-                       f"{stat.S_IMODE(st.st_mode):o}; it must be the user's own with mode 700")
+                       f"{stat.S_IMODE(st.st_mode):o}; it must be the user's own with mode 700",
+            next_step=f"ls -ld {runtime}; loginctl user-status {machine.user}")
     if not (runtime / "bus").exists():
-        say("warning", "no user D-Bus socket; desktop apps and systemctl --user cannot reach the user manager")
+        say("warning", "no user D-Bus socket; desktop apps and systemctl --user cannot reach the user manager",
+            next_step=f"systemctl status user@{uid}.service")
     manager = run(["systemctl", "is-active", f"user@{uid}.service"])
     if manager is not None and manager.stdout.strip() not in ("active", "reloading"):
         say("warning", f"user@{uid}.service is {manager.stdout.strip() or 'not running'}; see: "
@@ -1233,7 +1279,7 @@ def check_installation(machine):
             missing.append(str(relative))
             continue
         if path.is_symlink() and not path.exists():
-            say("warning", f"~/{relative} is a broken symlink")
+            say("warning", f"~/{relative} is a broken symlink", next_step=f"ls -l ~/{relative}")
             continue
         st = path.lstat()
         if st.st_uid != uid:
@@ -1244,11 +1290,11 @@ def check_installation(machine):
         blocked = inspector.access_check(machine.root, parent, parent.stat(), who, 3)
         if blocked and blocked[0] == "warning":
             say("warning", f"{machine.user} cannot replace ~/{relative}: its directory is not writable for them, so "
-                           "dotconfig apply fails")
+                           "dotconfig apply fails", next_step=f"namei -l ~/{relative}")
     for relative, owner in sorted(set(foreign)):
         say("warning", f"~/{relative} is owned by {owner_label(owner)}, not "
-                       f"{machine.user}; updates as {machine.user} cannot replace it (sudo chown {machine.user} "
-                       f"~/{relative})")
+                       f"{machine.user}; updates as {machine.user} cannot replace it; run: sudo chown "
+                       f"{machine.user} ~/{relative}")
     if missing:
         say("info", f"{plural(len(missing), 'managed file')} not applied yet: {', '.join(missing[:5])}"
             + (" ..." if len(missing) > 5 else "") + "; see: dotconfig status")
@@ -1257,12 +1303,14 @@ def check_installation(machine):
     for directory in (".local/bin", ".config/dotconfig", ".config/zsh"):
         for path in sorted((home / directory).glob("*")) if (home / directory).is_dir() else []:
             if path.is_symlink() and not path.exists():
-                say("warning", f"~/{directory}/{path.name} is a broken symlink")
+                say("warning", f"~/{directory}/{path.name} is a broken symlink",
+                    next_step=f"ls -l ~/{directory}/{path.name}")
     private = [home / ".zshrc.local"] + sorted(home.glob(".zshrc.*.local")) + \
         sorted((home / ".config/dotconfig").glob("*.local"))
     for path in private:
         if path.is_file() and not path.is_symlink() and path.stat().st_mode & 0o077:
-            say("warning", f"~/{path.relative_to(home)} is readable or writable by other users; chmod 600 it")
+            say("warning", f"~/{path.relative_to(home)} is readable or writable by other users; run: "
+                           f"chmod 600 ~/{path.relative_to(home)}")
     repository(machine, home)
     completions(machine, home)
 
@@ -1331,7 +1379,8 @@ def repository(machine, home):
                 examples.append(str(path.relative_to(repo)))
     if foreign:
         say("warning", f"{plural(foreign, 'file')} in the dotconfig repository {'belongs' if foreign == 1 else 'belong'} to another account (often after "
-                       f"sudo git); git pull as {machine.user} fails on them, e.g. {', '.join(examples)}")
+                       f"sudo git); git pull as {machine.user} fails on them, e.g. {', '.join(examples)}",
+            next_step=f"find {repo} ! -user {machine.user}")
 
 
 def completions(machine, home):
@@ -1353,7 +1402,8 @@ def completions(machine, home):
     elif "Zsh completion audit failed" in result.stderr:
         paths = [line for line in result.stderr.splitlines() if line.startswith("/")]
         say("warning", f"Zsh completion audit failed for {plural(len(paths), 'path')}"
-            + (f", e.g. {paths[0]}" if paths else "") + "; Zsh then asks before loading completions")
+            + (f", e.g. {paths[0]}" if paths else "") + "; Zsh then asks before loading completions",
+            next_step="zsh -ic compaudit")
     else:
         say("failed", "Zsh completion audit: " + failure("check-zsh-completions.sh", result))
 
@@ -1428,17 +1478,22 @@ def check_proxy(machine, probes):
         for key in ("http_proxy", "https_proxy"):
             if lower[key] and upper[key] and lower[key] != upper[key]:
                 say("warning", f"{label}: {key}={redact(lower[key])} but {key.upper()}={redact(upper[key])}; tools "
-                               "that read different cases go to different proxies")
+                               "that read different cases go to different proxies", next_step="dotconfig proxy status")
         if lower["no_proxy"] and upper["no_proxy"] and lower["no_proxy"] != upper["no_proxy"]:
             say("info", f"{label}: no_proxy and NO_PROXY differ, so bypasses depend on the tool")
         https = lower["https_proxy"] or upper["https_proxy"]
         if configured == "on" and not https:
             say("warning", f"{label} has no https_proxy although dotconfig proxy is on: {consequence} connect "
-                           "directly and fail where only the proxy is allowed")
+                           "directly and fail where only the proxy is allowed", next_step="dotconfig proxy status")
         elif configured == "on" and https.rstrip("/") != endpoint.rstrip("/"):
-            say("warning", f"{label} uses proxy {redact(https)}, not the configured {redact(endpoint)}")
+            if redact(https).rstrip("/") == redact(endpoint).rstrip("/"):
+                say("info", f"{label} uses the configured proxy {redact(https)} without the credentials in proxy.local")
+            else:
+                say("warning", f"{label} uses proxy {redact(https)}, not the configured {redact(endpoint)}",
+                    next_step="dotconfig proxy status")
         elif configured == "off" and https:
-            say("warning", f"{label} still sets https_proxy={redact(https)} although dotconfig proxy is off")
+            say("warning", f"{label} still sets https_proxy={redact(https)} although dotconfig proxy is off",
+                next_step="dotconfig proxy status")
         for key in CA_KEYS:
             if values.get(key):
                 ca_file(machine, label, key, values[key])
@@ -1455,11 +1510,12 @@ def check_proxy(machine, probes):
 def ca_file(machine, label, key, value):
     path = machine.path(value.lstrip("/"))
     if not path.exists():
-        say("warning", f"{label}: {key}={value} does not exist; TLS fails for tools that use it")
+        say("warning", f"{label}: {key}={value} does not exist; TLS fails for tools that use it",
+            next_step=f"ls -l {value}")
     elif machine.target:
         blocked = inspector.access_check(machine.root, path, path.stat(), identity(machine), 4)
         if blocked and blocked[0] == "warning":
-            say("warning", f"{label}: {key}={value} is not readable by {machine.user}")
+            say("warning", f"{label}: {key}={value} is not readable by {machine.user}", next_step=f"namei -l {value}")
 
 
 def listener(endpoint):
@@ -1467,7 +1523,7 @@ def listener(endpoint):
         parts = urlsplit(endpoint)
         host, port = parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
     except ValueError:
-        say("warning", "the configured proxy URL cannot be parsed")
+        say("warning", "the configured proxy URL cannot be parsed", next_step="dotconfig proxy status")
         return
     if host not in ("127.0.0.1", "localhost", "::1"):
         say("info", f"proxy {host}:{port} is remote and not contacted without --probe")
@@ -1477,7 +1533,8 @@ def listener(endpoint):
             say("ok", f"a proxy listens on {host}:{port}")
     except OSError as exc:
         say("warning", f"nothing listens on {host}:{port} ({exc.strerror or exc}); with the proxy on, every proxied "
-                       "connection fails until the local proxy (Px, cntlm-gss) runs")
+                       "connection fails until the local proxy (Px, cntlm-gss) runs",
+                           next_step="dotconfig proxy status")
 
 
 def resolve(host, port, timeout=5):
@@ -1582,12 +1639,14 @@ def trust(machine, route, name):
         if path is None:
             continue
         if not path.exists():
-            say("warning", f"{name}: {key}={route[key]} does not exist, so TLS fails here")
+            say("warning", f"{name}: {key}={route[key]} does not exist, so TLS fails here",
+                next_step="dotconfig proxy status")
             return None
         if machine.target:
             blocked = inspector.access_check(machine.root, path, path.stat(), identity(machine), want)
             if blocked and blocked[0] == "warning":
-                say("warning", f"{name}: {key}={route[key]} is not readable by {machine.user}, so TLS fails here")
+                say("warning", f"{name}: {key}={route[key]} is not readable by {machine.user}, so TLS fails here",
+                    next_step=f"namei -l {route[key]}")
                 return None
     if cafile is None and capath is None:
         cafile = defaults.openssl_cafile if os.path.isfile(defaults.openssl_cafile) else None
@@ -1599,7 +1658,8 @@ def trust(machine, route, name):
     try:
         context.load_verify_locations(cafile=str(cafile) if cafile else None, capath=str(capath) if capath else None)
     except (ssl.SSLError, OSError) as exc:
-        say("warning", f"{name}: the trusted certificates cannot be loaded ({clean(str(exc), 120)})")
+        say("warning", f"{name}: the trusted certificates cannot be loaded ({clean(str(exc), 120)})",
+            next_step=f"openssl x509 -noout -subject -in {cafile}" if cafile else f"ls -l {capath}")
         return None
     return context
 
@@ -1614,7 +1674,7 @@ def probe_endpoint(machine, probe, labels, route):
         via = urlsplit(proxy) if proxy else None
         connect_host, connect_port = (via.hostname, via.port or 80) if via else (host, port)
     except ValueError:
-        say("warning", f"{name}: the proxy URL {redact(proxy)} cannot be parsed")
+        say("warning", f"{name}: the proxy URL {redact(proxy)} cannot be parsed", next_step="dotconfig proxy status")
         return
     if via and via.scheme != "http":
         say("unchecked", f"{name}: probing through a {via.scheme} proxy is not supported")
@@ -1628,11 +1688,12 @@ def probe_endpoint(machine, probe, labels, route):
         return
     addresses, error = resolve(connect_host, connect_port)
     if error:
-        say("warning", f"{name}: DNS for {connect_host} failed ({error})")
+        say("warning", f"{name}: DNS for {connect_host} failed ({error})", next_step=f"resolvectl query {connect_host}")
         return
     raw, error = connect(addresses)
     if raw is None:
-        say("warning", f"{name}: TCP connection to {connect_host}:{connect_port} failed ({error.strerror or error})")
+        say("warning", f"{name}: TCP connection to {connect_host}:{connect_port} failed ({error.strerror or error})",
+            next_step=f"nc -vz {connect_host} {connect_port}")
         return
     with raw:
         if via:
@@ -1640,7 +1701,8 @@ def probe_endpoint(machine, probe, labels, route):
                 raw.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
                 header, early = response_header(raw)
             except OSError as exc:
-                say("warning", f"{name}: the proxy did not answer CONNECT ({exc.strerror or exc})")
+                say("warning", f"{name}: the proxy did not answer CONNECT ({exc.strerror or exc})",
+                    next_step=f"curl -v -x {redact(proxy)} https://{host}:{port}/")
                 return
             status = header.split("\r\n", 1)[0]
             code = status.split()[1] if len(status.split()) > 1 else "?"
@@ -1648,10 +1710,12 @@ def probe_endpoint(machine, probe, labels, route):
                 hint = {"407": "the proxy wants authentication: a Kerberos ticket (kinit) or its own credentials",
                         "403": "the proxy policy refuses this destination",
                         "502": "the proxy could not reach the destination"}.get(code, "the proxy refused the tunnel")
-                say("warning", f"{name}: proxy answered {clean(status, 80)}; {hint}")
+                say("warning", f"{name}: proxy answered {clean(status, 80)}; {hint}",
+                    next_step="klist" if code == "407" else f"curl -v -x {redact(proxy)} https://{host}:{port}/")
                 return
             if early:
-                say("warning", f"{name}: the proxy sent data before the TLS handshake began; it does not tunnel")
+                say("warning", f"{name}: the proxy sent data before the TLS handshake began; it does not tunnel",
+                    next_step=f"curl -v -x {redact(proxy)} https://{host}:{port}/")
                 return
         raw.settimeout(5)
         try:
@@ -1659,9 +1723,13 @@ def probe_endpoint(machine, probe, labels, route):
                 say("ok", f"{name}: TLS verified ({tls.version()})" + (f" through proxy {via.hostname}" if via else ""))
         except ssl.SSLCertVerificationError as exc:
             say("warning", f"{name}: certificate not trusted ({exc.verify_message}); hypotheses: a TLS-inspecting "
-                           "proxy whose CA this environment does not trust, or a server misconfiguration")
+                           "proxy whose CA this environment does not trust, or a server misconfiguration",
+                next_step=f"openssl s_client -connect {host}:{port} -servername {host} -showcerts"
+                          + (f" -proxy {via.hostname}:{connect_port}" if via else ""))
         except (ssl.SSLError, OSError) as exc:
-            say("warning", f"{name}: TLS handshake failed ({clean(str(exc), 120)})")
+            say("warning", f"{name}: TLS handshake failed ({clean(str(exc), 120)})",
+                next_step=f"openssl s_client -connect {host}:{port} -servername {host}"
+                          + (f" -proxy {via.hostname}:{connect_port}" if via else ""))
 
 
 # --- Expected units and mounts ------------------------------------------------------------------------------------
@@ -1743,7 +1811,8 @@ def expectation_overrides(machine):
             matched = DURATION.match(age) if age else None
             if verb not in rules or len(names) != 1 or (age and not matched):
                 say("warning", f"{label}:{number}: cannot read '{clean(line, 80)}'; expected require [--user] UNIT "
-                               "[max-age=7d], ignore UNIT, mount PATH, ignore-mount PATH or offline-ok DOMAIN")
+                               "[max-age=7d], ignore UNIT, mount PATH, ignore-mount PATH or offline-ok DOMAIN",
+                                   next_step=f"cat {label}")
                 continue
             if verb == "require":
                 seconds_ = int(matched.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": DAY, "w": 7 * DAY}[matched.group(2)] \
@@ -1809,7 +1878,8 @@ def check_expected(machine):
                          if found[name].get("LoadState") not in (None, "", "not-found")]
             if not installed:
                 if required:
-                    say("warning", f"{' or '.join(alternatives)} is required ({why}) but not installed")
+                    say("warning", f"{' or '.join(alternatives)} is required ({why}) but not installed",
+                        next_step=f"apt-file search {alternatives[0]}")
                     problems += 1
                 continue
             # Alternatives provide one capability: it is missing only when none of them provides it.
@@ -1851,12 +1921,12 @@ def unit_expectation(props, why, age, now, uptime, scope, triggers):
         return None
     if props.get("UnitFileState") == "disabled" and not live:
         return (f"{unit} is disabled, so it does not start at boot" + (f", and what would start it is not running: "
-                f"{', '.join(dead)}" if dead else "") + f" ({why}); systemctl{user} enable --now {unit}")
+                f"{', '.join(dead)}" if dead else "") + f" ({why}); run: systemctl{user} enable --now {unit}")
     if props.get("ConditionResult") == "no":
         return f"{unit} was skipped: a start condition was not met ({why}); see: {hint}"
     if unit.endswith(".timer"):
         if state != "active":
-            return f"{unit} is {state or 'not running'}, so what it schedules never runs ({why})"
+            return f"{unit} is {state or 'not running'}, so what it schedules never runs ({why}); see: {hint}"
         last = props.get("LastTriggerUSec", "").lstrip("@")
         # A persistent timer catches up soon after boot, so a long power-off is not a missed run.
         if age and uptime > min(age, DAY):
@@ -1941,14 +2011,16 @@ def check_network(machine):
     if result is None:
         say("unchecked", "NetworkManager state: nmcli is not installed")
     elif result.returncode == 8:
-        say("warning", "NetworkManager is not running; Wi-Fi, VPN and connectivity are unmanaged")
+        say("warning", "NetworkManager is not running; Wi-Fi, VPN and connectivity are unmanaged",
+            next_step="systemctl status NetworkManager.service")
     elif broken("NetworkManager state", "nmcli", result):
         state, _, connectivity = result.stdout.strip().partition(":")
         if state.startswith("connected") and connectivity in ("full", "unknown", ""):
             say("ok", f"NetworkManager {state}" + (f", connectivity {connectivity}" if connectivity else ""))
         else:
             say("warning", f"NetworkManager {state or 'unknown'}, connectivity {connectivity or 'unknown'}"
-                + ("; a captive portal may need a login" if connectivity == "portal" else ""))
+                + ("; a captive portal may need a login" if connectivity == "portal" else ""),
+                    next_step="nmcli general status; nmcli device")
         active = run(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])
         if broken("active connections", "nmcli", active):
             vpns = [line.split(":")[0] for line in active.stdout.splitlines()
@@ -1957,7 +2029,8 @@ def check_network(machine):
             machine.vpns = vpns
     route = run(["ip", "-o", "route", "show", "default"])
     if broken("default route", "ip route", route) and not route.stdout.strip():
-        say("warning", "no default route; nothing outside the local network is reachable")
+        say("warning", "no default route; nothing outside the local network is reachable",
+            next_step="ip route; nmcli device")
     dns = run(["resolvectl", "dns"])
     if broken("DNS servers", "resolvectl", dns):
         servers = sorted({server for line in dns.stdout.splitlines() for server in line.partition(":")[2].split()})
@@ -1970,7 +2043,8 @@ def check_network(machine):
             say("ok", "clock synchronized with NTP")
         else:
             say("warning", "clock not synchronized with NTP" + (" (NTP is off)" if values.get("NTP") == "no" else "")
-                + "; Kerberos refuses tickets when the clock is off by more than 5 minutes")
+                + "; Kerberos refuses tickets when the clock is off by more than 5 minutes",
+                    next_step="timedatectl timesync-status")
     check_domain(machine)
 
 
@@ -2093,15 +2167,16 @@ def login_stages(machine, name):
         auth, account, session = attempt.get("auth"), attempt.get("account"), attempt.get("session")
         code = (attempt.get("auth_detail") or attempt.get("account_detail") or [""])[0]
         if auth == "failed":
-            say("warning", text + "authentication failed" + (f" ({code}: {PAM_CODES[code]})" if code in PAM_CODES
-                                                              else ""))
+            incident(text + "authentication failed" + (f" ({code}: {PAM_CODES[code]})" if code in PAM_CODES
+                                                              else ""),
+                     next_step=f"journalctl -b SYSLOG_FACILITY=10 --grep {name}")
         elif account == "denied":
-            say("warning", text + "authentication " + ("succeeded" if auth else "not logged")
+            incident(text + "authentication " + ("succeeded" if auth else "not logged")
                 + ", then authorization refused it" + (f" ({code}: {PAM_CODES[code]})" if code in PAM_CODES else "")
-                + "; see: sudo sssctl user-checks " + name)
+                + "; see: sudo sssctl user-checks " + name, next_step=f"journalctl -b SYSLOG_FACILITY=10 --grep {name}")
         elif session == "failed":
-            say("warning", text + "authenticated and authorized, but session setup failed: "
-                + clean((attempt.get("session_detail") or [""])[0], 120))
+            incident(text + "authenticated and authorized, but session setup failed: "
+                + clean((attempt.get("session_detail") or [""])[0], 120), next_step="journalctl -b -u systemd-logind")
         elif session == "ok":
             say("ok", text + ("authentication, authorization and session setup succeeded" if auth
                               else "session opened (authenticated without a password, e.g. an SSH key)"))
@@ -2177,7 +2252,8 @@ def check_domain_login(machine, probe_domain):
             say("ok", f"{name} is authorized to log in through {service} now (account check, no password)")
         elif verdict:
             say("warning", f"{name} is not authorized to log in through {service} now: "
-                           f"{clean(verdict.group(1), 100)}; access_provider or GPO rules refuse it")
+                           f"{clean(verdict.group(1), 100)}; access_provider or GPO rules refuse it",
+                               next_step=f"sudo sssctl user-checks {name} -a acct -s {service}")
         elif check.returncode != 0:
             say("failed", f"authorization of {name}: {failure('sssctl user-checks', check)}")
         else:
@@ -2203,10 +2279,10 @@ def lookup_cost(machine, name, domain_account):
         if matched:
             full[matched.group(1)] = full.get(matched.group(1), 0) + 1
     for kind, count in sorted(full.items()):
-        say("warning", f"SSSD's in-memory {kind} cache filled up {plural(count, 'time')} this boot, so lookups fall "
+        incident(f"SSSD's in-memory {kind} cache filled up {plural(count, 'time')} this boot, so lookups fall "
                        f"back to the slower SSSD socket; raise memcache_size_{kind} in [nss] of sssd.conf"
                        + (" and set ignore_group_members = True for the domain, which keeps group entries small"
-                          if kind in ("group", "initgroups") else ""))
+                          if kind in ("group", "initgroups") else ""), next_step="journalctl -b -t sssd_nss")
     sudoers = re.search(r"^\s*sudoers:\s*(.+)$", machine.read("etc/nsswitch.conf") or "", re.M)
     if sudoers and "sss" in sudoers.group(1).split():
         say("info", f"sudo also asks SSSD for its rules (nsswitch: sudoers: {sudoers.group(1).strip()}); if the "
@@ -2236,13 +2312,14 @@ def offline(machine, domain, found):
             + ("its controllers are discoverable" if found else "")
         say("warning", f"SSSD is offline for {domain} although {evidence}; hypotheses: the controllers are not "
                        "reachable from this network (routing, firewall, a VPN that is up but not passing traffic), "
-                       f"LDAP or Kerberos ports are blocked, or SSSD has not retried yet ({retry})")
+                       f"LDAP or Kerberos ports are blocked, or SSSD has not retried yet ({retry})",
+            next_step=f"sssctl domain-status {domain}; sudo sssctl logs-fetch")
         return
     vpns = f"; connected VPN: {', '.join(machine.vpns)}, which does not route it either" if machine.vpns else ""
     say("warning", f"SSSD is offline for {domain} and no connected network routes its DNS{vpns}; logins use cached "
                    "credentials where cache_credentials is on. Expected away from the domain network, a fault on it: "
                    "check with dotconfig machine status --sudo --probe-domain; if offline is normal here, add "
-                   f"offline-ok {domain} to /etc/dotconfig/machine-expect")
+                   f"offline-ok {domain} to /etc/dotconfig/machine-expect", next_step="sssctl domain-status " + domain)
 
 
 def discovery(domain):
@@ -2256,7 +2333,8 @@ def discovery(domain):
             return None
         if result.returncode != 0:
             say("warning", f"discovery: {record} does not resolve ({failure('resolvectl', result)}); clients "
-                           "cannot find the domain controllers through the current DNS")
+                           "cannot find the domain controllers through the current DNS",
+                               next_step=f"resolvectl query -t SRV {record}")
             continue
         targets = re.findall(r"IN SRV \d+ \d+ \d+ (\S+)", result.stdout) or re.findall(r"\d+ \d+ \d+ (\S+)", result.stdout)
         link = re.search(r"-- link: (\S+)", result.stdout)
@@ -2328,8 +2406,11 @@ def check_desktop(machine):
         return
     section(f"Desktop session ({machine.user})")
     restarts = int(values.get("NRestarts") or 0)
+    back = values.get("ActiveState") == "active"
     say("warning" if restarts else "info", f"display manager: {values['Id']}, {values.get('ActiveState', '?')}"
-        + (f", restarted {plural(restarts, 'time')} this boot; the login screen went away each time" if restarts else ""))
+        + (f", restarted {plural(restarts, 'time')} this boot; the login screen went away each time"
+           + (" and came back" if back else "") if restarts else ""), past=True, recovered=back,
+        next_step=f"journalctl -b -u {values['Id']}")
     session_definitions(machine)
     if not machine.sees_system_journal():
         say("unchecked", "graphical logins: " + machine.journal_hint())
@@ -2355,10 +2436,12 @@ def session_definitions(machine):
             program = re.search(r"^(?:TryExec|Exec)=(\S+)", text, re.M)
             if program and not executable(machine, program.group(1)):
                 say("warning", f"session {name}: its program {program.group(1)} is missing; choosing it at the "
-                               "login screen returns straight to it")
+                               "login screen returns straight to it",
+                                   next_step="ls /usr/share/wayland-sessions /usr/share/xsessions")
     if chosen and chosen not in names:
         say("warning", f"{machine.user} last chose session {chosen}, which is no longer installed; the login screen "
-                       "falls back or fails (installed: " + ", ".join(names or ["none"]) + ")")
+                       "falls back or fails (installed: " + ", ".join(names or ["none"]) + ")",
+                           next_step=f"sudo cat /var/lib/AccountsService/users/{machine.user}")
     elif chosen:
         say("info", f"{machine.user} logs in to session {chosen}")
 
@@ -2404,12 +2487,15 @@ def graphical_logins(machine):
         if lasted is not None and lasted < QUICK_EXIT_SECONDS and not desktop:
             quick.append((entry, service, lasted))
     for entry, service, lasted in quick:
-        say("warning", f"{name} logged in by {GRAPHICAL_PATHS[service]} at {when(entry)}, but the session ended "
+        later = any(monotonic(e) > monotonic(entry) for e in ready)
+        incident(f"{name} logged in by {GRAPHICAL_PATHS[service]} at {when(entry)}, but the session ended "
                        f"{lasted:.0f} s later before the desktop was ready, back to the login screen; see: "
-                       f"journalctl -b _UID={uid} --since around then, and the Shell crashes below")
+                       f"journalctl -b _UID={uid} --since around then, and the Shell crashes below"
+                 + ("; a later login reached the desktop" if later else ""), recovered=later)
     for service, count in sorted(unlock_failures.items()):
         say("warning" if count > 2 else "info",
-            f"{plural(count, 'failed screen unlock')} by {GRAPHICAL_PATHS[service]} while {name} was logged in")
+            f"{plural(count, 'failed screen unlock')} by {GRAPHICAL_PATHS[service]} while {name} was logged in",
+            past=True, next_step=f"journalctl -b SYSLOG_FACILITY=10 --grep {service}")
     if opened and not quick:
         paths = sorted({GRAPHICAL_PATHS[service] for _, service, _ in opened})
         say("ok", f"{plural(len(opened), 'graphical login')} of {name} by {', '.join(paths)} this boot; none ended "
@@ -2428,11 +2514,11 @@ def shell_crashes(machine, uid, greeters):
     if mine:
         times = [monotonic(e) for e in mine]
         loop = len(mine) >= 3 and times[-1] - times[-3] < 600e6
-        say("warning", f"{machine.user}'s desktop crashed {plural(len(mine), 'time')} this boot"
+        incident(f"{machine.user}'s desktop crashed {plural(len(mine), 'time')} this boot"
             + (", three within ten minutes: a crash loop" if loop else "") + f", last at {when(mine[-1])} "
             f"({mine[-1].get('COREDUMP_COMM')}); see: coredumpctl info {mine[-1].get('COREDUMP_PID', '')}".rstrip())
     if login_screen:
-        say("warning", f"the login screen's Shell crashed {plural(len(login_screen), 'time')} this boot (greeter "
+        incident(f"the login screen's Shell crashed {plural(len(login_screen), 'time')} this boot (greeter "
                        "account, not a user session); see: coredumpctl list gnome-shell")
 
 
@@ -2457,7 +2543,8 @@ def keyring(machine):
                 if line.split() and line.split()[0] == "org.freedesktop.secrets"), None)
     if row is None:
         say("warning", "no Secret Service provider (org.freedesktop.secrets) on the session bus: browsers, VPN "
-                       "and mail clients cannot store passwords (gnome-keyring or KeePassXC provide it)")
+                       "and mail clients cannot store passwords (gnome-keyring or KeePassXC provide it)",
+            next_step="systemctl --user status gnome-keyring-daemon.service")
         return
     if len(row) < 3 or row[1] == "-":
         say("info", "the Secret Service is not running yet; it starts on first use (not started here)")
@@ -2483,7 +2570,8 @@ def keyring(machine):
                         "password was given to unlock it); it unlocks on first use with its own password")
         elif login and not unlocks:
             say("warning", f"the default keyring is locked and the {login} PAM path does not include "
-                           "pam_gnome_keyring in auth, so a password login cannot unlock it")
+                           "pam_gnome_keyring in auth, so a password login cannot unlock it",
+                               next_step=f"grep -r keyring /etc/pam.d/{login}")
         else:
             say("warning", "the default keyring stayed locked after a password login; hypotheses: its password "
                            "differs from the login password (common after a domain password change made "
@@ -2517,15 +2605,17 @@ def keyring_storage(machine):
         return
     if st.st_uid != machine.uid:
         say("warning", f"{data}/keyrings is owned by {owner_label(st.st_uid)}, not {machine.user}: the keyring cannot "
-                       f"save or open its files (sudo chown {machine.user} {data}/keyrings and the files inside)")
+                       f"save or open its files ; run: sudo chown -R {machine.user} {data}/keyrings")
         return
     blocked = inspector.access_check(machine.root, path, st, identity(machine), 7)
     if blocked and blocked[0] == "warning":
-        say("warning", f"{machine.user} cannot read and write {data}/keyrings, so keyrings cannot be opened or saved")
+        say("warning", f"{machine.user} cannot read and write {data}/keyrings, so keyrings cannot be opened or saved",
+            next_step=f"ls -ld {data}/keyrings")
     foreign = [entry.name for entry in path.iterdir() if entry.lstat().st_uid != machine.uid]
     if foreign:
         say("warning", f"{plural(len(foreign), 'keyring file')} in {data}/keyrings belong to another account, e.g. "
-                       f"{foreign[0]}; that keyring cannot be opened")
+                       f"{foreign[0]}; that keyring cannot be opened",
+            next_step=f"sudo chown -R {machine.user} {data}/keyrings")
 
 
 def proxy_values_env(machine):
@@ -2667,11 +2757,12 @@ def sound(found, log):
     if running(units.get("pipewire.service")) and "wireplumber.service" in units \
             and not running(units["wireplumber.service"]) and units["wireplumber.service"].get("ActiveState") != "failed":
         say("warning", "PipeWire runs without its session manager WirePlumber, so no audio or video devices appear; "
-                       "systemctl --user start wireplumber.service")
+                       "run: systemctl --user start wireplumber.service",
+                           next_step="systemctl --user status wireplumber.service")
     if running(units.get("pulseaudio.service")) and running(units.get("pipewire-pulse.service")):
         say("warning", "PulseAudio and pipewire-pulse are both running and compete for the sound server, so sound "
-                       "works in some applications only; Ubuntu uses pipewire-pulse: systemctl --user mask "
-                       "pulseaudio.service pulseaudio.socket")
+                       "works in some applications only; Ubuntu uses pipewire-pulse; run: systemctl --user mask "
+                       "pulseaudio.service pulseaudio.socket", next_step="pactl info")
     present = [name for name in SOUND_UNITS if name in units]
     errors = [e for e in log if (e.get("_SYSTEMD_USER_UNIT") in present or e.get("SYSLOG_IDENTIFIER") in
                                  ("pipewire", "pipewire-pulse", "wireplumber")) and int(e.get("PRIORITY", "6")) <= 3]
@@ -2693,7 +2784,8 @@ def portals(machine, environment, desktops, found, log):
     backends = installed_backends(machine, environment, data_dirs)
     if not backends:
         say("warning", "xdg-desktop-portal is installed without any backend, so sandboxed applications get no file "
-                       "chooser or screen sharing (Ubuntu's are xdg-desktop-portal-gnome and -gtk)")
+                       "chooser or screen sharing (Ubuntu's are xdg-desktop-portal-gnome and -gtk)",
+            next_step="apt policy xdg-desktop-portal-gnome xdg-desktop-portal-gtk")
         return
     if not desktops:
         say("info", f"portals: no desktop name for {machine.user} (no graphical session), so which backend applies is "
@@ -2715,7 +2807,7 @@ def portals(machine, environment, desktops, found, log):
             unusable, disabled = portal_routes(choices, backends)
             for key, reasons in unusable:
                 say("warning", f"portal configuration {config[0]}: {key} has no usable backend ({'; '.join(reasons)}), "
-                               "so that portal fails")
+                               "so that portal fails", next_step="journalctl --user -b -u xdg-desktop-portal.service")
             if disabled:
                 say("info", f"portals switched off on purpose by {config[0]} (none): {', '.join(disabled)}")
             if not unusable:
@@ -2726,12 +2818,13 @@ def portals(machine, environment, desktops, found, log):
             say("ok", f"portals for {':'.join(desktops)}: chosen by the backends' UseIn (no portals.conf)")
         else:
             say("warning", f"no portal backend is configured for desktop {':'.join(desktops)} (no portals.conf, no "
-                           "matching UseIn), so sandboxed applications get no file chooser or screen sharing")
+                           "matching UseIn), so sandboxed applications get no file chooser or screen sharing",
+                next_step="ls /usr/share/xdg-desktop-portal/portals")
     failures = [e for e in log if ((e.get("_SYSTEMD_USER_UNIT") or "").startswith("xdg-desktop-portal")
                                    or (e.get("SYSLOG_IDENTIFIER") or "").startswith("xdg-desktop-por"))
                 and PORTAL_FAILURE.search(e["MESSAGE"])]
     if failures:
-        say("warning", f"xdg-desktop-portal reported {plural(len(failures), 'backend failure')} this boot, last at "
+        incident(f"xdg-desktop-portal reported {plural(len(failures), 'backend failure')} this boot, last at "
                        f"{when(failures[-1])}: {clean(failures[-1]['MESSAGE'], 160)}; see: journalctl --user -b "
                        "-u 'xdg-desktop-portal*'")
 
@@ -2848,8 +2941,8 @@ def shell_extensions(machine, environment, log):
         say("info", f"{plural(len(missing), 'enabled extension')} not installed: {', '.join(missing)}")
     if outdated:
         say("warning", f"{plural(len(outdated), 'enabled extension')} not declared for GNOME Shell {version}, so the "
-                       f"Shell skips {'it' if len(outdated) == 1 else 'them'}: {'; '.join(outdated)}; update or switch "
-                       "off (gnome-extensions disable UUID)")
+                       f"Shell skips {'it' if len(outdated) == 1 else 'them'}: {'; '.join(outdated)}; update them or "
+                       "run: gnome-extensions disable UUID", next_step="gnome-extensions list --enabled --details")
     errors = {}
     for entry in log:
         if (entry.get("SYSLOG_IDENTIFIER") or entry.get("_COMM")) != "gnome-shell":
@@ -2858,7 +2951,7 @@ def shell_extensions(machine, environment, log):
         if matched:
             errors.setdefault(matched.group(1), []).append(entry)
     for uuid, entries in sorted(errors.items()):
-        say("warning", f"Shell extension {uuid} logged {plural(len(entries), 'error')} this boot, last: "
+        incident(f"Shell extension {uuid} logged {plural(len(entries), 'error')} this boot, last: "
                        f"{clean(entries[-1]['MESSAGE'], 160)}; to rule it out: gnome-extensions disable {uuid}")
     if enabled and not (missing or outdated or errors):
         say("ok", f"{plural(len(enabled), 'enabled Shell extension')} installed"
@@ -2875,15 +2968,17 @@ def dconf_health(machine, environment, log):
         st = None
     if st and st.st_uid != machine.uid:
         say("warning", f"{directory} is owned by {owner_label(st.st_uid)}, not {machine.user}: settings changes are "
-                       f"lost at logout (sudo chown -R {machine.user} {directory})")
+                       f"lost at logout ; run: sudo chown -R {machine.user} {directory}")
     elif st:
         blocked = inspector.access_check(machine.root, path, st, identity(machine), 7)
         if blocked and blocked[0] == "warning":
-            say("warning", f"{machine.user} cannot write {directory}: settings changes are lost at logout")
+            say("warning", f"{machine.user} cannot write {directory}: settings changes are lost at logout",
+                next_step=f"ls -ld {directory}")
     failures = [e for e in log if DCONF_FAILURE.search(e["MESSAGE"])]
     if failures:
-        say("warning", f"settings failed to save {plural(len(failures), 'time')} this boot, last at "
-                       f"{when(failures[-1])}: {clean(failures[-1]['MESSAGE'], 160)}")
+        incident(f"settings failed to save {plural(len(failures), 'time')} this boot, last at "
+                       f"{when(failures[-1])}: {clean(failures[-1]['MESSAGE'], 160)}",
+                           next_step="journalctl --user -b --grep dconf")
     chosen = environment.get("DCONF_PROFILE") or "user"
     profile = machine.read(chosen.lstrip("/") if chosen.startswith("/") else f"etc/dconf/profile/{chosen}") or ""
     for name in re.findall(r"^system-db:(\S+)", profile, re.M):
@@ -2938,7 +3033,8 @@ def autostart(machine, environment, desktops):
             problems.append((scope, name, f"its program {words[0]} is missing"))
     for scope, name, why in problems:
         say("warning", f"autostart entry {name} ({scope}): {why}, so it fails at every login"
-            + (f"; remove {user_directory}/{name} if it is no longer wanted" if scope == "user" else ""))
+            + (f"; if it is no longer wanted, run: rm {user_directory}/{name}" if scope == "user" else ""),
+                next_step=f"cat {path}")
     if entries and not problems:
         count = len(entries)
         say("ok", f"{count} autostart entr{'y' if count == 1 else 'ies'} checked: each one that applies points to an installed "
@@ -2951,8 +3047,8 @@ def resumes(machine):
     entries = machine.journal("_TRANSPORT=kernel", "+", "SYSLOG_IDENTIFIER=systemd-sleep") or []
     failed = [e for e in entries if SLEEP_FAILED.search(e["MESSAGE"])]
     if failed:
-        say("warning", f"suspend or resume failed {plural(len(failed), 'time')} this boot, last at {when(failed[-1])}: "
-                       f"{clean(kernel_text(failed[-1]), 160)}")
+        incident(f"suspend or resume failed {plural(len(failed), 'time')} this boot, last at {when(failed[-1])}: "
+                       f"{clean(kernel_text(failed[-1]), 160)}", next_step="journalctl -b -t systemd-sleep")
     times = []
     for entry in entries:
         if RESUMED.search(entry["MESSAGE"]) and (not times or monotonic(entry) - times[-1] > 30e6):
@@ -2979,11 +3075,11 @@ def resumes(machine):
     say("info", f"{plural(len(times), 'resume')} from sleep this boot")
     if after_gpu:
         first = next(e for e in gpu if any(t <= monotonic(e) <= t + RESUME_WINDOW for t in after_gpu))
-        say("warning", f"after {len(after_gpu)} of them the graphics driver reported errors within two minutes, e.g. "
+        incident(f"after {len(after_gpu)} of them the graphics driver reported errors within two minutes, e.g. "
                        f"{clean(kernel_text(first), 160)}; a black, frozen or garbled screen after resume likely "
                        "comes from this (hypothesis); see: journalctl -b -k -p warning")
     if after_crash:
-        say("warning", f"{machine.user}'s Shell crashed within two minutes after {plural(len(after_crash), 'resume')}"
+        incident(f"{machine.user}'s Shell crashed within two minutes after {plural(len(after_crash), 'resume')}"
             + (", together with graphics errors: the driver is the likely cause (hypothesis)"
                if set(after_crash) & set(after_gpu) else "") + "; see: coredumpctl list gnome-shell")
     if after_unlock:
@@ -3015,9 +3111,11 @@ def check_polkit(machine):
     state, restarts = values.get("ActiveState", "?"), int(values.get("NRestarts") or 0)
     if state == "active":
         say("warning" if restarts else "ok", "polkit is running" + (f" but restarted {plural(restarts, 'time')} "
-                                                                    "this boot" if restarts else ""))
+                                                                    "this boot" if restarts else ""),
+            past=True, recovered=True, next_step="journalctl -b -u polkit.service")
     elif state == "failed":
-        say("warning", "polkit has failed: no prompt for administrator actions can appear (see Services)")
+        say("warning", "polkit has failed: no prompt for administrator actions can appear",
+            next_step="systemctl status polkit.service")
     else:
         say("info", f"polkit is {state}; it starts on the first authorization request")
     admins(machine)
@@ -3027,10 +3125,11 @@ def check_polkit(machine):
         say("info", "polkit authenticates through: " + (", ".join(dict.fromkeys(auth)) or "no auth modules")
             + (" (domain accounts through pam_sss)" if "pam_sss.so" in auth else ""))
         if not auth:
-            say("warning", "the polkit-1 PAM service has no auth lines, so no administrator can authenticate")
+            say("warning", "the polkit-1 PAM service has no auth lines, so no administrator can authenticate",
+            next_step="dpkg -S polkit-1 | grep pam.d; dpkg --verify polkitd")
     else:
         say("warning", "no polkit-1 PAM service (/etc/pam.d or /usr/lib/pam.d): polkit falls back to PAM's 'other' "
-                       "service, which usually denies")
+                       "service, which usually denies", next_step="dpkg --verify polkitd")
     pkla(machine)
     if not machine.sees_system_journal():
         say("unchecked", "polkit agents, rule errors and outcomes: " + machine.journal_hint())
@@ -3039,8 +3138,8 @@ def check_polkit(machine):
     agents(machine, entries)
     errors = [e for e in entries if POLKIT_RULE_ERROR.search(e["MESSAGE"])]
     if errors:
-        say("warning", f"polkit reported {plural(len(errors), 'rule error')} this boot; a rule that fails to load or "
-                       "throws stops applying, and later rules decide instead")
+        incident(f"polkit reported {plural(len(errors), 'rule error')} this boot; a rule that fails to load or "
+                       "throws stops applying, and later rules decide instead", next_step="journalctl -b -t polkitd")
         print(f"    e.g. {clean(errors[-1]['MESSAGE'], 160)}")
     outcomes = {}
     for entry in entries:
@@ -3050,7 +3149,8 @@ def check_polkit(machine):
             outcomes[key] = outcomes.get(key, 0) + 1
     for (outcome, action), count in sorted(outcomes.items()):
         say("warning" if outcome == "authentication failed" else "info",
-            f"{action}: {outcome} {plural(count, 'time')} this boot")
+            f"{action}: {outcome} {plural(count, 'time')} this boot", past=True,
+            next_step="journalctl -b -t polkitd")
 
 
 def admins(machine):
@@ -3075,7 +3175,7 @@ def admins(machine):
             unresolved.append(name)
             say("warning" if domain else "info", f"administrator identity unix-{kind}:{name} (from {rule}) does not "
                 "resolve through NSS" + (": nobody can be offered for it; is SSSD offline?" if domain else
-                                         "; it offers nobody"))
+                                         "; it offers nobody"), next_step=f"getent {kind} {name}")
             continue
         fields = result.stdout.strip().split(":")
         if kind == "group":
@@ -3086,7 +3186,8 @@ def admins(machine):
             member = member or name == machine.user
             offered.append(name)
     if len(unresolved) == len(dict.fromkeys(identities)):
-        say("warning", "no administrator identity resolves, so administrator prompts cannot be answered")
+        say("warning", "no administrator identity resolves, so administrator prompts cannot be answered",
+            next_step="getent group sudo; pkaction --verbose --action-id org.freedesktop.policykit.exec")
     elif member:
         say("ok", f"{machine.user} is an administrator for polkit and authenticates with their own password")
     else:
@@ -3105,7 +3206,8 @@ def pkla(machine):
         say("info", f"{plural(len(files), 'legacy .pkla file')} applied through polkitd-pkla")
     else:
         say("warning", f"{plural(len(files), 'legacy .pkla file')} (e.g. {Path(files[0]).name}) without polkitd-pkla "
-                       "installed: polkit reads only JavaScript rules, so these are ignored")
+                       "installed: polkit reads only JavaScript rules, so these are ignored",
+                           next_step="apt policy polkitd-pkla")
 
 
 def agents(machine, entries):
@@ -3129,7 +3231,7 @@ def agents(machine, entries):
         elif events[-1][0] == "Unregistered":
             say("warning", f"session {session}: its authentication agent unregistered at {when(events[-1][1])} and did "
                            "not register again; administrator prompts cannot appear there (the Shell provides the "
-                           "agent; logging out and in restores it)")
+                           "agent; logging out and in restores it)", next_step="journalctl -b -t polkitd")
         else:
             recovered = any(kind == "Unregistered" for kind, _ in events)
             say("ok", f"session {session}: an authentication agent is registered"
@@ -3242,7 +3344,8 @@ def miner_unit(unit, props):
         reason = RESULTS.get(props.get("Result", ""), props.get("Result") or "unknown reason")
         say("warning", f"{unit} has failed ({reason}): new and changed files do not appear in search; {hint}")
     elif restarts >= 3:
-        say("warning", f"{unit} restarted {plural(restarts, 'time')} this boot: it keeps crashing; {hint}")
+        say("warning", f"{unit} restarted {plural(restarts, 'time')} this boot: it keeps crashing; {hint}",
+            past=True, recovered=running(props))
         return running(props)
     elif running(props):
         return True
@@ -3306,7 +3409,8 @@ def index_log(machine, unit, programs, reset):
         counts["crash"] = counts.get("crash", 0) + len(dumps)
     for key, level, title, _, advice in INDEX_PATTERNS:
         if counts.get(key):
-            say(level, f"indexer: {title} ({counts[key]} this boot); " + advice.format(unit=unit, reset=reset))
+            say(level, f"indexer: {title} ({counts[key]} this boot); " + advice.format(unit=unit, reset=reset),
+                past=True, next_step=f"journalctl --user -b -u {unit}")
     if not counts:
         say("ok", "the indexer logged no database, watch, timeout or crash problems this boot")
 
@@ -3324,11 +3428,12 @@ def index_cache(machine, settings):
         return
     if st.st_uid != machine.uid:
         say("warning", f"{shown} is owned by {owner_label(st.st_uid)}, not {machine.user}: the indexer cannot update "
-                       f"its database (sudo chown -R {machine.user} {cache}/tracker3)")
+                       f"its database ; run: sudo chown -R {machine.user} {cache}/tracker3")
         return
     blocked = inspector.access_check(machine.root, path, st, identity(machine), 7)
     if blocked and blocked[0] == "warning":
-        say("warning", f"{machine.user} cannot write {shown}: the indexer cannot update its database")
+        say("warning", f"{machine.user} cannot write {shown}: the indexer cannot update its database",
+            next_step=f"ls -ld {shown}")
         return
     size = sum(entry.stat().st_size for entry in path.glob("meta.db*") if entry.is_file())
     say("info", f"index database: {size / 2 ** 20:.0f} MiB in {shown}")
@@ -3370,7 +3475,7 @@ def watches(machine):
     if largest >= limit * 0.9:
         say("warning", f"{machine.user}'s programs hold at least {largest} of {limit} inotify watches: the indexer and "
                        "editors stop seeing changes; raise fs.inotify.max_user_watches (sysctl) or close what watches "
-                       "most")
+                       "most", next_step="inotify-info (apt install inotify-info)")
     elif used >= limit * 0.9:
         say("info", f"inotify watches of {machine.user}'s programs: {span} (descriptors shared between processes "
                     "count once per process), so they may be near the limit; see whether changes go unnoticed")
@@ -3412,7 +3517,8 @@ def check_packages(machine):
     if enabled == "Y":
         say("ok", "AppArmor is enabled")
     elif enabled:
-        say("warning", "AppArmor is disabled; Ubuntu snaps and confined services rely on it")
+        say("warning", "AppArmor is disabled; Ubuntu snaps and confined services rely on it",
+            next_step="sudo aa-status; cat /proc/cmdline")
     check_readiness(machine)
     check_history(machine)
     if not machine.privileged:
@@ -3440,8 +3546,8 @@ def check_packages(machine):
     if log is not None:
         problems = [line for line in log.splitlines() if re.search(r"\b(ERROR|WARNING)\b", line)]
         if problems:
-            say("warning", f"unattended-upgrades logged {plural(len(problems), 'error or warning')} since its log "
-                           "was rotated; see /var/log/unattended-upgrades/unattended-upgrades.log")
+            incident(f"unattended-upgrades logged {plural(len(problems), 'error or warning')} since its log "
+                           "was rotated; see: /var/log/unattended-upgrades/unattended-upgrades.log")
             print(f"    e.g. {clean(problems[-1], 160)}")
         else:
             say("ok", "unattended-upgrades logged no errors since its log was rotated")
@@ -3474,7 +3580,8 @@ def check_readiness(machine):
                if re.search(r"Failed to fetch|Some index files failed|Temporary failure resolving|"
                             r"Could not (connect|resolve)|NO_PUBKEY|is not signed", e["MESSAGE"])]
     if refresh:
-        say("warning", f"the daily APT refresh failed to fetch {plural(len(refresh), 'time')} this boot")
+        incident(f"the daily APT refresh failed to fetch {plural(len(refresh), 'time')} this boot",
+            next_step="journalctl -b -u apt-daily.service")
         print(f"    e.g. {clean(refresh[-1]['MESSAGE'], 160)}")
     periodic = machine.read("etc/apt/apt.conf.d/20auto-upgrades") or ""
     stamp = machine.path("var/lib/apt/periodic/unattended-upgrades-stamp")
@@ -3505,8 +3612,9 @@ def check_readiness(machine):
         need = (largest(machine, "boot/vmlinuz-*") + largest(machine, "boot/initrd.img-*")) // 1024
         if need and machine.free_kib["/boot"] < need * 1.2:
             say("warning", f"/boot has {machine.free_kib['/boot'] // 1024} MiB free but a kernel and its initrd "
-                           f"take about {need // 1024} MiB; the next kernel update may fail "
-                           "(sudo apt autoremove --purge removes old kernels)")
+                           f"take about {need // 1024} MiB; the next kernel update may fail"
+                           "; run: sudo apt autoremove --purge, which removes old kernels",
+                               next_step="dpkg -l 'linux-image-*'")
 
 
 def stamp_age(machine, relative, now):
@@ -3531,7 +3639,7 @@ def repository_dates(path, now):
             continue
     if dates.get("Valid-Until") and dates["Valid-Until"] < now:
         say("warning", f"repository {name}: metadata expired {(now - dates['Valid-Until']) / 86400:.0f} days ago "
-                       "(Valid-Until); APT refuses it until a refresh succeeds")
+                       "(Valid-Until); APT refuses it until a refresh succeeds", next_step="sudo apt update")
     elif dates.get("Date") and (now - dates["Date"]) / 86400 >= 30:
         say("info", f"repository {name}: last published {(now - dates['Date']) / 86400:.0f} days ago (a frozen "
                     "repository, or a source or mirror that stopped updating)")
@@ -3563,7 +3671,7 @@ def check_snaps():
     errors = [line[summary:] if summary > 0 else line for line in lines[1:]
               if len(line.split()) > 1 and line.split()[1] in ("Error", "Undone")]
     if errors:
-        say("warning", f"{plural(len(errors), 'snap change')} failed recently; see: snap changes")
+        incident(f"{plural(len(errors), 'snap change')} failed recently; see: snap changes")
         print(f"    e.g. {clean(errors[-1], 160)}")
     warnings = run(["snap", "warnings", "--unicode=never"])
     if warnings is not None and warnings.returncode == 0:
@@ -3595,7 +3703,7 @@ def check_hardware(machine):
             level = "warning" if health < 60 else "info"
         if values.get("cycle_count", "0") not in ("", "0"):
             text += f", {values['cycle_count']} cycles"
-        say(level, text)
+        say(level, text, next_step=f"upower -i $(upower -e | grep {Path(battery).name})")
         printed = True
     hot = []
     for zone in sorted(glob.glob(str(machine.path("sys/class/thermal/thermal_zone*")))):
@@ -3607,7 +3715,7 @@ def check_hardware(machine):
         if temperature >= 90:
             hot.append(f"{kind} {temperature:.0f} °C")
     if hot:
-        say("warning", "running hot: " + ", ".join(hot))
+        say("warning", "running hot: " + ", ".join(hot), next_step="sensors")
     elif glob.glob(str(machine.path("sys/class/thermal/thermal_zone*"))):
         say("ok", "all thermal zones below 90 °C")
         printed = True
@@ -3648,23 +3756,45 @@ def main():
     check_installation(machine)
     check_packages(machine)
     check_hardware(machine)
+    digest()
     text, status = summary(COUNTS)
     print(f"\nSummary: {text}")
     return status
 
 
+def digest():
+    """Current problems again, together, then where the earlier incidents are: the report above is long, and
+    what still holds is what to act on first."""
+    current = [(where, message) for level, where, message in FINDINGS if level == "warning"]
+    earlier = {}
+    for level, where, _ in FINDINGS:
+        if level in ("earlier", "recovered"):
+            earlier[where] = earlier.get(where, 0) + 1
+    if current:
+        section("Needs attention now")
+        for where, message in current:
+            print(f"  - {where}: {clean(message, 160)}")
+    if earlier:
+        print("\nEarlier incidents (lines marked earlier or recovered above): "
+              + ", ".join(f"{count} in {where}" for where, count in earlier.items()))
+
+
 def summary(counts):
     """The verdict and exit status: 1 problems found, 3 assessment incomplete (a diagnostic failed) without
     problems, 0 healthy within the checked scope. Not checked items are expected limits, not failures."""
-    warnings, failed, unchecked = (counts.get(level, 0) for level in ("warning", "failed", "unchecked"))
+    warnings, earlier, recovered, failed, unchecked = (counts.get(level, 0) for level in
+                                                       ("warning", "earlier", "recovered", "failed", "unchecked"))
     incomplete = f"assessment incomplete: {plural(failed, 'check')} failed" if failed else ""
     limits = f"{unchecked} not checked (need --sudo, or not applicable)" if unchecked else ""
-    if warnings:
-        return "; ".join(part for part in (f"problems found: {plural(warnings, 'warning')}", incomplete, limits)
-                         if part), 1
+    history = ", ".join(part for part in (f"{earlier} earlier not seen to recover" if earlier else "",
+                                          f"{recovered} earlier and recovered" if recovered else "") if part)
+    if warnings or earlier:
+        found = ", ".join(part for part in (f"{warnings} current" if warnings else "", history) if part)
+        return "; ".join(part for part in (f"problems found: {found}", incomplete, limits) if part), 1
     if failed:
-        return "; ".join(part for part in (incomplete, "no problems found in what was checked", limits) if part), 3
-    return "; ".join(part for part in ("healthy within the checked scope", limits) if part), 0
+        return "; ".join(part for part in (incomplete, "no problems found in what was checked", history, limits)
+                         if part), 3
+    return "; ".join(part for part in ("healthy within the checked scope", history, limits) if part), 0
 
 
 if __name__ == "__main__":
