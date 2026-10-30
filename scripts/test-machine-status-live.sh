@@ -24,7 +24,7 @@ report() {
     [[ "$status" == 0 || "$status" == 1 || "$status" == 3 ]] || { echo "machine status exited $status" >&2; exit 1; }
     check '^Summary: '
     # Every problem names what to run next.
-    if grep -E '^(warning|earlier|recovered): ' "$out" | grep -vE 'see: |run: |to rule it out: |try: '; then
+    if grep -E '^ *(warning|earlier|recovered): ' "$out" | grep -vE 'see: |run: |to rule it out: |try: '; then
         echo 'problems above have no next step' >&2
         exit 1
     fi

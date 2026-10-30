@@ -308,8 +308,10 @@ EOF
 cat > "$stubs/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-    *"show -p Id -p ActiveState -p NRestarts --no-pager display-manager.service") printf 'Id=gdm.service\nActiveState=active\nNRestarts=1\n' ;;
-    *"show -p LoadState -p ActiveState -p NRestarts --no-pager polkit.service") printf 'LoadState=loaded\nActiveState=active\nNRestarts=0\n' ;;
+    *"show -p Id -p ActiveState -p SubState -p NRestarts -p ActiveEnterTimestampMonotonic --no-pager display-manager.service")
+        printf 'Id=gdm.service\nActiveState=active\nSubState=running\nNRestarts=1\nActiveEnterTimestampMonotonic=20000000000\n' ;;
+    *"show -p LoadState -p ActiveState -p SubState -p NRestarts -p ActiveEnterTimestampMonotonic --no-pager polkit.service")
+        printf 'LoadState=loaded\nActiveState=active\nNRestarts=0\n' ;;
     *"show --no-pager --timestamp=unix"*) exec python3 "$(dirname "$0")/../units.py" "$@" ;;
     is-system-running) echo degraded ;;
     "is-active user@"*) echo active ;;
@@ -685,7 +687,7 @@ refute() {
 # Every problem names what to run next.
 next_steps() {
     local missing
-    missing="$(grep -E '^(warning|earlier|recovered): ' "$test_dir/out" | grep -vE 'see: |run: |to rule it out: |try: ' || :)"
+    missing="$(grep -E '^ *(warning|earlier|recovered): ' "$test_dir/out" | grep -vE 'see: |run: |to rule it out: |try: ' || :)"
     [[ -z "$missing" ]] || { echo "Problems without a next step:" >&2; echo "$missing" >&2; exit 1; }
 }
 run_status() {
@@ -794,7 +796,7 @@ check '^info: indexes &DESKTOP, &DOCUMENTS, 3 other folders with subfolders, and
 refute 'secret-client-project'
 refute 'SECRET-thing'
 check '^info: exclusions: 3 folder patterns, 0 file patterns'
-check '^recovered: localsearch-3.service restarted 4 times this boot: it keeps crashing'
+check '^recovered: localsearch-3.service restarted 4 times this boot: it crashed repeatedly; it has run 480 min [0-9]* s since its last start'
 check '^info: the indexer is busy: Crawling, 42% done, 8 h after it started; one look cannot tell slow from stuck'
 check '^earlier: indexer: database errors (1 this boot); .*rebuilding it removes only the index: localsearch reset'
 check '^earlier: indexer: out of inotify watches (1 this boot)'
@@ -1335,6 +1337,82 @@ machine.uid = 0
 assert module.as_account(machine, ["true"], {})[:2] == ["env", "-i"]
 machine.reach = False
 assert module.as_account(machine, ["true"], {}) is None
+EOF
+
+# Reporting decisions, called directly: restart recovery, proxy credentials, delegated findings.
+python3 - "$repo_root/scripts/machine-status.py" "$root" <<'EOF'
+import contextlib, importlib.util, io, sys, time
+from pathlib import Path
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location("machine_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def report(call):
+    module.COUNTS.clear()
+    module.FINDINGS.clear()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        call()
+        module.digest()
+        verdict, status = module.summary(module.COUNTS)
+    return out.getvalue(), verdict, status
+
+
+# A service in restart backoff is a current problem, whatever its restart count says about the past.
+backoff = {"LoadState": "loaded", "ActiveState": "activating", "SubState": "auto-restart", "NRestarts": "99"}
+text, verdict, status = report(lambda: module.miner_unit("localsearch-3.service", backoff))
+assert text.startswith("warning: localsearch-3.service restarted 99 times this boot"), text
+assert "it is restarting now (auto-restart)" in text and "Needs attention now" in text, text
+assert status == 1, (verdict, status)
+# Up again, but only briefly: not seen to recover.
+brief = dict(backoff, ActiveState="active", SubState="running", ActiveEnterTimestamp=f"@{int(time.time()) - 30}")
+text, verdict, status = report(lambda: module.miner_unit("localsearch-3.service", brief))
+assert text.startswith("earlier: ") and "it runs, but only 3" in text and status == 1, (text, status)
+# Up for an hour: recovered, and alone it leaves the machine healthy.
+stable = dict(brief, ActiveEnterTimestamp=f"@{int(time.time()) - 3600}")
+text, verdict, status = report(lambda: module.miner_unit("localsearch-3.service", stable))
+assert text.startswith("recovered: ") and status == 0, (text, verdict, status)
+# The same policy for any unit, from its monotonic start time.
+assert module.restart_outcome(backoff, None)[:2] == (False, None)
+assert module.restart_outcome({"ActiveState": "active"}, None)[:2] == (True, False)
+props = {"ActiveState": "active", "SubState": "running", "ActiveEnterTimestampMonotonic": str(90_000 * 10**6)}
+assert module.restart_outcome(props, module.up_since_boot(props, 95_400.0))[:2] == (True, True)
+assert module.restart_outcome(props, module.up_since_boot(props, 90_100.0))[:2] == (True, False)
+
+# Proxy credentials: absent is a choice, different ones may be refused, and none of them is printed.
+configured = "http://alice:RightSecret@proxy.example:3128"
+cases = (("http://proxy.example:3128", "info", "without the credentials"),
+         ("http://alice:RightSecret@proxy.example:3128/", "ok", "uses the configured proxy"),
+         ("http://alice:WrongSecret@proxy.example:3128", "warning", "other credentials than proxy.local"),
+         ("http://bob:Other@proxy.example:3128", "warning", "other credentials than proxy.local"))
+for https, level, phrase in cases:
+    text, _, _ = report(lambda: module.proxy_match("the user manager", https, configured))
+    assert text.startswith(f"{level}: ") and phrase in text, (https, text)
+    assert not any(secret in text for secret in ("alice", "bob", "Secret", "Other")), text
+text, _, _ = report(lambda: module.proxy_match("the user manager", "http://u:p@proxy.example:3128",
+                                               "http://proxy.example:3128"))
+assert text.startswith("warning: ") and "credentials that proxy.local does not set" in text, text
+
+# Delegated findings join the digest: status findings are current, log findings are earlier incidents.
+root = Path(sys.argv[2])
+helpers = {"credentials-inspect.py": "ok: sssd.conf parsed\nwarning: sssd.conf is unreadable to the daemon\n"
+                                     "possible cause: an unreadable snippet may set it\n",
+           "credentials-logs.py": "warning: Cached password expired\n  why: the domain refused it\n"}
+module.run = lambda command, **kwargs: (
+    SimpleNamespace(returncode=0, stdout="active\n", stderr="") if command[0] == "systemctl" else
+    SimpleNamespace(returncode=0, stdout=helpers[Path(command[1]).name], stderr=""))
+machine = SimpleNamespace(privileged=True, boot=0, root=root, path=lambda relative: root / "etc/sssd",
+                          read=lambda relative: "3600.00 1000.00")
+module.SECTION[0] = "Domain"
+text, verdict, status = report(lambda: module.check_domain(machine))
+assert "    warning: sssd.conf is unreadable to the daemon; see: sudo sssctl config-check" in text, text
+assert "    warning: hypothesis: an unreadable snippet may set it" in text, text
+assert "    earlier: Cached password expired; see: sudo dotconfig creds check-logs --days 1 --examples 5" in text, text
+assert "  - Domain (dotconfig creds status): sssd.conf is unreadable to the daemon" in text, text
+assert "1 in Domain (dotconfig creds check-logs --days 1)" in text, text
+assert "2 current, 1 earlier not seen to recover" in verdict and status == 1, verdict
 EOF
 
 echo 'machine status tests passed'

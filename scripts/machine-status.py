@@ -58,17 +58,17 @@ CREDS_TIMEOUT = float(os.environ.get("DOTCONFIG_MACHINE_CREDS_TIMEOUT", "300"))
 SLOW_GROUPS = float(os.environ.get("DOTCONFIG_MACHINE_SLOW_GROUPS", "2"))
 
 
-def say(level, message, past=False, recovered=None, next_step=None):
+def say(level, message, past=False, recovered=None, next_step=None, where=None, indent=""):
     """Print one finding. past: the evidence is a logged event (this boot or the one before), not current state;
     recovered: the condition was seen to clear afterwards (True), or not; next_step: the command to look further,
-    added when the message does not already name one."""
+    added when the message does not already name one; where: what reported it, when not the section itself."""
     if next_step and level == "warning" and not any(marker in message for marker in NEXT_MARKERS):
         message += f"; see: {next_step}"
     if level == "warning" and past:
         level = "recovered" if recovered else "earlier"
     COUNTS[level] = COUNTS.get(level, 0) + 1
-    FINDINGS.append((level, SECTION[0], message))
-    print(f"{LABELS.get(level, level)}: {message}")
+    FINDINGS.append((level, where or SECTION[0], message))
+    print(f"{indent}{LABELS.get(level, level)}: {message}")
 
 
 def incident(message, recovered=None, next_step=None):
@@ -121,6 +121,38 @@ def seconds(usec):
     if value >= 60:
         return f"{int(value // 60)} min {value % 60:.0f} s"
     return f"{value:.1f} s"
+
+
+# How long a restarted service must have stayed up since its last start before it counts as recovered.
+STABLE = 600
+
+
+def uptime_seconds(machine):
+    value = (machine.read("proc/uptime") or "").split()
+    return float(value[0]) if value else None
+
+
+def up_since_boot(props, uptime):
+    """Seconds a unit has been active, from its monotonic start time; None when that is unknown."""
+    entered = props.get("ActiveEnterTimestampMonotonic", "")
+    if uptime is None or not entered.isdigit() or int(entered) == 0:
+        return None
+    return max(0.0, uptime - int(entered) / 1e6)
+
+
+def restart_outcome(props, up_for):
+    """(past, recovered, note) for a unit that restarted. A unit restarting now is a current problem; one that runs
+    counts as recovered only after STABLE seconds up, since a crash loop is also active between crashes."""
+    state, sub = props.get("ActiveState", ""), props.get("SubState", "")
+    if sub == "auto-restart" or state in ("activating", "deactivating"):
+        return False, None, f"; it is restarting now ({sub or state})"
+    if state != "active":
+        return True, False, f"; it is {state or 'not running'} now"
+    if up_for is None:
+        return True, False, "; it runs now, but how long it has stayed up is unknown"
+    if up_for < STABLE:
+        return True, False, f"; it runs, but only {seconds(up_for * 1e6)} since its last start"
+    return True, True, f"; it has run {seconds(up_for * 1e6)} since its last start"
 
 
 def owner_label(uid):
@@ -526,7 +558,7 @@ def units_of(machine, scope, flag, uid):
         explain_failed(machine, unit, flag, uid)
     reported = unit_file_problems(machine) if scope == "system" else set()
     load_problems(scope, flag, reported)
-    restarts(scope, flag)
+    restarts(machine, scope, flag)
 
 
 def unit_properties(flag, units, names):
@@ -648,21 +680,23 @@ def load_problems(scope, flag, reported=()):
             + ", ".join(absent[:8]) + (" ..." if len(absent) > 8 else ""))
 
 
-def restarts(scope, flag):
+def restarts(machine, scope, flag):
     result = run(["systemctl"] + flag + ["list-units", "--type=service", "--no-legend", "--plain", "--no-pager"])
     if not broken(f"{scope} service restarts", "systemctl list-units", result):
         return
     units = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
     if not units:
         return
-    restarted = [(p.get("Id", "?"), int(p["NRestarts"]), p.get("ActiveState"))
-                 for p in unit_properties(flag, units, ["Id", "NRestarts", "ActiveState"])
+    restarted = [p for p in unit_properties(flag, units, ["Id", "NRestarts", "ActiveState", "SubState",
+                                                          "ActiveEnterTimestampMonotonic"])
                  if p.get("NRestarts", "0").isdigit() and int(p["NRestarts"]) > 0]
     user = " --user" if "--user" in flag else ""
-    for unit, count, state in sorted(restarted, key=lambda item: -item[1]):
-        say("warning" if count >= 3 else "info", f"{unit} was restarted {plural(count, 'time')} this boot"
-            + ("; it runs now" if state == "active" else ""), past=True, recovered=state == "active",
-            next_step=f"journalctl -b{user} -u {unit}")
+    uptime = uptime_seconds(machine)
+    for props in sorted(restarted, key=lambda p: -int(p["NRestarts"])):
+        unit, count = props.get("Id", "?"), int(props["NRestarts"])
+        past, recovered, note = restart_outcome(props, up_since_boot(props, uptime))
+        say("warning" if count >= 3 or not past else "info", f"{unit} was restarted {plural(count, 'time')} this boot"
+            + note, past=past, recovered=recovered, next_step=f"journalctl -b{user} -u {unit}")
 
 
 # --- Journal ----------------------------------------------------------------------------------------------------
@@ -1416,6 +1450,15 @@ CA_KEYS = ("SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDL
 DEFAULT_PROXY = "http://127.0.0.1:3128"
 
 
+def userinfo(url):
+    """The credentials part of a proxy URL, to compare and never to print; "" when there is none."""
+    try:
+        netloc = urlsplit(url).netloc
+    except ValueError:
+        return ""
+    return netloc.rsplit("@", 1)[0] if "@" in netloc else ""
+
+
 def redact(url):
     """A proxy URL without its credentials."""
     try:
@@ -1486,11 +1529,7 @@ def check_proxy(machine, probes):
             say("warning", f"{label} has no https_proxy although dotconfig proxy is on: {consequence} connect "
                            "directly and fail where only the proxy is allowed", next_step="dotconfig proxy status")
         elif configured == "on" and https.rstrip("/") != endpoint.rstrip("/"):
-            if redact(https).rstrip("/") == redact(endpoint).rstrip("/"):
-                say("info", f"{label} uses the configured proxy {redact(https)} without the credentials in proxy.local")
-            else:
-                say("warning", f"{label} uses proxy {redact(https)}, not the configured {redact(endpoint)}",
-                    next_step="dotconfig proxy status")
+            proxy_match(label, https, endpoint)
         elif configured == "off" and https:
             say("warning", f"{label} still sets https_proxy={redact(https)} although dotconfig proxy is off",
                 next_step="dotconfig proxy status")
@@ -1505,6 +1544,23 @@ def check_proxy(machine, probes):
     for probe in probes:
         for labels, route in routes:
             probe_endpoint(machine, probe, labels, route)
+
+
+def proxy_match(label, https, endpoint):
+    """An environment's proxy against proxy.local's: the redacted URLs hide the credentials, so those are compared
+    apart, and never printed."""
+    ours, theirs = userinfo(endpoint), userinfo(https)
+    if redact(https).rstrip("/") != redact(endpoint).rstrip("/"):
+        say("warning", f"{label} uses proxy {redact(https)}, not the configured {redact(endpoint)}",
+            next_step="dotconfig proxy status")
+    elif ours and not theirs:
+        say("info", f"{label} uses the configured proxy {redact(https)} without the credentials in proxy.local")
+    elif theirs and theirs != ours:
+        say("warning", f"{label} uses the configured proxy {redact(https)} with "
+            + ("other credentials than proxy.local" if ours else "credentials that proxy.local does not set")
+            + "; the proxy may refuse them", next_step="dotconfig proxy status")
+    else:
+        say("ok", f"{label} uses the configured proxy {redact(https)}")
 
 
 def ca_file(machine, label, key, value):
@@ -2065,18 +2121,24 @@ def check_domain(machine):
     if machine.boot == 0 and uptime:
         days = max(1, -(-int(float(uptime[0])) // 86400))
     scripts = Path(__file__).resolve().parent
-    for title, command in (("dotconfig creds status", [scripts / "credentials-inspect.py", "inspect"]),
-                           (f"dotconfig creds check-logs --days {days}",
-                            [scripts / "credentials-logs.py", "--days", str(days)])):
+    # The status helper reads configuration as it is now; the log helper reports what happened, so its problems are
+    # earlier incidents.
+    levels = {"warning": "warning", "possible cause": "warning", "check failed": "failed", "not checked": "unchecked"}
+    for title, command, past, next_step in (
+            ("dotconfig creds status", [scripts / "credentials-inspect.py", "inspect"], False,
+             "sudo sssctl config-check"),
+            (f"dotconfig creds check-logs --days {days}", [scripts / "credentials-logs.py", "--days", str(days)], True,
+             f"sudo dotconfig creds check-logs --days {days} --examples 5")):
         print(f"  {title}:")
         result = run(["python3"] + [str(part) for part in command] + [str(machine.root)], timeout=CREDS_TIMEOUT)
-        levels = {"warning": "warning", "possible cause": "warning", "check failed": "failed",
-                  "not checked": "unchecked"}
         for line in (result.stdout + result.stderr).splitlines():
-            level = levels.get(line.partition(":")[0])
-            if level:
-                COUNTS[level] = COUNTS.get(level, 0) + 1
-            print(f"    {line}" if line.strip() else "")
+            label, _, text = line.partition(": ")
+            level = levels.get(label)
+            if level and text:
+                say(level, ("hypothesis: " if label == "possible cause" else "") + text, past=past,
+                    next_step=next_step, where=f"{SECTION[0]} ({title})", indent="    ")
+            else:
+                print(f"    {line}" if line.strip() else "")
         if result.returncode == 124:
             say("failed", f"{title} did not finish within {CREDS_TIMEOUT:g} s; domain login health is not assessed")
         elif result.returncode != 0:
@@ -2399,18 +2461,17 @@ def greeter_uids(entries):
 def check_desktop(machine):
     """Login screen, the account's graphical logins and its keyring, told apart: the greeter's failures are not
     the user's, and authentication succeeding does not mean a desktop came up."""
-    manager = run(["systemctl", "show", "-p", "Id", "-p", "ActiveState", "-p", "NRestarts", "--no-pager",
-                   "display-manager.service"])
+    manager = run(["systemctl", "show", "-p", "Id", "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts", "-p",
+                   "ActiveEnterTimestampMonotonic", "--no-pager", "display-manager.service"])
     values = dict(line.split("=", 1) for line in (manager.stdout if manager else "").splitlines() if "=" in line)
     if not manager or manager.returncode != 0 or values.get("Id", "display-manager.service") == "display-manager.service":
         return
     section(f"Desktop session ({machine.user})")
     restarts = int(values.get("NRestarts") or 0)
-    back = values.get("ActiveState") == "active"
+    past, recovered, note = restart_outcome(values, up_since_boot(values, uptime_seconds(machine)))
     say("warning" if restarts else "info", f"display manager: {values['Id']}, {values.get('ActiveState', '?')}"
-        + (f", restarted {plural(restarts, 'time')} this boot; the login screen went away each time"
-           + (" and came back" if back else "") if restarts else ""), past=True, recovered=back,
-        next_step=f"journalctl -b -u {values['Id']}")
+        + (f", restarted {plural(restarts, 'time')} this boot; the login screen went away each time{note}"
+           if restarts else ""), past=past, recovered=recovered, next_step=f"journalctl -b -u {values['Id']}")
     session_definitions(machine)
     if not machine.sees_system_journal():
         say("unchecked", "graphical logins: " + machine.journal_hint())
@@ -3102,17 +3163,20 @@ ADMIN_IDENTITY = re.compile(r"unix-(group|user):([A-Za-z0-9._@\\-]+)")
 def check_polkit(machine):
     """Administrator prompts: the authority, the session's agent, who may authenticate as administrator, the PAM
     path polkit uses, rule errors, and recent outcomes. Nothing is checked by asking polkit for a decision."""
-    unit = run(["systemctl", "show", "-p", "LoadState", "-p", "ActiveState", "-p", "NRestarts", "--no-pager",
-                "polkit.service"])
+    unit = run(["systemctl", "show", "-p", "LoadState", "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts",
+                "-p", "ActiveEnterTimestampMonotonic", "--no-pager", "polkit.service"])
     values = dict(line.split("=", 1) for line in (unit.stdout if unit else "").splitlines() if "=" in line)
     if not unit or values.get("LoadState") in (None, "not-found"):
         return
     section(f"Administrator authorization (polkit, for {machine.user})")
     state, restarts = values.get("ActiveState", "?"), int(values.get("NRestarts") or 0)
+    if restarts:
+        past, recovered, note = restart_outcome(values, up_since_boot(values, uptime_seconds(machine)))
+        say("warning", f"polkit was restarted {plural(restarts, 'time')} this boot{note}", past=past,
+            recovered=recovered, next_step="journalctl -b -u polkit.service")
     if state == "active":
-        say("warning" if restarts else "ok", "polkit is running" + (f" but restarted {plural(restarts, 'time')} "
-                                                                    "this boot" if restarts else ""),
-            past=True, recovered=True, next_step="journalctl -b -u polkit.service")
+        if not restarts:
+            say("ok", "polkit is running")
     elif state == "failed":
         say("warning", "polkit has failed: no prompt for administrator actions can appear",
             next_step="systemctl status polkit.service")
@@ -3344,9 +3408,12 @@ def miner_unit(unit, props):
         reason = RESULTS.get(props.get("Result", ""), props.get("Result") or "unknown reason")
         say("warning", f"{unit} has failed ({reason}): new and changed files do not appear in search; {hint}")
     elif restarts >= 3:
-        say("warning", f"{unit} restarted {plural(restarts, 'time')} this boot: it keeps crashing; {hint}",
-            past=True, recovered=running(props))
-        return running(props)
+        started = props.get("ActiveEnterTimestamp", "").lstrip("@")
+        up_for = time.time() - int(started) if started.isdigit() and int(started) else None
+        past, recovered, note = restart_outcome(props, up_for)
+        say("warning", f"{unit} restarted {plural(restarts, 'time')} this boot: it crashed repeatedly{note}; {hint}",
+            past=past, recovered=recovered)
+        return props.get("ActiveState") == "active"
     elif running(props):
         return True
     else:
