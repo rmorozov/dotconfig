@@ -313,7 +313,7 @@ case "$*" in
     *"show --no-pager --timestamp=unix"*) exec python3 "$(dirname "$0")/../units.py" "$@" ;;
     is-system-running) echo degraded ;;
     "is-active user@"*) echo active ;;
-    *"-M alice@corp.example@ show-environment") printf 'XDG_CURRENT_DESKTOP=ubuntu:GNOME\n' ;;
+    *"-M alice@corp.example@ show-environment") printf 'XDG_CURRENT_DESKTOP=ubuntu:GNOME\nDCONF_PROFILE=corp-desktop\nXDG_CONFIG_DIRS=/etc/company:/etc/xdg\n' ;;
     *"-M carol@ show-environment") cat "$(dirname "$0")/../manager-env" ;;
     *"-M bob@"*"--failed"*) echo "bob-backup.service loaded failed failed Bob backup" ;;
     *"show"*"bob-backup.service"*) printf 'Description=Bob backup\nResult=exit-code\nExecMainCode=1\nExecMainStatus=2\nLoadState=loaded\n' ;;
@@ -459,6 +459,7 @@ EOF
 cat > "$stubs/gsettings" <<'EOF'
 #!/usr/bin/env bash
 file="$(dirname "$0")/../gsettings-$2"
+env > "$(dirname "$0")/../gsettings-env"
 [[ "$1" == list-recursively && -e "$file" ]] || { echo "No such schema \u201c$2\u201d" >&2; exit 1; }
 cat "$file"
 EOF
@@ -592,10 +593,16 @@ def put(relative, text="", size=0, days_old=0):
         os.utime(path, (stamp, stamp))
 for program in ("usr/bin/gnome-shell", "usr/libexec/xdg-desktop-portal", "usr/libexec/localsearch-3"):
     put(program)
-put("usr/share/xdg-desktop-portal/portals/gnome.portal", "[portal]\nDBusName=org.freedesktop.impl.portal.desktop.gnome\nUseIn=gnome\n")
-put("usr/share/xdg-desktop-portal/portals/gtk.portal", "[portal]\nDBusName=org.freedesktop.impl.portal.desktop.gtk\n")
-put("usr/share/xdg-desktop-portal/ubuntu-portals.conf",
-    "[preferred]\ndefault=gnome;gtk;\norg.freedesktop.impl.portal.Secret=kwallet\n")
+put("usr/share/xdg-desktop-portal/portals/gnome.portal", "[portal]\nDBusName=org.freedesktop.impl.portal.desktop.gnome\n"
+    "Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.ScreenCast;\nUseIn=gnome\n")
+put("usr/share/xdg-desktop-portal/portals/gtk.portal", "[portal]\nDBusName=org.freedesktop.impl.portal.desktop.gtk\n"
+    "Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.Settings;\n")
+# The session's XDG_CONFIG_DIRS puts a company override ahead of the distribution's file.
+put("usr/share/xdg-desktop-portal/ubuntu-portals.conf", "[preferred]\ndefault=gnome;gtk;\n")
+put("etc/company/xdg-desktop-portal/gnome-portals.conf",
+    "[preferred]\ndefault=gnome;gtk;\norg.freedesktop.impl.portal.Secret=kwallet\n"
+    "org.freedesktop.impl.portal.ScreenCast=gtk\norg.freedesktop.impl.portal.FileChooser=kwallet;gtk\n"
+    "org.freedesktop.impl.portal.Inhibit=none\n")
 put("home/alice/.local/share/gnome-shell/extensions/dash-to-dock@micxgx.gmail.com/metadata.json",
     '{"uuid": "dash-to-dock@micxgx.gmail.com", "shell-version": ["49", "50"]}')
 put("usr/share/gnome-shell/extensions/old@example.com/metadata.json", '{"shell-version": ["46", "47.1"]}')
@@ -604,12 +611,15 @@ put("usr/share/gnome-shell/extensions/old@example.com/metadata.json", '{"shell-v
     "org.gnome.shell disable-user-extensions false\norg.gnome.shell disable-extension-version-validation false\n")
 (test_dir / "gsettings-org.freedesktop.Tracker3.Miner.Files").write_text("\n".join(
     "org.freedesktop.Tracker3.Miner.Files " + line for line in (
-        "index-recursive-directories ['&DESKTOP', '&DOCUMENTS', '/srv/projects']",
+        "index-recursive-directories ['&DESKTOP', '&DOCUMENTS', '/srv/projects', '$HOME/secret-client-project', '&SECRET-thing']",
         "index-single-directories ['$HOME']", "ignored-directories ['po', 'CVS', 'node_modules']",
         "ignored-files @as []", "enable-monitors true", "crawling-interval -1", "low-disk-space-limit 100")) + "\n")
 (test_dir / "index-pause").write_text("asas 0 0\n")
 (root / "home/alice/.config/dconf").mkdir(parents=True, exist_ok=True)
-put("etc/dconf/profile/user", "user-db:user\nsystem-db:corp\n")
+# The session's DCONF_PROFILE selects corp-desktop; the default profile must not be read.
+put("etc/dconf/profile/corp-desktop", "user-db:user\nsystem-db:corp\n")
+put("etc/dconf/profile/user", "user-db:user\nsystem-db:decoy\n")
+put("etc/dconf/db/decoy.d/00-decoy", "[org/decoy]\nkey=1\n")
 put("etc/dconf/db/corp", days_old=3)
 put("etc/dconf/db/corp.d/00-screensaver", "[org/gnome/desktop/screensaver]\nlock-enabled=true\n")
 put("etc/dconf/db/corp.d/locks/screensaver",
@@ -628,6 +638,11 @@ put("proc/4242/fdinfo/7", "pos:\t0\nflags:\t00\n" + "inotify wd:1 ino:2 sdev:3 m
 (root / "proc/4242/fd").mkdir(parents=True, exist_ok=True)
 os.symlink("anon_inode:inotify", root / "proc/4242/fd/7")
 os.symlink("/dev/null", root / "proc/4242/fd/0")
+# A child that inherited the same inotify instance shows its watches again.
+put("proc/4244/status", "Name:\tcode-helper\nUid:\t1000\t1000\t1000\t1000\n")
+put("proc/4244/fdinfo/3", "inotify wd:1 ino:2 sdev:3 mask:fce ignored_mask:0\n" * 950)
+(root / "proc/4244/fd").mkdir(parents=True, exist_ok=True)
+os.symlink("anon_inode:inotify", root / "proc/4244/fd/3")
 put("proc/4343/status", "Name:\tother\nUid:\t4001\t4001\t4001\t4001\n")
 put("proc/4343/fdinfo/3", "inotify wd:1 ino:2 sdev:3 mask:fce ignored_mask:0\n" * 500)
 (root / "proc/4343/fd").mkdir(parents=True, exist_ok=True)
@@ -746,8 +761,12 @@ check '^info: xdg-desktop-portal-gnome.service has failed (see Services): screen
 check '^warning: PipeWire runs without its session manager WirePlumber'
 check '^warning: PulseAudio and pipewire-pulse are both running'
 check '^info: sound services logged 1 error this boot, last: spa.alsa: hw:0: snd_pcm_open failed'
-check '^warning: portal configuration /usr/share/xdg-desktop-portal/ubuntu-portals.conf names only backends that are not installed for org.freedesktop.impl.portal.Secret (kwallet)'
-refute 'for default (gnome'
+check '^warning: portal configuration /etc/company/xdg-desktop-portal/gnome-portals.conf: org.freedesktop.impl.portal.Secret has no usable backend (kwallet is not installed), so that portal fails'
+check '^warning: portal configuration /etc/company/xdg-desktop-portal/gnome-portals.conf: org.freedesktop.impl.portal.ScreenCast has no usable backend (gtk does not implement it)'
+check '^info: portals switched off on purpose by /etc/company/xdg-desktop-portal/gnome-portals.conf (none): org.freedesktop.impl.portal.Inhibit$'
+refute 'FileChooser has no usable backend'
+refute 'default has no usable backend'
+refute 'ubuntu-portals.conf'
 check '^warning: xdg-desktop-portal reported 1 backend failure this boot, last at .*: Failed to create file chooser'
 check '^info: 1 enabled extension not installed: gone@example.com$'
 check '^warning: 1 enabled extension not declared for GNOME Shell 50, so the Shell skips it: old@example.com (declares 46, 47)'
@@ -756,6 +775,7 @@ check '^warning: /home/alice/.config/dconf is owned by [a-z0-9 ]*, not alice@cor
 check '^warning: settings failed to save 1 time this boot'
 check '^warning: dconf policy corp: /etc/dconf/db/corp.d changed after it was compiled'
 check '^info: 2 settings locked by system policy corp (e.g. /org/gnome/desktop/screensaver/lock-enabled)'
+refute 'dconf policy decoy'
 check '^warning: autostart entry broken-app.desktop (user): its program /opt/broken/app is missing, so it fails at every login; remove /home/alice/.config/autostart/broken-app.desktop'
 refute 'autostart entry (good|kde-only|tryexec|hidden)'
 check '^info: 2 resumes from sleep this boot'
@@ -763,7 +783,9 @@ check '^warning: suspend or resume failed 1 time this boot, last at .*: Failed t
 check '^warning: after 1 of them the graphics driver reported errors within two minutes, e.g. i915 0000:00:02.0: \[drm\] \*ERROR\*'
 check "^warning: alice@corp.example's Shell crashed within two minutes after 1 resume, together with graphics errors"
 check '^File indexing (LocalSearch, for alice@corp.example):'
-check '^info: indexes &DESKTOP, &DOCUMENTS, 1 other folder with subfolders, and [$]HOME without'
+check '^info: indexes &DESKTOP, &DOCUMENTS, 3 other folders with subfolders, and [$]HOME without'
+refute 'secret-client-project'
+refute 'SECRET-thing'
 check '^info: exclusions: 3 folder patterns, 0 file patterns'
 check '^warning: localsearch-3.service restarted 4 times this boot: it keeps crashing'
 check '^info: the indexer is busy: Crawling, 42% done, 8 h after it started; one look cannot tell slow from stuck'
@@ -772,7 +794,7 @@ check '^warning: indexer: out of inotify watches (1 this boot)'
 check '^warning: indexer: extraction timeouts (1 this boot)'
 check '^warning: indexer: extractor crashes (3 this boot)'
 check '^warning: /home/alice/.cache/tracker3/files is owned by [a-z0-9 ]*, not alice@corp.example'
-check "^warning: alice@corp.example's programs hold 950 of 1000 inotify watches"
+check "^warning: alice@corp.example's programs hold at least 950 of 1000 inotify watches"
 refute 'secret-plan'
 refute 'srv/projects'
 check '^warning: systemd reports the system degraded'
@@ -922,6 +944,7 @@ check '^not checked: graphical logins: needs the system journal (see above)'
 check '^not checked: polkit agents, rule errors and outcomes: needs the system journal (see above)'
 check '^not checked: resume from sleep: needs the system journal (see above)'
 check '^info: portals: no desktop name for alice@corp.example (no graphical session)'
+check '^info: settings of alice@corp.example are read from the default locations'
 refute 'autostart entry kde-only'
 check '^warning: sssd.service is disabled'
 check '^Summary: problems found: [0-9]* warnings; [0-9]* not checked (need --sudo, or not applicable)$'
@@ -938,10 +961,26 @@ check '^ok: SSSD is online for corp.example$'
 check '^ok: alice@corp.example is authorized to log in through gdm-password now (account check, no password)'
 check '^ok: discovery: _ldap._tcp.dc._msdcs.corp.example lists 2 servers (answered through vpn0)'
 check '^warning: discovery: _kerberos._tcp.corp.example does not resolve'
+XDG_CONFIG_HOME=/caller/config DCONF_PROFILE=caller DBUS_SESSION_BUS_ADDRESS=unix:path=/caller/bus run_status --sudo
+for expected in HOME=/home/alice DCONF_PROFILE=corp-desktop XDG_CONFIG_DIRS=/etc/company:/etc/xdg; do
+    grep -qx "$expected" "$test_dir/gsettings-env" || { echo "gsettings ran without $expected" >&2; exit 1; }
+done
+if grep -q 'caller' "$test_dir/gsettings-env"; then
+    echo 'gsettings inherited the caller environment' >&2
+    exit 1
+fi
+mv "$root/etc/company/xdg-desktop-portal/gnome-portals.conf" "$test_dir/gnome-portals.conf.saved"
+for pid in 4242 4244; do
+    python3 -c 'import sys; open(sys.argv[1], "w").write("inotify wd:1 ino:2 sdev:3 mask:fce\n" * 500)' \
+        "$root/proc/$pid/fdinfo/$([[ $pid == 4242 ]] && echo 7 || echo 3)"
+done
 printf 'gdm-password\n' > "$test_dir/session3"
 printf 'asas 1 "gnome-software" 1 "Installing updates"\n' > "$test_dir/index-pause"
 run_status --sudo
 check '^info: indexing is paused by gnome-software (Installing updates); a pause is deliberate, not a fault'
+check '^ok: portals for ubuntu:gnome: /usr/share/xdg-desktop-portal/ubuntu-portals.conf chooses gnome;gtk; by default'
+check "^info: inotify watches of alice@corp.example's programs: between 500 and 1000 of 1000 (descriptors shared"
+mv "$test_dir/gnome-portals.conf.saved" "$root/etc/company/xdg-desktop-portal/gnome-portals.conf"
 check '^warning: the default keyring stayed locked after a password login; hypotheses: its password differs from the login password'
 cp "$root/etc/pam.d/gdm-password" "$test_dir/gdm-password.saved"
 printf '@include common-auth\n@include common-session\n' > "$root/etc/pam.d/gdm-password"
@@ -1260,4 +1299,31 @@ for bad in "--boot 1" "--boot x" "--examples 0" "--bogus" "--user" "--user a;b" 
     check '^Usage: dotconfig machine status'
 done
 
-echo "machine status tests passed"
+# The command that reads another account's settings on a real machine (root /): through runuser, in an environment
+# made only of the account's own values, whatever the caller exported.
+XDG_CONFIG_HOME=/caller/config DCONF_PROFILE=caller DBUS_SESSION_BUS_ADDRESS=unix:path=/caller/bus \
+    python3 - "$repo_root/scripts/machine-status.py" <<'EOF'
+import importlib.util, sys
+from pathlib import Path
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location("machine_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+machine = SimpleNamespace(privileged=True, root=Path("/"), uid=1000, user="alice", reach=True,
+                          target={"home": "/srv/home/alice"})
+command = module.as_account(machine, ["gsettings", "list-recursively", "org.gnome.shell"],
+                            {"XDG_CONFIG_HOME": "/srv/alice-config", "DCONF_PROFILE": "corp", "LANG": "C"})
+assert command[:6] == ["runuser", "-u", "alice", "--", "env", "-i"], command
+assert command[-3:] == ["gsettings", "list-recursively", "org.gnome.shell"], command
+variables = command[6:-3]
+for expected in ("HOME=/srv/home/alice", "XDG_CONFIG_HOME=/srv/alice-config", "DCONF_PROFILE=corp",
+                 "XDG_RUNTIME_DIR=/run/user/1000", "USER=alice"):
+    assert expected in variables, (expected, variables)
+assert not any("caller" in value or value.startswith(("DBUS_", "LANG=")) for value in variables), variables
+machine.uid = 0
+assert module.as_account(machine, ["true"], {})[:2] == ["env", "-i"]
+machine.reach = False
+assert module.as_account(machine, ["true"], {}) is None
+EOF
+
+echo 'machine status tests passed'

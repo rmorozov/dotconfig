@@ -159,6 +159,8 @@ class Machine:
         self.vpns = None
         self.rules = None
         self.user_entries = None
+        self.manager_environment = None
+        self.settings_noted = False
         self.invoker = self.user
         # The account the user-level checks inspect: --user, else whoever ran the command (through sudo or not).
         self.target = resolve_account(target or self.user)
@@ -2527,25 +2529,33 @@ def keyring_storage(machine):
 
 
 def proxy_values_env(machine):
-    """The account's user-manager environment, for the XDG paths its session uses."""
-    flags = machine.user_flags()
-    result = run(["systemctl"] + flags + ["show-environment"]) if flags else None
-    if result is None or result.returncode != 0:
-        return {}
-    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    """The account's user-manager environment, for the XDG paths its session uses; read once."""
+    if machine.manager_environment is None:
+        flags = machine.user_flags()
+        result = run(["systemctl"] + flags + ["show-environment"]) if flags else None
+        machine.manager_environment = {} if result is None or result.returncode != 0 else \
+            dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return machine.manager_environment
 
 
-def as_account(machine, command):
-    """The command run as the inspected account, so it reads that account's own settings: under sudo through
-    runuser, without it only for oneself. None when the account is out of reach."""
-    if machine.privileged and machine.root == Path("/"):
-        if machine.uid == 0:
-            return command
-        if machine.uid is None or not machine.target:
-            return None
-        return ["runuser", "-u", machine.user, "--", "env", f"HOME={machine.target['home']}",
-                f"XDG_RUNTIME_DIR=/run/user/{machine.uid}"] + command
-    return command if machine.reach else None
+# The variables that decide which settings store gsettings and dconf read.
+SETTINGS_ENVIRONMENT = ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "DCONF_PROFILE",
+                        "GSETTINGS_BACKEND", "GSETTINGS_SCHEMA_DIR")
+
+
+def as_account(machine, command, environment):
+    """The command run as the inspected account in an environment built from scratch: its home, runtime directory
+    and the settings variables of its user manager, and nothing of the caller's (config home, dconf profile,
+    session bus). Under sudo it runs through runuser, without it only for oneself. None when out of reach."""
+    if machine.uid is None or not machine.target or not machine.reach:
+        return None
+    variables = [f"HOME={machine.target['home']}", f"USER={machine.user}", f"LOGNAME={machine.user}",
+                 "PATH=" + os.environ.get("PATH", "/usr/bin:/bin"), f"XDG_RUNTIME_DIR=/run/user/{machine.uid}"]
+    variables += [f"{name}={environment[name]}" for name in SETTINGS_ENVIRONMENT if environment.get(name)]
+    command = ["env", "-i"] + variables + command
+    if machine.privileged and machine.root == Path("/") and machine.uid != 0:
+        return ["runuser", "-u", machine.user, "--"] + command
+    return command
 
 
 def gvariant(text):
@@ -2562,7 +2572,12 @@ def gvariant(text):
 def gsettings(machine, schema):
     """The account's values of one settings schema, read from its dconf database (no session bus needed). None
     when gsettings is missing, the schema is not installed, or the account is out of reach."""
-    command = as_account(machine, ["gsettings", "list-recursively", schema])
+    environment = proxy_values_env(machine) if machine.reach else {}
+    if not environment and not machine.settings_noted:
+        machine.settings_noted = True
+        say("info", f"settings of {machine.user} are read from the default locations: their user manager's "
+                    "environment (XDG paths, DCONF_PROFILE) is not available")
+    command = as_account(machine, ["gsettings", "list-recursively", schema], environment)
     result = run(command, timeout=20) if command else None
     if result is None or result.returncode != 0:
         return None
@@ -2594,8 +2609,6 @@ SOUND_UNITS = ("pipewire.service", "pipewire-pulse.service", "wireplumber.servic
 PORTAL_FAILURE = re.compile(r"(?i)no skeleton|failed to (?:create|load|start|register)\b.*(?:implementation|backend|"
                             r"portal)|backend .*(?:failed|not found|timed out)|could not find .*backend|"
                             r"Timeout was reached")
-PORTAL_DIRECTORIES = ("{config}/xdg-desktop-portal", "/etc/xdg/xdg-desktop-portal", "/etc/xdg-desktop-portal",
-                      "{data}/xdg-desktop-portal", "/usr/local/share/xdg-desktop-portal", "/usr/share/xdg-desktop-portal")
 EXTENSION_ERROR = re.compile(r"(?:Extension|Error loading extension|Could not load extension) ([\w.+-]+@[\w.+-]+)")
 DCONF_FAILURE = re.compile(r"(?i)dconf.*(?:failed to commit|unable to (?:open|create|write)|permission denied|"
                            r"could not (?:open|write))")
@@ -2676,8 +2689,8 @@ def portals(machine, environment, desktops, found, log):
     names, and the backend failures xdg-desktop-portal logged."""
     if not executable(machine, "/usr/libexec/xdg-desktop-portal"):
         return
-    backends = {Path(entry).stem: Path(entry).read_text(errors="replace")
-                for entry in sorted(glob.glob(str(machine.path("usr/share/xdg-desktop-portal/portals") / "*.portal")))}
+    config_dirs, data_dirs = portal_directories(machine, environment)
+    backends = installed_backends(machine, environment, data_dirs)
     if not backends:
         say("warning", "xdg-desktop-portal is installed without any backend, so sandboxed applications get no file "
                        "chooser or screen sharing (Ubuntu's are xdg-desktop-portal-gnome and -gtk)")
@@ -2686,10 +2699,8 @@ def portals(machine, environment, desktops, found, log):
         say("info", f"portals: no desktop name for {machine.user} (no graphical session), so which backend applies is "
                     "not checked; installed: " + ", ".join(backends))
     else:
-        data = (environment.get("XDG_DATA_HOME") or f"{machine.target['home'].rstrip('/')}/.local/share").rstrip("/")
         config = None
-        for directory in PORTAL_DIRECTORIES:
-            directory = directory.format(config=config_home(machine, environment), data=data)
+        for directory in config_dirs:
             for name in [f"{desktop}-portals.conf" for desktop in desktops] + ["portals.conf"]:
                 text = machine.read(f"{directory}/{name}".lstrip("/"))
                 if text is not None:
@@ -2701,17 +2712,16 @@ def portals(machine, environment, desktops, found, log):
             preferred = re.split(r"^\[preferred\]\s*$", config[1], flags=re.M)
             choices = dict(re.findall(r"^([\w.-]+)\s*=\s*(.*)$", preferred[1].split("\n[")[0], re.M)) \
                 if len(preferred) > 1 else {}
-            unusable = []
-            for key, value in choices.items():
-                names = [name.strip() for name in value.split(";") if name.strip()]
-                if names and not any(name in ("*", "none") or name in backends for name in names):
-                    unusable.append(f"{key} ({', '.join(names)})")
-            for entry in unusable:
-                say("warning", f"portal configuration {config[0]} names only backends that are not installed for "
-                               f"{entry}; that portal fails (installed: {', '.join(backends)})")
+            unusable, disabled = portal_routes(choices, backends)
+            for key, reasons in unusable:
+                say("warning", f"portal configuration {config[0]}: {key} has no usable backend ({'; '.join(reasons)}), "
+                               "so that portal fails")
+            if disabled:
+                say("info", f"portals switched off on purpose by {config[0]} (none): {', '.join(disabled)}")
             if not unusable:
                 say("ok", f"portals for {':'.join(desktops)}: {config[0]} chooses "
-                    + (choices.get("default") or "per interface") + f" (installed: {', '.join(backends)})")
+                    + (choices.get("default") or "per interface") + " by default, and each interface it routes "
+                    f"explicitly has an installed backend that declares it (installed: {', '.join(backends)})")
         elif any(set(desktops) & used_in(text) for text in backends.values()):
             say("ok", f"portals for {':'.join(desktops)}: chosen by the backends' UseIn (no portals.conf)")
         else:
@@ -2724,6 +2734,70 @@ def portals(machine, environment, desktops, found, log):
         say("warning", f"xdg-desktop-portal reported {plural(len(failures), 'backend failure')} this boot, last at "
                        f"{when(failures[-1])}: {clean(failures[-1]['MESSAGE'], 160)}; see: journalctl --user -b "
                        "-u 'xdg-desktop-portal*'")
+
+
+def portal_directories(machine, environment):
+    """Where portals.conf is looked for, highest precedence first, and the data directories, as the portals.conf
+    documentation orders them: config home, XDG_CONFIG_DIRS, /etc, data home, XDG_DATA_DIRS, /usr/share."""
+    home = machine.target["home"].rstrip("/")
+    data_home = (environment.get("XDG_DATA_HOME") or f"{home}/.local/share").rstrip("/")
+    config_dirs = [d for d in (environment.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":") if d]
+    data_dirs = [d for d in (environment.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":") if d]
+    searched = [config_home(machine, environment)] + config_dirs + ["/etc", data_home] + data_dirs + ["/usr/share"]
+    return (list(dict.fromkeys(f"{d.rstrip('/')}/xdg-desktop-portal" for d in searched)),
+            list(dict.fromkeys(d.rstrip("/") for d in data_dirs + ["/usr/share"])))
+
+
+def installed_backends(machine, environment, data_dirs):
+    """Backend name to its .portal text: from XDG_DESKTOP_PORTAL_DIR when set, else the data directories (the
+    first file of a name wins)."""
+    directories = [environment["XDG_DESKTOP_PORTAL_DIR"]] if environment.get("XDG_DESKTOP_PORTAL_DIR") else \
+        [f"{d}/xdg-desktop-portal/portals" for d in data_dirs]
+    backends = {}
+    for directory in directories:
+        for entry in sorted(glob.glob(str(machine.path(directory.lstrip("/")) / "*.portal"))):
+            backends.setdefault(Path(entry).stem, Path(entry).read_text(errors="replace"))
+    return backends
+
+
+def interfaces(text):
+    matched = re.search(r"^Interfaces=(.*)$", text, re.M)
+    return {name.strip() for name in matched.group(1).split(";") if name.strip()} if matched else set()
+
+
+def portal_routes(choices, backends):
+    """Evaluate portals.conf [preferred]: each explicitly routed interface takes the first listed backend that is
+    installed and declares it ("*" any that does, "none" none on purpose). The default list is only checked for an
+    installed backend, since which interfaces it must serve depends on the caller. Returns (unusable, disabled)."""
+    unusable, disabled = [], []
+    for key, value in choices.items():
+        names = [name.strip() for name in value.split(";") if name.strip()]
+        if not names:
+            continue
+        if key == "default":
+            if not any(name in ("*", "none") or name in backends for name in names):
+                unusable.append((key, [f"{name} is not installed" for name in names]))
+            continue
+        if not key.startswith("org.freedesktop.impl.portal."):
+            continue
+        reasons = []
+        for name in names:
+            if name == "none":
+                disabled.append(key)
+                break
+            if name == "*":
+                if any(key in interfaces(text) for text in backends.values()):
+                    break
+                reasons.append("no installed backend declares it")
+            elif name not in backends:
+                reasons.append(f"{name} is not installed")
+            elif key not in interfaces(backends[name]):
+                reasons.append(f"{name} does not implement it")
+            else:
+                break
+        else:
+            unusable.append((key, reasons))
+    return unusable, disabled
 
 
 def used_in(text):
@@ -2810,7 +2884,8 @@ def dconf_health(machine, environment, log):
     if failures:
         say("warning", f"settings failed to save {plural(len(failures), 'time')} this boot, last at "
                        f"{when(failures[-1])}: {clean(failures[-1]['MESSAGE'], 160)}")
-    profile = machine.read("etc/dconf/profile/user") or ""
+    chosen = environment.get("DCONF_PROFILE") or "user"
+    profile = machine.read(chosen.lstrip("/") if chosen.startswith("/") else f"etc/dconf/profile/{chosen}") or ""
     for name in re.findall(r"^system-db:(\S+)", profile, re.M):
         keyfiles, compiled = machine.path(f"etc/dconf/db/{name}.d"), machine.path(f"etc/dconf/db/{name}")
         sources = [entry for entry in keyfiles.rglob("*") if entry.is_file()] if keyfiles.is_dir() else []
@@ -3098,6 +3173,9 @@ INDEX_RULES = (
 INDEX_PATTERNS = tuple((key, level, title, re.compile(pattern), advice)
                        for key, level, title, pattern, advice in INDEX_RULES)
 BUSY_HOURS = 6
+# Location tokens printed as they are; any other value is a folder name and only counted.
+INDEX_ALIASES = ("$HOME", "&DESKTOP", "&DOCUMENTS", "&DOWNLOAD", "&MUSIC", "&PICTURES", "&PUBLIC_SHARE",
+                 "&TEMPLATES", "&VIDEOS")
 
 
 def check_indexing(machine):
@@ -3138,7 +3216,7 @@ def index_settings(settings):
         return True
 
     def describe(paths):
-        aliases = [path for path in paths if path.startswith(("&", "$HOME"))]
+        aliases = [path for path in paths if path in INDEX_ALIASES]
         others = len(paths) - len(aliases)
         return ", ".join(aliases + ([plural(others, "other folder")] if others else []))
     say("info", f"indexes {describe(recursive) or 'no folder'} with subfolders"
@@ -3272,7 +3350,9 @@ def watches(machine):
     maximum = (machine.read("proc/sys/fs/inotify/max_user_watches") or "").strip()
     if not maximum.isdigit() or not machine.reach:
         return
-    used = 0
+    # A descriptor duplicated or inherited across fork shows the same instance's watches again, and nothing here
+    # tells shared instances apart, so the total is an upper bound; the largest single instance is a sure minimum.
+    used, largest = 0, 0
     for status in machine.path("proc").glob("[0-9]*/status"):
         try:
             matched = re.search(r"^Uid:\s+(\d+)", status.read_text(errors="replace"), re.M)
@@ -3281,15 +3361,21 @@ def watches(machine):
             for fd in (status.parent / "fd").iterdir():
                 if os.readlink(fd) == "anon_inode:inotify":
                     info = (status.parent / "fdinfo" / fd.name).read_text(errors="replace")
-                    used += sum(1 for line in info.splitlines() if line.startswith("inotify wd:"))
+                    count = sum(1 for line in info.splitlines() if line.startswith("inotify wd:"))
+                    used, largest = used + count, max(largest, count)
         except OSError:
             continue
     limit = int(maximum)
-    if used >= limit * 0.9:
-        say("warning", f"{machine.user}'s programs hold {used} of {limit} inotify watches: the indexer and editors "
-                       "stop seeing changes; raise fs.inotify.max_user_watches (sysctl) or close what watches most")
+    span = f"{largest} of {limit}" if used == largest else f"between {largest} and {used} of {limit}"
+    if largest >= limit * 0.9:
+        say("warning", f"{machine.user}'s programs hold at least {largest} of {limit} inotify watches: the indexer and "
+                       "editors stop seeing changes; raise fs.inotify.max_user_watches (sysctl) or close what watches "
+                       "most")
+    elif used >= limit * 0.9:
+        say("info", f"inotify watches of {machine.user}'s programs: {span} (descriptors shared between processes "
+                    "count once per process), so they may be near the limit; see whether changes go unnoticed")
     else:
-        say("info", f"inotify watches: {used} of {limit} in use by {machine.user}'s programs")
+        say("info", f"inotify watches: {span} in use by {machine.user}'s programs")
 
 
 # --- Packages and security --------------------------------------------------------------------------------------
