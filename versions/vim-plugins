@@ -17,7 +17,7 @@ vim-rhubarb https://github.com/tpope/vim-rhubarb.git HEAD 5496d7c94581c4c9ad7430
 molokai https://github.com/tomasr/molokai.git HEAD c67bdfcdb31415aa0ade7f8c003261700a885476
 fzf.vim https://github.com/junegunn/fzf.vim.git HEAD 023de3c0e158ff9c2b0992175af10be97c2f2158
 fzf https://github.com/junegunn/fzf.git HEAD 26ff936df038b6a62ec42cf18db27b2ea2bb8ec3
-vimproc.vim https://github.com/Shougo/vimproc.vim.git HEAD 63a4ce0768c7af434ac53d37bdc1e7ff7fd2bece
+vimproc.vim https://github.com/Shougo/vimproc.vim.git HEAD 480e04abe2c9359c055c82c78c42a961c087b858
 vim-misc https://github.com/xolox/vim-misc.git HEAD 3e6b8fb6f03f13434543ce1f5d24f6a5d3f34f0b
 vim-session https://github.com/xolox/vim-session.git HEAD 9e9a6088f0554f6940c19889d0b2a8f39d13f2bb
 ultisnips https://github.com/SirVer/ultisnips.git HEAD 0ca6a21386021e74a91034365809dcca56ed13f0
