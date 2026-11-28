@@ -9,7 +9,7 @@ call s:DotconfigPin('nerdtree', '690d061b591525890f1471c6675bcb5bdc8cdff9')
 call s:DotconfigPin('vim-nerdtree-tabs', '07d19f0299762669c6f93fbadb8249da6ba9de62')
 call s:DotconfigPin('vim-commentary', '64a654ef4a20db1727938338310209b6a63f60c9')
 call s:DotconfigPin('vim-fugitive', '3b753cf8c6a4dcde6edee8827d464ba9b8c4a6f0')
-call s:DotconfigPin('vim-airline', '00f4a8fca9eca8c5dbdf182dd698364c75a71f71')
+call s:DotconfigPin('vim-airline', '059052c8ed4252e90398271c831a9aafd35a84c9')
 call s:DotconfigPin('vim-airline-themes', '77aab8c6cf7179ddb8a05741da7e358a86b2c3ab')
 call s:DotconfigPin('vim-gitgutter', '90b75207bd9b55d8ac4af15f72b4e935462014d0')
 call s:DotconfigPin('grep.vim', '852ddb0c6590bbc41c508d7f5d2fc17112492def')
@@ -33,7 +33,7 @@ call s:DotconfigPin('split-manpage.vim', 'e99c7a06e2f3f86218c8849bccf4bd1ec27364
 call s:DotconfigPin('vim-go', '47694979496d4bf2e90ce75d95f1dec3f41cbefb')
 call s:DotconfigPin('jedi-vim', '4742387e33b2378c47da6661b9a57104c1c778c4')
 call s:DotconfigPin('requirements.txt.vim', 'd55452136a162ac31b15876ab98c00bd1b6c312f')
-call s:DotconfigPin('coc.nvim', 'f3f05e1074c4dca8f3244684186bbf8687952ad0')
+call s:DotconfigPin('coc.nvim', 'cf787c35f7d6599e29f7adc842f6dc5f0a9ff340')
 call s:DotconfigPin('vim-trailing-whitespace', 'dc22ff46010e55d2c33edd21cdcd14f99e729b6f')
 
 delfunction s:DotconfigPin
